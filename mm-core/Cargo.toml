@@ -1,0 +1,11 @@
+[package]
+name = "mm-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mm-device = { path = "../mm-device" }
+parking_lot = "0.12"
+
+[dev-dependencies]
+mm-adapter-demo = { path = "../adapters/mm-adapter-demo" }
