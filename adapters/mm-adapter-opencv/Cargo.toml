@@ -3,6 +3,11 @@ name = "mm-adapter-opencv"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Enable the OpenCV VideoCapture camera implementation.
+# Requires OpenCV 4.x to be installed on the system (e.g. `brew install opencv`).
+opencv = ["dep:opencv"]
+
 [dependencies]
 mm-device = { path = "../../mm-device" }
-opencv = { version = "0.98", default-features = false, features = ["videoio", "imgproc"] }
+opencv = { version = "0.98", default-features = false, features = ["videoio", "imgproc"], optional = true }

@@ -1,0 +1,10 @@
+[package]
+name = "mm-adapter-iidc"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+iidc = []
+
+[dependencies]
+mm-device = { path = "../../mm-device" }

@@ -104,4 +104,6 @@ members = [
     "adapters/mm-adapter-xcite-led",
     "adapters/mm-adapter-xcite-xt600",
     "adapters/mm-adapter-opencv",
+    "adapters/mm-adapter-illuminate-led",
+    "adapters/mm-adapter-iidc",
 ]

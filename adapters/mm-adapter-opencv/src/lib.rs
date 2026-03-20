@@ -32,5 +32,7 @@
 /// println!("{}x{} image, {} bytes", cam.get_image_width(), cam.get_image_height(), buf.len());
 /// ```
 
+#[cfg(feature = "opencv")]
 pub mod camera;
+#[cfg(feature = "opencv")]
 pub use camera::OpenCvCamera;

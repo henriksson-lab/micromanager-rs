@@ -1,0 +1,8 @@
+[package]
+name = "mm-adapter-illuminate-led"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mm-device = { path = "../../mm-device" }
+serde_json = "1"

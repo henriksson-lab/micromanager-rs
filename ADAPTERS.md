@@ -74,9 +74,9 @@ Status values: `done` | `todo` (pure serial, portable) | `sdk` (requires vendor 
 | `HydraLMT200` | `mm-adapter-hydra-lmt200` | done | Hydra LMT-200 motion controller, serial |
 | `IDSPeak` | — | sdk | IDS Peak SDK |
 | `IDS_uEye` | — | sdk | IDS uEye SDK |
-| `IIDC` | — | sdk | FireWire IIDC SDK |
+| `IIDC` | `mm-adapter-iidc` | done | FireWire IIDC (libdc1394); `--features iidc`; no driver on macOS |
 | `ITC18` | — | sdk | Heka ITC-18 I/O hardware |
-| `IlluminateLEDArray` | — | todo | LED array, serial + JSON (rapidjson) |
+| `IlluminateLEDArray` | `mm-adapter-illuminate-led` | done | LED array, serial + JSON |
 | `ImageProcessorChain` | — | sdk | Utility/aggregator |
 | `IntegratedLaserEngine` | — | sdk | Andor ILE SDK |
 | `IsmatecMCP` | `mm-adapter-ismatec` | done | Address-prefixed `*`-ACK |
