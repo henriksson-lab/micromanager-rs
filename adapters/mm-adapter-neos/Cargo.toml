@@ -1,0 +1,7 @@
+[package]
+name = "mm-adapter-neos"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mm-device = { path = "../../mm-device" }
