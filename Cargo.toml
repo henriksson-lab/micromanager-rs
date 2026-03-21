@@ -115,5 +115,5 @@ members = [
     "adapters/mm-adapter-andor-sdk3",
     "adapters/mm-adapter-pi-gcs",
     "adapters/mm-adapter-nikon",
-    "adapters/mm-adapter-zeiss-can",
+    "adapters/mm-adapter-zeiss-can", "mm-demo",
 ]

@@ -1,0 +1,9 @@
+[package]
+name = "mm-demo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mm-core = { path = "../mm-core" }
+mm-adapter-demo = { path = "../adapters/mm-adapter-demo" }
+minifb = "0.28"
