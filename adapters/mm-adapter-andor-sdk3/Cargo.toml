@@ -1,0 +1,13 @@
+[package]
+name = "mm-adapter-andor-sdk3"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+andor-sdk3 = []
+
+[dependencies]
+mm-device = { path = "../../mm-device" }
+
+[build-dependencies]
+cc = "1"

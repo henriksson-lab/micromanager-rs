@@ -79,7 +79,7 @@ W = Windows, M = macOS, L = Linux. ✓ supported, ✗ not supported, ? unknown.
 | NIDAQ | ✓ | ✗ | ✗ | NI-DAQ Windows SDK |
 | NIMultiAnalog | ✓ | ✗ | ✗ | NI-DAQ Windows SDK |
 | NKTSuperK | ✓ | ✗ | ✗ | NKTPDLL.h Windows-only |
-| Nikon | ✓ | ✗ | ✓ | Cross-platform |
+| Nikon | ✓ | ✓ | ✓ | **Pure serial** — implemented as `mm-adapter-nikon` |
 | NikonKs | ✓ | ✗ | ✗ | Windows-only |
 | NikonTE2000 | ✓ | ✗ | ✓ | Cross-platform |
 | NotificationTester | ✓ | ✗ | ✓ | Cross-platform test utility |
@@ -90,8 +90,8 @@ W = Windows, M = macOS, L = Linux. ✓ supported, ✗ not supported, ? unknown.
 | PI | ✓ | ✗ | ✓ | PI SDK (Win + Linux) |
 | PICAM | ✓ | ✓ | ✓ | Princeton Instruments — all platforms |
 | PIEZOCONCEPT | ✓ | ✗ | ✓ | Cross-platform |
-| PI_GCS | ✓ | ✗ | ✓ | PI GCS SDK (Win + Linux) |
-| PI_GCS_2 | ✓ | ✗ | ✓ | PI GCS2 SDK (Win + Linux) |
+| PI_GCS | ✓ | ✓ | ✓ | **Pure serial** — implemented as `mm-adapter-pi-gcs` |
+| PI_GCS_2 | ✓ | ✓ | ✓ | **Pure serial** — implemented as `mm-adapter-pi-gcs` |
 | PVCAM | ✓ | ✗ | ✓ | Photometrics PVCAM (Win + Linux) |
 | ParallelPort | ✓ | ✗ | ✓ | Windows LPT + Linux /dev/parport |
 | PicardStage | ✓ | ✗ | ✗ | Windows-only |
@@ -144,7 +144,7 @@ W = Windows, M = macOS, L = Linux. ✓ supported, ✗ not supported, ? unknown.
 | Ximea | ✓ | ✗ | ✗ | Windows-only Ximea SDK |
 | ZWO | ✓ | ✗ | ✗ | Windows-only ASI astronomy SDK |
 | ZeissAxioZoom | ✓ | ✗ | ✗ | Zeiss Windows SDK |
-| ZeissCAN | ✓ | ✗ | ✓ | Zeiss CAN bus (Win + Linux) |
+| ZeissCAN | ✓ | ✓ | ✓ | **Pure serial** — implemented as `mm-adapter-zeiss-can` |
 | ZeissCAN29 | ✓ | ✗ | ✓ | Zeiss CAN29 bus (Win + Linux) |
 | dc1394 | ✓ | ✗ | ✓ | FireWire IEEE1394 (Win + Linux) |
 | iSIMWaveforms | ✓ | ✗ | ✗ | Windows-only waveform generator |

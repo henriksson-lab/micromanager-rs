@@ -19,7 +19,7 @@ Status values: `done` | `todo` (pure serial, portable) | `sdk` (requires vendor 
 | `AmScope` | — | sdk | Camera SDK |
 | `Andor` | — | sdk | Andor SDK |
 | `AndorLaserCombiner` | — | sdk | AB_ALC_REV64.dll |
-| `AndorSDK3` | — | sdk | Andor SDK3 |
+| `AndorSDK3` | `mm-adapter-andor-sdk3` | done | Andor SDK3 atcore (Linux/Windows); `--features andor-sdk3` |
 | `AndorShamrock` | — | sdk | Andor SDK |
 | `Aquinas` | `mm-adapter-aquinas` | done | Microfluidics controller, serial (LGPL) |
 | `Aravis` | — | sdk | GLib/GObject/GigE |
@@ -125,7 +125,7 @@ Status values: `done` | `todo` (pure serial, portable) | `sdk` (requires vendor 
 | `Neos` | `mm-adapter-neos` | done | No-response serial |
 | `NewportCONEX` | `mm-adapter-newport-stage` | done | ASCII `\r\n` |
 | `NewportSMC` | `mm-adapter-newport-stage` | done | ASCII `\r\n` |
-| `Nikon` | — | sdk | Nikon vendor protocol (SDK) |
+| `Nikon` | `mm-adapter-nikon` | done | Serial: ZStage (`:A`/`:N`), TIRFShutter (`oTSO`/`oTSC`), IntensiLightShutter |
 | `NikonKs` | — | sdk | Nikon Ks SDK |
 | `NikonTE2000` | — | sdk | Nikon TE2000 SDK |
 | `NotificationTester` | — | sdk | Internal test utility |
@@ -140,6 +140,8 @@ Status values: `done` | `todo` (pure serial, portable) | `sdk` (requires vendor 
 | `OxxiusCombiner` | `mm-adapter-oxxius` | done | ASCII `\r`, L6Cc combiner |
 | `PCO_Generic` | — | sdk | PCO camera SDK |
 | `PI` | — | sdk | PI (Physik Instrumente) SDK |
+| `PI_GCS` | `mm-adapter-pi-gcs` | done | PI GCS serial protocol (`SVO`/`MOV`/`POS?`/`ERR?`) |
+| `PI_GCS_2` | `mm-adapter-pi-gcs` | done | PI GCS serial protocol (`SVO`/`MOV`/`POS?`/`ERR?`) |
 | `PICAM` | `mm-adapter-picam` | done | PVCAM SDK (all platforms); `--features picam` |
 | `PIEZOCONCEPT` | — | sdk | Check protocol |
 | `PI_GCS` | — | sdk | PI GCS SDK |
@@ -245,7 +247,7 @@ Status values: `done` | `todo` (pure serial, portable) | `sdk` (requires vendor 
 | `ZWO` | — | sdk | ZWO ASI camera SDK |
 | `Zaber` | `mm-adapter-zaber` | done | ASCII `\n` (Zaber ASCII v2) |
 | `ZeissAxioZoom` | — | sdk | Zeiss SDK |
-| `ZeissCAN` | — | sdk | Zeiss CAN bus SDK |
+| `ZeissCAN` | `mm-adapter-zeiss-can` | done | CAN-bus serial: FocusStage, MCU28 XY, turrets, shutter (9600 baud `\r`) |
 | `ZeissCAN29` | — | sdk | Zeiss CAN29 SDK |
 | `dc1394` | — | sdk | FireWire DC1394 |
 | `iSIMWaveforms` | — | sdk | iSIM waveform utility |

@@ -112,4 +112,8 @@ members = [
     "adapters/mm-adapter-tsi",
     "adapters/mm-adapter-spot",
     "adapters/mm-adapter-twain",
+    "adapters/mm-adapter-andor-sdk3",
+    "adapters/mm-adapter-pi-gcs",
+    "adapters/mm-adapter-nikon",
+    "adapters/mm-adapter-zeiss-can",
 ]

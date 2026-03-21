@@ -36,55 +36,40 @@ The `CMMCore` engine:
 
 ### Adapters
 
-41 adapter crates (as of this writing), all pure serial — no vendor SDKs required:
+113 adapter crates — all pure serial, no vendor SDKs required (except the feature-gated SDK wrappers noted below). See [`ADAPTERS.md`](ADAPTERS.md) for the full list with status and notes.
 
-| Crate | Device(s) | Protocol | License |
-|---|---|---|---|
-| `mm-adapter-demo` | DemoCamera, DemoStage, DemoShutter | Simulated | BSD 3-Clause |
-| `mm-adapter-arduino` | Arduino shutter/state | ASCII `\r` | LGPL |
-| `mm-adapter-asi-stage` | ASI XY + Z stage | `:A`/`:N` ASCII | BSD 3-Clause |
-| `mm-adapter-asi-fw` | ASI filter wheel | `:A`/`:N` ASCII | LGPL |
-| `mm-adapter-asi-tiger` | ASI Tiger XY + Z stage | `:A`/`:N` ASCII, 115200 baud | BSD 3-Clause |
-| `mm-adapter-asifw1000` | ASI FW1000 filter wheel + shutter | `\n\r` terminator | LGPL |
-| `mm-adapter-aladdin` | World Precision Instruments Aladdin pump | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-carvii` | BD/CrEST CARVII confocal (shutter, filter wheels, sliders) | Single-char ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-chuoseiki` | ChuoSeiki MD-5000 XY stage | ASCII `\r` | LGPL |
-| `mm-adapter-cobolt` | Cobolt diode laser | ASCII `\r` | LGPL |
-| `mm-adapter-coherent-cube` | Coherent CUBE laser | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-coherent-obis` | Coherent OBIS laser | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-conix` | Conix filter cubes, XY + Z stage | `:A`/`:N` ASCII | BSD 3-Clause |
-| `mm-adapter-coolled` | CoolLED pE-300 LED | CSS format | BSD 3-Clause |
-| `mm-adapter-coolled-pe4000` | CoolLED pE-4000 LED (4-channel) | CSS format | BSD 3-Clause |
-| `mm-adapter-corvus` | Corvus XY + Z stage | ASCII space-terminated | LGPL |
-| `mm-adapter-csuw1` | Yokogawa CSU-W1 spinning disk (shutter, filter wheel, dichroic) | CSV ASCII `\r` | LGPL |
-| `mm-adapter-elliptec` | Thorlabs Elliptec linear stage + 2-position slider | Hex-position `\r` | LGPL |
-| `mm-adapter-hamilton-mvp` | Hamilton MVP modular valve positioner | `0x06` ACK binary | BSD 3-Clause |
-| `mm-adapter-ismatec` | Ismatec MCP peristaltic pump | Address-prefixed `*`-ACK | — |
-| `mm-adapter-laser-quantum` | Laser Quantum Gem laser | ASCII `\r` | LGPL |
-| `mm-adapter-ldi` | 89 North LDI laser diode illuminator | ASCII `\n`, dynamic wavelengths | — |
-| `mm-adapter-ludl` | Ludl BioPrecision XY + Z stage, filter wheel, shutter | `:A` ASCII | LGPL |
-| `mm-adapter-marzhauser` | Märzhäuser TANGO XY + Z stage | ASCII `\r` | LGPL |
-| `mm-adapter-neos` | Neos Technologies acousto-optic shutter | No-response serial | LGPL |
-| `mm-adapter-newport-stage` | Newport CONEX-CC / SMC100 Z stage | ASCII `\r\n` | LGPL / BSD 3-Clause |
-| `mm-adapter-niji` | BlueboxOptics niji 7-channel LED | Binary sync + `\r\n` | BSD 3-Clause |
-| `mm-adapter-omicron` | Omicron PhoxX/LuxX/BrixX laser | `?CMD`/`!CMD` hex `\r` | LGPL |
-| `mm-adapter-oxxius` | Oxxius L6Cc laser combiner | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-pecon` | Pecon TempControl 37-2 temperature + CO2 | Raw 3-byte BCD | BSD 3-Clause |
-| `mm-adapter-precis-excite` | PrecisExcite LED illuminator | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-prior` | Prior ProScan XY + Z stage, filter wheel, shutter | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-sapphire` | Coherent Sapphire laser | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-scientifica` | Scientifica XY + Z stage | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-spectral-lmm5` | Spectral LMM5 laser combiner | Hex-encoded binary `\r` | LGPL |
-| `mm-adapter-sutter-lambda` | Sutter Lambda filter wheel | Binary | BSD 3-Clause |
-| `mm-adapter-sutter-stage` | Sutter MP-285 XY + Z stage | `:A` ASCII | LGPL |
-| `mm-adapter-thorlabs-fw` | Thorlabs filter wheel | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-varispec` | CRI VariSpec LCTF | ASCII `\r` | — |
-| `mm-adapter-vincent` | Vincent Associates Uniblitz shutter | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-vortran` | Vortran Stradus laser | ASCII `\r` | LGPL |
-| `mm-adapter-xcite` | Excelitas X-Cite arc lamp | ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-zaber` | Zaber linear + XY stage | ASCII `\n` (Zaber ASCII v2) | BSD 3-Clause |
-| `mm-adapter-tofra` | TOFRA filter wheel, Z-drive, XY stage | IMS MDrive ASCII `\r` | BSD 3-Clause |
-| `mm-adapter-lumencor-spectra` | Lumencor Spectra/Aura/Sola LED (legacy) | Binary write-only | BSD 3-Clause |
+Selected adapters:
+
+| Crate | Device(s) | Protocol |
+|---|---|---|
+| `mm-adapter-demo` | DemoCamera, DemoStage, DemoShutter | Simulated |
+| `mm-adapter-arduino` | Arduino shutter/state | ASCII `\r` |
+| `mm-adapter-asi-stage` | ASI XY + Z stage | `:A`/`:N` ASCII |
+| `mm-adapter-asi-tiger` | ASI Tiger XY + Z stage | `:A`/`:N` ASCII, 115200 baud |
+| `mm-adapter-cobolt` | Cobolt diode laser | ASCII `\r` |
+| `mm-adapter-coherent-obis` | Coherent OBIS laser | ASCII `\r` |
+| `mm-adapter-conix` | Conix filter cubes, XY + Z stage | `:A`/`:N` ASCII |
+| `mm-adapter-corvus` | Corvus XY + Z stage | ASCII space-terminated |
+| `mm-adapter-csuw1` | Yokogawa CSU-W1 spinning disk | CSV ASCII `\r` |
+| `mm-adapter-elliptec` | Thorlabs Elliptec linear stage + slider | Hex-position `\r` |
+| `mm-adapter-hamilton-mvp` | Hamilton MVP valve positioner | `0x06` ACK binary |
+| `mm-adapter-leica-dmi` | Leica DMI inverted microscope | ASCII `\r` |
+| `mm-adapter-leica-dmr` | Leica DMR upright microscope | ASCII `\r` |
+| `mm-adapter-ludl` | Ludl BioPrecision XY + Z, filter wheel, shutter | `:A` ASCII |
+| `mm-adapter-marzhauser` | Märzhäuser TANGO XY + Z stage | ASCII `\r` |
+| `mm-adapter-nikon` | Nikon ZStage, TIRFShutter, Ti-TIRFShutter, IntensiLight | ASCII `\r` / `\n` |
+| `mm-adapter-omicron` | Omicron PhoxX/LuxX/BrixX laser | `?CMD`/`!CMD` hex `\r` |
+| `mm-adapter-pi-gcs` | PI GCS Z-stage (CONEX, C-863, etc.) | `SVO`/`MOV`/`POS?` ASCII `\n` |
+| `mm-adapter-prior` | Prior ProScan XY + Z, filter wheel, shutter | ASCII `\r` |
+| `mm-adapter-scientifica` | Scientifica XY + Z stage | ASCII `\r` |
+| `mm-adapter-sutter-lambda` | Sutter Lambda filter wheel | Binary |
+| `mm-adapter-sutter-stage` | Sutter MP-285 XY + Z stage | `:A` ASCII |
+| `mm-adapter-thorlabs-fw` | Thorlabs filter wheel | ASCII `\r` |
+| `mm-adapter-zaber` | Zaber linear + XY stage | ASCII `\n` (Zaber ASCII v2) |
+| `mm-adapter-zeiss-can` | Zeiss CAN-bus: FocusStage, MCU28 XY, turrets, shutter | Hex-encoded `\r`, 9600 baud |
+| `mm-adapter-basler` | Basler cameras (feature-gated) | Pylon SDK; `--features basler` |
+| `mm-adapter-andor-sdk3` | Andor sCMOS cameras (feature-gated) | SDK3 atcore; `--features andor-sdk3` |
+| `mm-adapter-iidc` | FireWire IIDC cameras (feature-gated) | libdc1394; `--features iidc` |
 
 ## Building
 
