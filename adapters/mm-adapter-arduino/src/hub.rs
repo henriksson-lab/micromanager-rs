@@ -7,11 +7,11 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Hub};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Hub};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub const FIRMWARE_MIN: u8 = 1;
 pub const FIRMWARE_MAX: u8 = 5;
@@ -206,7 +206,7 @@ impl Hub for ArduinoHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_hub() -> ArduinoHub {
         let transport = MockTransport::new()

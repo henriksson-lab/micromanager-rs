@@ -12,11 +12,11 @@
 /// Nikon Ti-TIRF shutter (TiTIRFShutter) adds multi-channel bitmask mode:
 ///   Mode 0 (single): `cTSO{channel}\r`
 ///   Mode 1 (multi):  `cTSD{bitmask}\r`  where bitmask = OR of (1<<(ch-1))
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 fn check_tirf_response(resp: &str, cmd: &str) -> MmResult<()> {
     let expected_ok = format!("o{}", cmd);
@@ -231,7 +231,7 @@ impl Shutter for NikonTiTiRFShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn tirf_initialize_and_open() {

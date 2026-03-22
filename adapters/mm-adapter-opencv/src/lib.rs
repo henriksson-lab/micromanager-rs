@@ -23,7 +23,7 @@
 ///
 /// ```rust,no_run
 /// use mm_adapter_opencv::OpenCvCamera;
-/// use mm_device::traits::{Camera, Device};
+/// use micromanager::traits::{Camera, Device};
 ///
 /// let mut cam = OpenCvCamera::new(0); // device index 0
 /// cam.initialize().unwrap();

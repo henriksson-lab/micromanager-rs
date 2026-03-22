@@ -6,11 +6,11 @@
 ///   `W Z\r`        → query position; response `:A Z=<val>\r`
 ///   `R Z=<val>\r`  → move relative; same response as M
 ///   `/\r`          → status query; response `:A\r` when idle, `:B\r` when busy
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 const UNITS_PER_UM: f64 = 10.0; // ASI uses tenths of microns
 
@@ -163,7 +163,7 @@ impl Stage for AsiZStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_reads_position() {

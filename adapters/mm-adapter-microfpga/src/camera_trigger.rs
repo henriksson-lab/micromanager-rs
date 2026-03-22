@@ -1,9 +1,9 @@
 //! MicroFPGA Camera Trigger generic device.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 use crate::{OFFSET_CAM_SYNC_MODE, OFFSET_CAM_TRIGGER_START, OFFSET_CAM_PULSE,
             OFFSET_CAM_READOUT, OFFSET_CAM_EXPOSURE, OFFSET_LASER_DELAY};
 

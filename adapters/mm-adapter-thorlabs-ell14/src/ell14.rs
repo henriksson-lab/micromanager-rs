@@ -24,11 +24,11 @@
 /// This adapter implements `Stage` (treating the rotation angle in degrees as
 /// the stage position).  For mm-device's `Stage`, position is in µm — we store
 /// degrees and satisfy the trait; limits are [0, 360).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 pub struct ThorlabsEll14 {
     props: PropertyMap,
@@ -283,7 +283,7 @@ impl Stage for ThorlabsEll14 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     /// Build a device info response for channel '0', pulsesPerRev=143360 (0x23000).
     /// ELL14 reply format (33 chars total):

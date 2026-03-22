@@ -4,11 +4,11 @@
 ///   Set TTL high: `"TTL<ch> 1\n"` → `"TTL<ch> OK\n"`
 ///   Set TTL low:  `"TTL<ch> 0\n"` → `"TTL<ch> OK\n"`
 ///   Get TTL:      `"TTL<ch>?\n"`   → `"TTL<ch> <0|1>\n"`
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct TriggerScopeTTL {
     props: PropertyMap,
@@ -158,7 +158,7 @@ impl StateDevice for TriggerScopeTTL {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn ttl_initialize_low() {

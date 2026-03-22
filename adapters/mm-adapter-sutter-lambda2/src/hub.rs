@@ -4,11 +4,11 @@
 ///   Go online:          send `[0xEE]`, await echo + CR
 ///   Get controller ID:  send `[0xFD]`, await text reply + CR
 ///   Get status:         send `[0xCC]`, await status bytes + CR
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Hub};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Hub};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct Lambda2Hub {
     props: PropertyMap,
@@ -138,7 +138,7 @@ impl Hub for Lambda2Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn hub_initialize() {

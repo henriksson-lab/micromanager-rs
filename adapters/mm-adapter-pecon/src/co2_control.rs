@@ -8,11 +8,11 @@
 ///   With value encoded: `N052` = set nominal to 5.2%
 ///
 /// CO2 BCD: same encoding as temperature but represents percentage (0.0–99.9%).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::Device;
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::Device;
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 use crate::temp_control::PeconTempControl;
 
@@ -109,7 +109,7 @@ impl Device for PeconCO2Control {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize() {

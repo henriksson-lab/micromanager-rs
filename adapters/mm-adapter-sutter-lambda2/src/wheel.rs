@@ -5,11 +5,11 @@
 /// Wheel C: send `[0xFC, (speed << 4) | position]`, recv `[0xFC, echo, 0x0D]`
 ///
 /// Speed 0–7, position 0–9.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WheelId { A, B, C }
@@ -202,7 +202,7 @@ impl StateDevice for Lambda2Wheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn wheel_a_initialize_and_move() {

@@ -6,11 +6,11 @@
 ///   Get shutter state: device=rLFA, command=13                  → `"<DD>013<0|1>\r"`
 ///
 /// The rLFA device id defaults to 8 (4-position turret).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct LeicaDMRShutter {
     props: PropertyMap,
@@ -124,7 +124,7 @@ impl Shutter for LeicaDMRShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn shutter_open_close() {

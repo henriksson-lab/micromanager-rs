@@ -8,11 +8,11 @@
 ///   `DRT\r\n`              → echoes `DRT`  (drive reset)
 ///
 /// The robot does not reply until the operation is complete (blocking).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::Device;
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::Device;
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WptrCommand {
@@ -180,7 +180,7 @@ impl Device for AsiWPTR {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_no_transport() {

@@ -1,9 +1,9 @@
 //! ESP32 XY Stage — dual-axis stage using `mrx <steps>` and `mry <steps>`.
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub type StageWriter = std::sync::Arc<dyn Fn(&str) -> MmResult<()> + Send + Sync>;
 

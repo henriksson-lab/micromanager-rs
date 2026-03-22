@@ -1,7 +1,7 @@
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Camera, Device};
-use mm_device::types::{DeviceType, ImageRoi, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Camera, Device};
+use micromanager::types::{DeviceType, ImageRoi, PropertyValue};
 use pylon_cxx::{GrabOptions, GrabResult, HasProperties, InstantCamera, Pylon, TlFactory};
 
 // ─── Safety note ────────────────────────────────────────────────────────────

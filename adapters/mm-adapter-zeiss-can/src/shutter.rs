@@ -4,10 +4,10 @@
 ///   `HPRs0\r`  → `PH\r`  (close shutter)
 ///   `HPRs1\r`  → `PH\r`  (open shutter)
 ///   `HPRp\r`   → `PH{0|1}\r`  (query shutter state)
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::types::{DeviceType, PropertyValue};
 
 use crate::hub::ZeissHub;
 
@@ -85,7 +85,7 @@ impl Shutter for ZeissShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn shutter_with(t: MockTransport) -> ZeissShutter {
         let hub = ZeissHub::new().with_transport(Box::new(t));

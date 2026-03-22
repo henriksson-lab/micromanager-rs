@@ -9,11 +9,11 @@
 ///     `Cube \r`    → `:A <N>\r`  query current position (1-indexed)
 ///     `Cube N\r`   → `:A\r`      set position N (1-indexed)
 ///   Error response: `:N<code>\r`
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// Helper: parse `:A` prefix, returning remainder; error on `:N`.
 fn check_a(resp: &str) -> MmResult<&str> {
@@ -216,7 +216,7 @@ impl StateDevice for ConixHexFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     // ── QuadFluor tests ─────────────────────────────────────────────────────
 

@@ -7,10 +7,10 @@
 ///   `NPYT{hex6}\r`   → `PN\r`         (set Y position)
 ///
 /// Step size: 0.2 µm / step for both axes.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::types::{DeviceType, PropertyValue};
 
 use crate::hub::{ZeissHub, decode_pos, encode_pos};
 
@@ -119,7 +119,7 @@ impl XYStage for ZeissMcu28XYStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn stage_with(t: MockTransport) -> ZeissMcu28XYStage {
         let hub = ZeissHub::new().with_transport(Box::new(t));

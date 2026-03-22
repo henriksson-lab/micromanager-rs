@@ -1,7 +1,7 @@
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// Demo XY stage.
 pub struct DemoXYStage {

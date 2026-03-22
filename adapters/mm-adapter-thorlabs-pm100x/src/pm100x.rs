@@ -12,11 +12,11 @@
 ///
 /// Implements `Generic` (no extra trait methods beyond Device), exposing readings
 /// via properties so mm-core can poll them.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct ThorlabsPM100x {
     props: PropertyMap,
@@ -217,7 +217,7 @@ impl Generic for ThorlabsPM100x {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn initialized_device() -> ThorlabsPM100x {
         let t = MockTransport::new()

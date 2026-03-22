@@ -6,11 +6,11 @@
 /// we fall back to `rA` and set `use_new_cmd = true`.
 /// Query:  `rE\r` or `rA\r` → echoes `rEN` or `rAN`
 /// Set:    `EN\r` or `AN\r` → echoes same
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct XLightExcitation {
     props: PropertyMap,
@@ -160,7 +160,7 @@ impl StateDevice for XLightExcitation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_old_firmware() {

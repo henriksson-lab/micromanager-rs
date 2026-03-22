@@ -14,11 +14,11 @@
 ///
 /// The C++ adapter (Piezosystem_30DV50.cpp) uses `rd`/`wr` commands,
 /// and converts between voltage and position using linear interpolation.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 pub struct Psj30DV50Stage {
     props: PropertyMap,
@@ -190,7 +190,7 @@ impl Stage for Psj30DV50Stage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

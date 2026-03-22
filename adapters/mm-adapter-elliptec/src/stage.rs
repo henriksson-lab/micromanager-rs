@@ -12,11 +12,11 @@
 /// The `info` response contains a 4-byte (8-hex) travel range and 4-byte pulses-per-mm.
 ///
 /// Error: response last char 'N' or status code indicates fault.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 pub struct ElliptecStage {
     props: PropertyMap,
@@ -161,7 +161,7 @@ impl Stage for ElliptecStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
         // "0in" → "0IN" + id(4) + travel(8) + pulses(8)

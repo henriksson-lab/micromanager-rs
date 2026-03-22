@@ -1,6 +1,6 @@
 use mm_adapter_demo::DemoAdapter;
-use mm_core::CMMCore;
-use mm_device::types::PropertyValue;
+use micromanager::CMMCore;
+use micromanager::PropertyValue;
 
 fn make_core() -> CMMCore {
     let mut core = CMMCore::new();

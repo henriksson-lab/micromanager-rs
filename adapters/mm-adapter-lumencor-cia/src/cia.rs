@@ -19,11 +19,11 @@
 /// stores the flag.
 ///
 /// Colour levels correspond to channels [Violet, Blue, Cyan, Teal, Green, Yellow, Red].
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// Which Lumencor light engine is connected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,7 +218,7 @@ impl Shutter for CiaShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_initialized() -> CiaShutter {
         // init: send "#S\n" → "#S", then "#@\n" → "#@"

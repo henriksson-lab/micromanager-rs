@@ -1,10 +1,10 @@
 //! ESP32Pwm — SignalIO device using ASCII command `O,<channel>,<value>`.
 //! Value range 0.0–100.0 (percent duty cycle, or arbitrary float for laser power).
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, SignalIO};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, SignalIO};
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub type PwmWriter = std::sync::Arc<dyn Fn(u8, f64) -> MmResult<()> + Send + Sync>;
 

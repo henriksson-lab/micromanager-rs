@@ -5,11 +5,11 @@
 ///
 /// Group 0 = TTL channels 1-8, Group 1 = channels 9-16.
 /// The byte value sets all 8 lines simultaneously (0-255).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct TriggerScopeMMTTL {
     props: PropertyMap,
@@ -157,7 +157,7 @@ impl StateDevice for TriggerScopeMMTTL {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn ttl_initialize() {

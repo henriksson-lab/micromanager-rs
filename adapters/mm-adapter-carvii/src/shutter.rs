@@ -4,11 +4,11 @@
 ///   `S0\r`   → echo "S0\r"   close shutter
 ///   `S1\r`   → echo "S1\r"   open shutter
 ///   `rS\r`   → "rS<0|1>\r"  query state (response[2] = '0' or '1')
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct CarviiShutter {
     props: PropertyMap,
@@ -86,7 +86,7 @@ impl Shutter for CarviiShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_closed() {

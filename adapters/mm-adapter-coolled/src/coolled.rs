@@ -11,11 +11,11 @@
 ///   `CAS\r`/`CAX\r`  → select/deselect channel A
 ///   `CBS\r`/`CBX\r`  → select/deselect channel B
 ///   `CCS\r`/`CCX\r`  → select/deselect channel C
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// One channel: A, B, or C.
 #[derive(Debug, Clone, Copy)]
@@ -206,7 +206,7 @@ impl Shutter for CoolLedPE300 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

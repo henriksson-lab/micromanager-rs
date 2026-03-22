@@ -19,11 +19,11 @@
 /// Because the original adapter is USB-HID and not RS-232, the Transport
 /// abstraction is used for testability only.  In production a real USB
 /// HID transport would be injected.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const NUM_CHANNELS: usize = 4;
 
@@ -184,7 +184,7 @@ impl Shutter for ScopeLedShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_initialized() -> ScopeLedShutter {
         // init sends [0x01, 0x00], expects ack [0x01]

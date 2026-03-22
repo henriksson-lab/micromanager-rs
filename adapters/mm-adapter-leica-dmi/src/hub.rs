@@ -11,11 +11,11 @@
 /// IL Shutter:            "79"
 ///
 /// Stand info command: `"7000\r"` → `"7000 <version> <available_devices>\r"`
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Hub};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Hub};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct LeicaDMIHub {
     props: PropertyMap,
@@ -126,7 +126,7 @@ impl Hub for LeicaDMIHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn hub_initialize() {

@@ -14,11 +14,11 @@
 ///
 /// For testability this adapter models the transport as ASCII lines (MockTransport compatible).
 /// Each send produces a request tag "M8XY:<cmd>:<args>"; responses are parsed as CSV integers.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// 100 steps per µm (0.01 µm per step)
 const STEPS_PER_UM: f64 = 100.0;
@@ -154,7 +154,7 @@ impl XYStage for Motion8XYStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

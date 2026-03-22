@@ -1,9 +1,9 @@
 //! UniversalGeneric — a passthrough generic device for the Universal Serial Hub.
-use mm_device::error::{MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct UniversalGeneric {
     name: String,

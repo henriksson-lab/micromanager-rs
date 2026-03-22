@@ -18,8 +18,8 @@ pub mod prizmatix;
 
 pub use prizmatix::PrizmatixController;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_PRIZMATIX: &str = "Prizmatix Ctrl";
 

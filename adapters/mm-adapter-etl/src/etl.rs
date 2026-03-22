@@ -18,11 +18,11 @@
 ///   Send "Start" via serial (ASCII, no CRC).
 ///
 /// Current range: -293 mA to +293 mA.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// IBM CRC-16 (CRC-16/ARC): poly 0x8005, init 0, reflected input and output.
 fn crc16_ibm(data: &[u8]) -> u16 {
@@ -210,7 +210,7 @@ impl Generic for EtlDevice {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_initialized() -> EtlDevice {
         // init: send "Start" (string), then set_current(0.0) sends 6 bytes

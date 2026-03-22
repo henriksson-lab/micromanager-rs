@@ -7,11 +7,11 @@
 ///   `ERR?\n`           → query last error code; 0 = success
 ///
 /// Step size: 0.01 µm default. Axis name configurable (default "A").
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 pub struct PiGcsZStage {
     props: PropertyMap,
@@ -149,7 +149,7 @@ impl Stage for PiGcsZStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_reads_position() {

@@ -1,8 +1,8 @@
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const RESPONSE_TERMINATOR: &str = "-==-";
 const MIN_INTERFACE_VERSION: f64 = 2.30;
@@ -416,7 +416,7 @@ impl Shutter for IlluminateLedArray {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     const PPROPS_JSON: &str = r#"{"led_count":64,"trigger_input_count":2,"trigger_output_count":2,"part_number":1,"serial_number":42,"bit_depth":8,"color_channel_count":1,"interface_version":3.0,"mac_address":"00:11:22:33","device_name":"TestArray"}"#;
 

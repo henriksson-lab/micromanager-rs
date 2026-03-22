@@ -8,11 +8,11 @@
 ///
 /// For ELL6/ELL9, there are only 2 positions (forward/backward).
 /// Position 0 = home/backward, position 1 = forward.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct ElliptecSlider {
     props: PropertyMap,
@@ -125,7 +125,7 @@ impl StateDevice for ElliptecSlider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_at_zero() {

@@ -3,11 +3,11 @@
 /// ASCII serial protocol, `\n` terminated.
 ///   Identify: send `"*\n"`, recv firmware banner like `"ARC TRIGGERSCOPE 16 v1.2\n"`
 ///   Status:   send `"STAT?\n"`, recv status string
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Hub};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Hub};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct TriggerScopeHub {
     props: PropertyMap,
@@ -116,7 +116,7 @@ impl Hub for TriggerScopeHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_ts16() {

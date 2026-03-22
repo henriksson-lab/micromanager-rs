@@ -7,7 +7,7 @@ edition = "2021"
 spot = []
 
 [dependencies]
-mm-device = { path = "../../mm-device" }
+micromanager = { path = "../../micromanager" }
 
 [build-dependencies]
 cc = "1"

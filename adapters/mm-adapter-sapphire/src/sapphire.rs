@@ -5,11 +5,11 @@
 ///   Set:   `TOKEN=value\r` → echoed response
 ///
 /// Power range is fixed (0.5–50 mW) and wavelength is fixed (561 nm).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const MIN_POWER_MW: f64 = 0.5;
 const MAX_POWER_MW: f64 = 50.0;
@@ -195,7 +195,7 @@ impl Shutter for Sapphire {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

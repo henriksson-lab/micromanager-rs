@@ -8,11 +8,11 @@
 ///   `RLP\r\n`         → "RLP X <steps>,Y <steps>\r\n"
 ///
 /// Step size: 1 µm/step (assumed; MD-5000 default resolution).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct ChuoSeikiXYStage {
     props: PropertyMap,
@@ -145,7 +145,7 @@ impl XYStage for ChuoSeikiXYStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

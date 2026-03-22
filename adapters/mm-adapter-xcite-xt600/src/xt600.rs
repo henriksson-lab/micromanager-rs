@@ -17,11 +17,11 @@
 ///
 /// The controller device (XT600Ctrl) uses 2-byte command codes like
 /// sn? (serial number), us? (status), pm? (pulse mode), etc.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// Which XT600 hardware variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,7 +204,7 @@ impl Shutter for Xt600Shutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_xt600() -> Xt600Shutter {
         let t = MockTransport::new().any("SN99999").any("ok");

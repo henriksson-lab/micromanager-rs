@@ -7,11 +7,11 @@
 ///   `AM <0-1023>\r`  → set amplitude/intensity (0–1023)
 ///
 /// Device provides no acknowledgement; state is tracked internally.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct NeosShutter {
     props: PropertyMap,
@@ -117,7 +117,7 @@ impl Shutter for NeosShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize() {

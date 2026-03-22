@@ -12,11 +12,11 @@
 ///   `?hh\n`      → usage hours
 ///   `?f\n`       → fault code (0 = none)
 ///   `?int\n`     → interlock (0=open/unsafe, 1=closed/safe)
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct OxxiusLaser {
     props: PropertyMap,
@@ -189,7 +189,7 @@ impl Shutter for OxxiusLaser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

@@ -6,11 +6,11 @@
 /// Shutter B close: send `[0xBC]`, response echo + CR
 ///
 /// (Same byte codes as Lambda 10-2 but the hub handles communication.)
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutterId { A, B }
@@ -131,7 +131,7 @@ impl Shutter for Lambda2Shutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn shutter_a_open_close() {

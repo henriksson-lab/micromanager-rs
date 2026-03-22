@@ -1,10 +1,10 @@
 //! UC2 XY Stage — absolute positioning via JSON motor commands.
 //! stepperid 1 = X, stepperid 2 = Y.
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub type JsonWriter = std::sync::Arc<dyn Fn(&str) -> MmResult<String> + Send + Sync>;
 

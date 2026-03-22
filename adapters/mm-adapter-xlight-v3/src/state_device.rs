@@ -7,11 +7,11 @@
 ///
 /// For filter wheels (one_based=true): MM 0-based ↔ wire 1-based.
 /// For mechanical / motor (one_based=false): 0-based on both sides.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct XLightV3StateDevice {
     name: &'static str,
@@ -412,7 +412,7 @@ impl StateDevice for XLightV3SpinningMotor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn emission_wheel_initialize() {

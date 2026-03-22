@@ -7,11 +7,11 @@
 ///
 /// Query:  `rD\r` → echoes `rDN` (N=0..2)
 /// Set:    `DN\r` → echoes `DN`
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const LABELS: [&str; 3] = ["Disk Out", "Disk Pos 70um", "Disk Pos 40um"];
 
@@ -140,7 +140,7 @@ impl StateDevice for XLightDiskSlider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_reads_position() {

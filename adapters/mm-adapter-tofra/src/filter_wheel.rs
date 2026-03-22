@@ -14,11 +14,11 @@
 ///
 /// Total microsteps per revolution: 3200 (j16 = 1/16 step × 200 full steps)
 /// Position steps: floor(3200 / NumPos × i + 0.5) for i in 0..NumPos
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const TURN_MSTEPS: i64 = 3200;
 const DEFAULT_NUM_POS: u64 = 10;
@@ -193,7 +193,7 @@ impl StateDevice for TofraFilterWheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn init_cmd() -> String {
         format!(

@@ -6,11 +6,11 @@
 ///   `7,<id>\r`      → query current position (returns 1-indexed integer)
 ///
 /// id: wheel index (1–3); positions: 1–N.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const DEFAULT_NUM_POSITIONS: u64 = 6;
 
@@ -121,7 +121,7 @@ impl StateDevice for PriorWheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize() {

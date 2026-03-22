@@ -9,11 +9,11 @@
 ///
 /// Channels correspond to wavelengths (1-indexed):
 ///   1=395nm, 2=445nm, 3=470nm, 4=515nm, 5=575nm, 6=630nm, 7=745nm
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const WAVELENGTHS: [u32; 7] = [395, 445, 470, 515, 575, 630, 745];
 const NUM_CHANNELS: usize = 7;
@@ -191,7 +191,7 @@ impl Shutter for NijiController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
         let mut t = MockTransport::new()

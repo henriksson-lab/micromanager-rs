@@ -9,11 +9,11 @@
 ///                     response = [0xFC, echo_byte, 0x0D]
 ///
 /// Speed 0–7 (encoded in bits 4–6), position 0–9 (encoded in bits 0–3).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// Which wheel on the Lambda controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,7 +211,7 @@ impl StateDevice for LambdaWheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_wheel_a() -> LambdaWheel {
         // Init: move to pos 0 (speed 3 → cmd = 0x30 | 0 = 0x30), response = [0x30, 0x0D]

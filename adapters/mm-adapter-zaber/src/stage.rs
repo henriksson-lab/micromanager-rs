@@ -19,11 +19,11 @@
 ///
 /// Step size: (linear_motion_mm / motor_steps / resolution) * 1000 µm/step
 /// Defaults: linear_motion=2.0 mm, motor_steps=200, resolution queried from device.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 const DEFAULT_MOTOR_STEPS: f64 = 200.0;
 const DEFAULT_LINEAR_MOTION_MM: f64 = 2.0;
@@ -169,7 +169,7 @@ impl Stage for ZaberStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
         MockTransport::new()

@@ -8,11 +8,11 @@
 ///   `V?\r`           → "V <rev> <min_wl> <max_wl> <serial>"
 ///   `W?\r`           → "W <nm.nnn>"   (current wavelength)
 ///   `W <nm.nnn>\r`   → set wavelength
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct VarispecLCTF {
     props: PropertyMap,
@@ -163,7 +163,7 @@ impl StateDevice for VarispecLCTF {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

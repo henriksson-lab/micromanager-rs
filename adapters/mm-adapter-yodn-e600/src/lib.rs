@@ -23,8 +23,8 @@ pub mod e600;
 
 pub use e600::YodnE600;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_E600: &str = "YodnE600";
 

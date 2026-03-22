@@ -1,8 +1,8 @@
 use crate::ffi::*;
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Camera, Device};
-use mm_device::types::{DeviceType, ImageRoi, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Camera, Device};
+use micromanager::types::{DeviceType, ImageRoi, PropertyValue};
 use std::ptr;
 
 // Safety: dc1394 camera handles are not shared across threads in this adapter.

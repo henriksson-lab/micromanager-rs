@@ -13,11 +13,11 @@
 /// `AaMultiAotf` controls multiple channels via an 8-bit bitmask.
 ///
 /// Both implement `Shutter`.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 // ─── Single-channel AOTF ─────────────────────────────────────────────────────
 
@@ -426,7 +426,7 @@ impl Shutter for AaMultiAotf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     // ─── AaAotf tests ─────────────────────────────────────────────────────────
 

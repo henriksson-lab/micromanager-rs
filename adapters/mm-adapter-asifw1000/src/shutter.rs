@@ -4,11 +4,11 @@
 ///   `SO <n>\n\r`   → echo + "1"   open shutter n
 ///   `SC <n>\n\r`   → echo + "0"   close shutter n
 ///   `SQ <n>\n\r`   → state char   query shutter (1=open, 0=closed)
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct AsiFw1000Shutter {
     props: PropertyMap,
@@ -107,7 +107,7 @@ impl Shutter for AsiFw1000Shutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_closed() {

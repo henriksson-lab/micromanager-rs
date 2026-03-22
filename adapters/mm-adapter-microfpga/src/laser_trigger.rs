@@ -1,9 +1,9 @@
 //! MicroFPGA Laser Trigger generic device.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 use crate::{OFFSET_LASER_MODE, OFFSET_LASER_DURATION, OFFSET_LASER_SEQUENCE, MAX_LASERS};
 
 pub struct LaserTrigger {
@@ -82,7 +82,7 @@ impl Generic for LaserTrigger {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_ok() {

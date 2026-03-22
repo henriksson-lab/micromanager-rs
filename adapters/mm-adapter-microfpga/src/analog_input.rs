@@ -1,9 +1,9 @@
 //! MicroFPGA Analog Input generic device.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 use crate::{OFFSET_ANALOG_INPUT, MAX_LASERS};
 
 pub struct AnalogInput {
@@ -82,7 +82,7 @@ impl Generic for AnalogInput {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn le4(v: u32) -> Vec<u8> { v.to_le_bytes().to_vec() }
 

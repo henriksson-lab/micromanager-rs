@@ -5,11 +5,11 @@
 ///   Get position:  device=rLFA, command=10                 → `"<DD>010<pos>\r"`
 ///
 /// Objective nosepiece uses device_id=20, commands 2 (set) and 10 (get).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct LeicaDMRTurret {
     props: PropertyMap,
@@ -174,7 +174,7 @@ impl StateDevice for LeicaDMRTurret {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn rl_turret_initialize_and_move() {

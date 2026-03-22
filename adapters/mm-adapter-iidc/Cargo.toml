@@ -7,4 +7,4 @@ edition = "2021"
 iidc = []
 
 [dependencies]
-mm-device = { path = "../../mm-device" }
+micromanager = { path = "../../micromanager" }

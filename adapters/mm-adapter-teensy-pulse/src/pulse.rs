@@ -5,11 +5,11 @@
 //! Enquire:       2 bytes [0xFF, cmd]
 //! Response:      5 bytes [cmd, v0, v1, v2, v3]  (v0-v3 = uint32_le value)
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const CMD_VERSION: u8 = 0x00;
 const CMD_START:   u8 = 0x01;
@@ -246,7 +246,7 @@ impl Generic for TeensyPulseGenerator {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     /// Build a 5-byte response packet.
     fn resp(cmd: u8, val: u32) -> Vec<u8> {

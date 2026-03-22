@@ -5,11 +5,11 @@
 ///   Set:    `TOKEN value\r` → plain acknowledgement response
 ///
 /// Power is reported by the device in Watts; this adapter stores/exposes mW.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct CoherentObis {
     props: PropertyMap,
@@ -213,7 +213,7 @@ impl Shutter for CoherentObis {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

@@ -9,11 +9,11 @@
 ///
 /// Implemented as a Shutter over channel A only; full multi-channel access via
 /// properties "ChannelA_Intensity" … "ChannelD_Intensity".
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const CHANNELS: [char; 4] = ['A', 'B', 'C', 'D'];
 
@@ -135,7 +135,7 @@ impl Shutter for PrecisExcite {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
         MockTransport::new()

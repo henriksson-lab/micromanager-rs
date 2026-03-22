@@ -7,11 +7,11 @@
 ///   `cND{val}\r`   → `oND\r\n`            (set ND filter; val in {1,2,4,8,16,32})
 ///
 /// Success prefix `o{CMD}`, error prefix `n{CMD}{code}`.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// Valid ND filter values (optical density / attenuation positions).
 const ND_VALUES: &[u8] = &[1, 2, 4, 8, 16, 32];
@@ -134,7 +134,7 @@ impl Shutter for NikonIntensiLight {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_and_open_close() {

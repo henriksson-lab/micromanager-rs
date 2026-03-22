@@ -15,11 +15,11 @@
 ///
 /// Step size: FullTurnUm / (256 × MotorSteps)
 /// Defaults: FullTurnUm=100 µm, MotorSteps=400 → 0.0009765625 µm/step
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 const DEFAULT_FULL_TURN_UM: f64 = 100.0;
 const DEFAULT_MOTOR_STEPS: f64 = 400.0;
@@ -169,7 +169,7 @@ impl Stage for TofraZStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn init_cmd() -> String {
         // step_size = 100/(256*400) = 0.0009765625

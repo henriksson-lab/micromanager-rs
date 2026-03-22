@@ -14,11 +14,11 @@
 ///
 /// Shutter set_open sends a combined command:
 ///   `SHUTTER:<nm1>=OPEN,<nm2>=OPEN,...\n`   (for all wavelengths)
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct LdiController {
     props: PropertyMap,
@@ -190,7 +190,7 @@ impl Shutter for LdiController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
         MockTransport::new()

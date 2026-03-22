@@ -13,11 +13,11 @@
 ///   `!cal x\r`        → calibrate (home) X axis
 ///   `!cal y\r`        → calibrate (home) Y axis
 ///   `a\r`             → abort / stop all motion
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct LStepXYStage {
     props: PropertyMap,
@@ -198,7 +198,7 @@ impl XYStage for LStepXYStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         // Only include commands that are send_recv (cmd()), not send_only().

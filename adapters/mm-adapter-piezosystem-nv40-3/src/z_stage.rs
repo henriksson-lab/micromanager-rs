@@ -13,11 +13,11 @@
 ///   `setk,<ch>,<0|1>\r`   → remote control on/off for channel
 ///
 /// Channel numbering: internal 0-2, external 1-3.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 pub struct PsjNV40_3Stage {
     props: PropertyMap,
@@ -193,7 +193,7 @@ impl Stage for PsjNV40_3Stage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport_ch0() -> MockTransport {
         // "setk,0,1" is send_only — no script entry needed.

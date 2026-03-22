@@ -1,4 +1,4 @@
-# claude-micromanager
+# micromanager-rs
 
 A pure-Rust port of [MicroManager](https://micro-manager.org/) (`mmCoreAndDevices`). No C FFI, no Java bindings — Rust API only.
 
@@ -24,6 +24,31 @@ Defines the core abstractions:
 - **`PropertyMap`** — typed property storage with allowed-value constraints
 - **`Transport`** — serial communication abstraction (`send_recv`, `send_bytes`, `receive_bytes`) + `MockTransport` for unit tests
 - **Error types**, **`PropertyValue`**, **`DeviceType`**, **`FocusDirection`**
+
+## Demo
+
+`mm-demo` is a live-preview app that uses `CMMCore` with the simulated `DemoCamera`. It opens a window and continuously snaps frames at ~30 fps.
+
+```sh
+cargo run -p mm-demo
+```
+
+The demo shows the minimal setup needed to drive a camera through the Rust API:
+
+```rust
+let mut core = CMMCore::new();
+core.register_adapter(Box::new(DemoAdapter));
+core.load_device("Camera", "demo", "DCamera").unwrap();
+core.initialize_device("Camera").unwrap();
+core.set_camera_device("Camera").unwrap();
+core.set_exposure(25.0).unwrap();
+
+core.snap_image().unwrap();
+let frame = core.get_image().unwrap();
+// frame.data is &[u8] (GRAY8), frame.width / frame.height are pixel dimensions
+```
+
+The window renders GRAY8 pixels as RGB and closes on Esc.
 
 ### `mm-core`
 

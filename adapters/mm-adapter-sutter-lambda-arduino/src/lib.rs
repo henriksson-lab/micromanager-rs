@@ -12,11 +12,11 @@
 ///   Start sequencing:   "R\r"  → "K"
 ///   Stop sequencing:    "E\r"  → "K"
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const NUM_POSITIONS: u64 = 10;
 
@@ -219,7 +219,7 @@ impl StateDevice for LambdaArduinoWheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_initialized_wheel() -> LambdaArduinoWheel {
         let t = MockTransport::new()

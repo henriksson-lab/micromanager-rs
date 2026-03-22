@@ -7,11 +7,11 @@
 ///   Open shutter:   `"<dev>32 1\r"` → `"<dev>32 1\r"`
 ///   Close shutter:  `"<dev>32 0\r"` → `"<dev>32 0\r"`
 ///   Get state:      `"<dev>33\r"`   → `"<dev>33 <0|1>\r"`
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutterType {
@@ -153,7 +153,7 @@ impl Shutter for LeicaDMIShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn tl_shutter_open_close() {

@@ -8,11 +8,11 @@
 ///   Set retardance LC-B:  `"L2.<value>\r"` → echo
 ///   Get retardance LC-A:  `"L1?\r"` → `"L1 <value>\r"`
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const MAX_LCS: usize = 4;
 
@@ -189,7 +189,7 @@ impl Generic for VariLC {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_initialized_varilc() -> VariLC {
         let t = MockTransport::new()

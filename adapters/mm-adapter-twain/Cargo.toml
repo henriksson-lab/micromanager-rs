@@ -7,7 +7,7 @@ edition = "2021"
 twain = []
 
 [dependencies]
-mm-device = { path = "../../mm-device" }
+micromanager = { path = "../../micromanager" }
 
 [build-dependencies]
 cc = "1"

@@ -1,10 +1,10 @@
 //! OpenFlexure XY Stage — relative moves via `mrx <steps>` and `mry <steps>`.
 //! Position is maintained as a cached step count; poll with "p" for sync.
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub type Commander = std::sync::Arc<dyn Fn(&str) -> MmResult<String> + Send + Sync>;
 

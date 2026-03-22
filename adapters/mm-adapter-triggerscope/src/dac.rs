@@ -5,11 +5,11 @@
 ///   Get DAC voltage: `"DAC<ch>?\n"`         → `"DAC<ch> <value>\n"`
 ///
 /// Voltage range: 0.0 – 5.0 V (12-bit or 16-bit DAC).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, SignalIO};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, SignalIO};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct TriggerScopeDAC {
     props: PropertyMap,
@@ -155,7 +155,7 @@ impl SignalIO for TriggerScopeDAC {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn dac_initialize_zeroes_output() {

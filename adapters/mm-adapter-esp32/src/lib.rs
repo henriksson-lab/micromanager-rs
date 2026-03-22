@@ -31,8 +31,8 @@ pub use pwm::Esp32Pwm;
 pub use zstage::Esp32ZStage;
 pub use xystage::Esp32XYStage;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_HUB: &str = "ESP32-Hub";
 pub const DEVICE_NAME_SWITCH: &str = "ESP32-Switch";

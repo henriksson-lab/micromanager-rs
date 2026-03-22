@@ -20,8 +20,8 @@ pub mod laserboxx;
 
 pub use laserboxx::LaserBoxx;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_LASERBOXX: &str = "Oxxius LaserBoxx LBX or LMX or LCX";
 

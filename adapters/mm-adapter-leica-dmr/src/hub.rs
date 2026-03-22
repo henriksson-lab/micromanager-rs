@@ -17,11 +17,11 @@
 ///   Get firmware version:  `"00025\r"` → `"00025<version>\r"`
 ///   Get microscope type:   `"00026\r"` → `"00026<type>\r"`
 ///   Check presence:        `"<DD>001\r"` → `"<DD>001<1_or_0>\r"`
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Hub};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Hub};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct LeicaDMRHub {
     props: PropertyMap,
@@ -151,7 +151,7 @@ impl Hub for LeicaDMRHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn hub_initialize() {

@@ -10,11 +10,11 @@
 ///   0x1F (31) — Query firmware version → responds version number text + \r\n
 ///   0x20 (32) — Query num rows  → single byte response
 ///   0x21 (33) — Query num cols  → single byte response
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct NeoPixelShutter {
     props: PropertyMap,
@@ -159,7 +159,7 @@ impl Shutter for NeoPixelShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_initialized_shutter() -> NeoPixelShutter {
         // init sequence: send 0x1E → receive_line "MM-NeoPixel"

@@ -1,10 +1,10 @@
 //! UC2 Z Stage — absolute positioning via JSON motor command.
 //! stepperid 3 = Z.
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 use crate::xystage::JsonWriter;
 

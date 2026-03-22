@@ -14,11 +14,11 @@
 /// This adapter models pgFocus as a Stage that controls the focus offset.
 /// Range: 0.0 to 127.0 arbitrary units (interpreted as µm here).
 /// Step size: 1.0 µm (1 offset unit per step).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 const MAX_OFFSET: f64 = 127.0;
 
@@ -137,7 +137,7 @@ impl Stage for PgFocusStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

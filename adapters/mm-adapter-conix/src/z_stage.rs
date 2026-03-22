@@ -5,11 +5,11 @@
 ///   `M Z<z>\r`    → `:A`      (move to absolute position in µm)
 ///   `H\r`         → `:A`      (set origin)
 ///   `\\r`         → `:A`      (halt; backslash + CR)
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 fn check_a(resp: &str) -> MmResult<&str> {
     let s = resp.trim();
@@ -106,7 +106,7 @@ impl Stage for ConixZStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize() {

@@ -16,11 +16,11 @@
 /// Temperature BCD decoding:
 ///   If byte[0] == b'-': temp = -(byte[1]-b'0' + 0.1*(byte[2]-b'0'))
 ///   Else:               temp = (byte[0]-b'0')*10 + (byte[1]-b'0') + 0.1*(byte[2]-b'0')
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::Device;
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::Device;
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct PeconTempControl {
     props: PropertyMap,
@@ -205,7 +205,7 @@ impl Device for PeconTempControl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         // A000 → 3 bytes "A00" + address byte (address 0 → '0')

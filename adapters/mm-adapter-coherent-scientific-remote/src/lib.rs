@@ -24,8 +24,8 @@ pub mod csr;
 
 pub use csr::CoherentScientificRemote;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_CSR: &str = "Coherent-Scientific Remote";
 

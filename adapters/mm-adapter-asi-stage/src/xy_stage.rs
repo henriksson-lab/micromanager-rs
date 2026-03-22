@@ -6,11 +6,11 @@
 ///   `W X Y\r`          → query position; response `:A X=<x> Y=<y>\r`
 ///   `R X=<dx> Y=<dy>\r`→ relative move
 ///   `Z\r`              → home (zero) all axes
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const UNITS_PER_UM: f64 = 10.0;
 
@@ -176,7 +176,7 @@ impl XYStage for AsiXYStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_reads_position() {

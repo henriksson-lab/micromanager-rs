@@ -18,11 +18,11 @@
 ///   `STP\r`            → echo line   (stop pump)
 ///
 /// Default syringe: 4.699 mm diameter (1 mL BD syringe).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, VolumetricPump};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, VolumetricPump};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct AladdinPump {
     props: PropertyMap,
@@ -192,7 +192,7 @@ impl VolumetricPump for AladdinPump {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
         // DIA, DIR INF, PHN1, FUN RAT, PHN2, FUN STP, PHN1

@@ -17,8 +17,8 @@
 //! Devices exported:
 //! - `ArduinoCounter` — Generic device managing the counter firmware
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub mod counter;
 pub use counter::ArduinoCounter;

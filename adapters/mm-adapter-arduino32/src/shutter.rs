@@ -3,10 +3,10 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::types::{DeviceType, PropertyValue};
 
 use crate::hub::HubState;
 

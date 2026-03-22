@@ -5,11 +5,11 @@
 ///   `WHERE Z\r`    → `:A <z>`
 ///   `HOME Z\r`     → `:A`
 ///   `HALT\r`       → `:A`
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 const STEPS_PER_UM: f64 = 10.0;
 
@@ -108,7 +108,7 @@ impl Stage for LudlZStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize() {

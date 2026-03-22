@@ -15,11 +15,11 @@
 ///   `CURRENT=45.0\r` → set current in %
 ///   `TIMERS?\r`      → 3 lines: "PSU Time = X Hours" / "Laser Enabled Time = X Hours" /
 ///                               "Laser Operation Time = X Hours" + empty line
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct LaserQuantumLaser {
     props: PropertyMap,
@@ -221,7 +221,7 @@ impl Shutter for LaserQuantumLaser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

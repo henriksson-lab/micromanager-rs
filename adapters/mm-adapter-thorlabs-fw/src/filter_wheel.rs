@@ -6,11 +6,11 @@
 ///   `pos=<N>\r`     → move to position N (1-indexed, 1–6)
 ///
 /// Positions are 1-indexed in commands but 0-indexed in the StateDevice API.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const NUM_POSITIONS: u64 = 6;
 
@@ -171,7 +171,7 @@ impl StateDevice for ThorlabsFilterWheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_reads_position() {

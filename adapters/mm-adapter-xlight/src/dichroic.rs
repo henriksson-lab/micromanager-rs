@@ -3,11 +3,11 @@
 /// 5 positions, 1-based on wire (position 1..5 → MM 0..4).
 /// Query:  `rC\r` → response echoes `rC` followed by 1-based digit.
 /// Set:    `C<n>\r` where n=1..5 → device echoes the same string.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct XLightDichroic {
     props: PropertyMap,
@@ -137,7 +137,7 @@ impl StateDevice for XLightDichroic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_reads_position() {

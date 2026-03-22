@@ -10,11 +10,11 @@
 ///   `1ZT\r\n`         → "1ZT<min> <max>" (travel limits, mm)
 ///   `1TS\r\n`         → "1TS000000XX" (last 2 hex chars = state code)
 ///                        0x32/0x33/0x34 = READY
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 pub struct NewportSmc {
     props: PropertyMap,
@@ -136,7 +136,7 @@ impl Stage for NewportSmc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

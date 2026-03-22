@@ -34,10 +34,10 @@ impl TurretId {
     pub fn id(self) -> u8 { self as u8 }
 }
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::types::{DeviceType, PropertyValue};
 
 use crate::hub::ZeissHub;
 
@@ -160,7 +160,7 @@ impl StateDevice for ZeissTurret {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn turret_with(t: MockTransport) -> ZeissTurret {
         let hub = ZeissHub::new().with_transport(Box::new(t));

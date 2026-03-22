@@ -18,11 +18,11 @@
 ///
 /// Pressure range: 0..=76 cm H₂O.
 /// Valve bitmask: 8 bits (valve 0 = bit 0).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct AquinasController {
     props: PropertyMap,
@@ -201,7 +201,7 @@ impl Generic for AquinasController {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_initialized() -> AquinasController {
         // init: set_pressure(0) → "As00000.00", set_valve_state(0) → "Av00000000"

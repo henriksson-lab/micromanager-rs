@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use mm_device::error::{MmError, MmResult};
+use crate::error::{MmError, MmResult};
 
 /// A single configuration setting: (device_label, property_name) → value
 #[derive(Debug, Clone, PartialEq)]

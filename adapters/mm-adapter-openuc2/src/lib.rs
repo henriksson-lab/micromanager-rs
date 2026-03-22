@@ -22,8 +22,8 @@ pub use xystage::Uc2XYStage;
 pub use zstage::Uc2ZStage;
 pub use shutter::Uc2Shutter;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_HUB: &str = "UC2Hub";
 pub const DEVICE_NAME_XYSTAGE: &str = "UC2XYStage";

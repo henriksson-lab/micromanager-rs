@@ -3,11 +3,11 @@
 /// 2 positions (0=off, 1=on), 0-based on wire.
 /// Query:  `rN\r` → echoes `rNN` (N=0 or 1)
 /// Set:    `NN\r` → echoes `NN`
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct XLightSpinMotor {
     props: PropertyMap,
@@ -133,7 +133,7 @@ impl StateDevice for XLightSpinMotor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_off() {

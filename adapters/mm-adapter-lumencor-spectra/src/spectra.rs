@@ -14,11 +14,11 @@
 /// Channel bit mapping (active-low):
 ///   bit 0 = RED, bit 1 = GREEN, bit 2 = CYAN, bit 3 = VIOLET,
 ///   bit 4 = YG_FILTER, bit 5 = BLUE, bit 6 = TEAL
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const INIT_CMD_1: [u8; 4] = [0x57, 0x02, 0xFF, 0x50];
 const INIT_CMD_2: [u8; 4] = [0x57, 0x03, 0xAB, 0x50];
@@ -118,7 +118,7 @@ impl Shutter for LumencorSpectra {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize() {

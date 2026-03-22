@@ -8,11 +8,11 @@
 ///   Get position:   `"<dev>23\r"`       → `"<dev>23 <pos>\r"`
 ///
 /// Positions are 1-based in the Leica protocol; we store 0-based internally.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurretType {
@@ -193,7 +193,7 @@ impl StateDevice for LeicaDMITurret {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn il_turret_initialize_and_move() {

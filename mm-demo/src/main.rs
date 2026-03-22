@@ -1,6 +1,6 @@
 use minifb::{Key, Window, WindowOptions};
 use mm_adapter_demo::DemoAdapter;
-use mm_core::CMMCore;
+use micromanager::CMMCore;
 
 fn main() {
     // Set up CMMCore with DemoCamera

@@ -8,11 +8,11 @@
 //!   `pi`     → "Invert\r\n"
 //!   `pd`     → "Direct\r\n"
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const VERSION_MIN: f64 = 2.0;
 const VERSION_MAX: f64 = 3.0;
@@ -158,7 +158,7 @@ impl Generic for ArduinoCounter {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_counter() -> ArduinoCounter {
         let t = MockTransport::new()

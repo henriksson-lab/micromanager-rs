@@ -5,11 +5,11 @@
 ///   Shutter A close: send `[0xAC]`  → response `[0x0D]`
 ///   Shutter B open:  send `[0xBA]`  → response `[0x0D]`
 ///   Shutter B close: send `[0xBC]`  → response `[0x0D]`
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 /// Which shutter on the Lambda controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +131,7 @@ impl Shutter for LambdaShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn shutter_a_open_close() {

@@ -2,11 +2,11 @@
 ///
 /// Protocol: `"SAR<ch>-<range>\n"` to set range, `"DAC<ch>-<value>\n"` to set value.
 /// Voltage range 0–10 V (configurable). Answers end with `\r\n`.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, SignalIO};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, SignalIO};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct TriggerScopeMMDAC {
     props: PropertyMap,
@@ -147,7 +147,7 @@ impl SignalIO for TriggerScopeMMDAC {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn dac_initialize() {

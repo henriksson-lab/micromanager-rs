@@ -1,10 +1,10 @@
 //! MicroFPGA Hub — binary serial protocol, read/write 32-bit registers.
 
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Hub};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Hub};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 use crate::{ADDR_ID, ADDR_VERSION, FIRMWARE_VERSION, ID_AU, ID_AUP, ID_CU, ID_MOJO,
             OFFSET_CAM_SYNC_MODE};
@@ -163,7 +163,7 @@ impl Hub for MicroFpgaHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn le4(v: u32) -> Vec<u8> { v.to_le_bytes().to_vec() }
 

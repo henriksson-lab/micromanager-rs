@@ -21,8 +21,8 @@ pub use shutter::Arduino32Shutter;
 pub use switch::Arduino32Switch;
 pub use da::Arduino32Da;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_HUB: &str = "Arduino32-Hub";
 pub const DEVICE_NAME_SHUTTER: &str = "Arduino32-Shutter";

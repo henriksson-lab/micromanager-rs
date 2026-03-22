@@ -7,11 +7,11 @@
 ///
 /// Step size: LeadUm / (StepDivide × MotorSteps)
 /// Defaults: LeadUm=1000 µm, StepDivide=256, MotorSteps=200 → 0.01953125 µm/step
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const DEFAULT_LEAD_UM: f64 = 1000.0;
 const DEFAULT_STEP_DIVIDE: f64 = 256.0;
@@ -216,7 +216,7 @@ impl XYStage for TofraXYStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn init_cmd_str(ctrl: &str) -> String {
         // step_size = 1000/(256*200) = 0.01953125

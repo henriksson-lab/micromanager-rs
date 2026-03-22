@@ -5,11 +5,11 @@
 ///   `WHERE F\r`              → `:A <pos>` (current 1-indexed wheel position)
 ///
 /// dev: device address; positions: 1-indexed on device, 0-indexed in MicroManager.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const DEFAULT_NUM_POSITIONS: u64 = 6;
 
@@ -119,7 +119,7 @@ impl StateDevice for LudlWheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize() {

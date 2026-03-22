@@ -6,11 +6,11 @@
 ///   Set:     `A:<param>,<n>\r`   → `A:<param>,<n>\r`  (echo confirms)
 ///
 /// Positions are 1-based on the wire for presets; motor is 0/1.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct DiskoveryStateDevice {
     dev_name: &'static str,
@@ -231,7 +231,7 @@ diskovery_device!(DiskoveryMotor,   "Diskovery-Motor",   "Diskovery spinning dis
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn sd_initialize() {

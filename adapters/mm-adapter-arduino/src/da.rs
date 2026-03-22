@@ -1,10 +1,10 @@
 /// ArduinoDa — 12-bit DAC channel (SignalIO) on the Arduino.
 ///
 /// Voltage range 0–5 V by default; maps linearly to 0–4095 DAC counts.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, SignalIO};
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, SignalIO};
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub type DaWriter = std::sync::Arc<dyn Fn(u8, u16) -> MmResult<()> + Send + Sync>;
 

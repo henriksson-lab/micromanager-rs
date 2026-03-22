@@ -19,8 +19,8 @@ pub mod cobolt_official;
 
 pub use cobolt_official::CoboltOfficialLaser;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_COBOLT_OFFICIAL: &str = "Cobolt Laser";
 

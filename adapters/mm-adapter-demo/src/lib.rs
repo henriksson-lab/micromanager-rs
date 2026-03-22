@@ -4,8 +4,8 @@ pub mod xy_stage;
 pub mod shutter;
 pub mod state_device;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub use camera::DemoCamera;
 pub use stage::DemoStage;

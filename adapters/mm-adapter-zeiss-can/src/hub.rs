@@ -9,8 +9,8 @@
 /// Response prefixes:
 ///   PH  → stand response (HP commands)
 ///   PN  → MCU28 response (NP commands)
-use mm_device::error::{MmError, MmResult};
-use mm_device::transport::Transport;
+use micromanager::error::{MmError, MmResult};
+use micromanager::transport::Transport;
 
 /// Shared hub that owns the transport and provides send/receive for all sub-devices.
 pub struct ZeissHub {

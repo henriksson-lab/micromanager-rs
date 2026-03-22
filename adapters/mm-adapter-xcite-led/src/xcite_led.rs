@@ -16,11 +16,11 @@
 ///
 /// This adapter models a single LED channel as a Shutter device.
 /// LED device number is 0-based (matches the C++ `m_nLedDevNumber`).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct XCiteLedShutter {
     props: PropertyMap,
@@ -187,7 +187,7 @@ impl Shutter for XCiteLedShutter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_initialized() -> XCiteLedShutter {
         // init: "sn?\r" → any, "of=1\r" → any (LED0 = channel '1')

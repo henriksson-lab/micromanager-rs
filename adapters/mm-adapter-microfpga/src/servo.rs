@@ -1,9 +1,9 @@
 //! MicroFPGA Servo generic device.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Generic};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Generic};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 use crate::{OFFSET_SERVO, MAX_SERVOS};
 
 pub struct FpgaServo {
@@ -77,7 +77,7 @@ impl Generic for FpgaServo {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn set_servo_channel_writes_register() {

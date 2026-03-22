@@ -29,8 +29,8 @@ pub use xystage::OfXYStage;
 pub use zstage::OfZStage;
 pub use shutter::OfShutter;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_HUB: &str = "SangaBoardHub";
 pub const DEVICE_NAME_XYSTAGE: &str = "OFXYStage";

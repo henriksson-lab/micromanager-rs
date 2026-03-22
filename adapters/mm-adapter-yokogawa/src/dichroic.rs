@@ -4,11 +4,11 @@
 /// Protocol:
 ///   `DM_POS, <p>\r`  → `A`       set position
 ///   `DM_POS, ?\r`    → `<p>\rA`  query position
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct CsuXDichroic {
     props: PropertyMap,
@@ -141,7 +141,7 @@ impl StateDevice for CsuXDichroic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     #[test]
     fn initialize_position() {

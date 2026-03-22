@@ -13,11 +13,11 @@
 ///
 /// Wavelength: big-endian u16, units = 0.1 nm (divide by 10 for nm).
 /// Transmission: big-endian i16, units = 0.1% (multiply by 10 for value, divide for read).
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Shutter};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Shutter};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const MAX_LINES: usize = 8;
 
@@ -191,7 +191,7 @@ impl Shutter for SpectralLmm5 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
         MockTransport::new()

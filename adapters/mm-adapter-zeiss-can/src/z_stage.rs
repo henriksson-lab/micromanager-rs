@@ -5,10 +5,10 @@
 ///   `HPZT{hex6}\r`   → `PH\r`         (set Z position, 24-bit two's-complement hex)
 ///
 /// Step size: 0.025 µm / step.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 use crate::hub::{ZeissHub, decode_pos, encode_pos};
 
@@ -108,7 +108,7 @@ impl Stage for ZeissFocusStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn stage_with(t: MockTransport) -> ZeissFocusStage {
         let hub = ZeissHub::new().with_transport(Box::new(t));

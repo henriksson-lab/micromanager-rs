@@ -13,11 +13,11 @@
 ///
 /// Valve type → number of positions:
 ///   '2'=8, '3'=6, '4'=3, '5'=2, '6'=2, '7'=4
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 const ACK: char = '\x06';
 
@@ -180,7 +180,7 @@ impl StateDevice for HamiltonMvpValve {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
         // LXR → ACK; LQT → ACK + '3' (6-pos valve); LQP → ACK + '1' (pos 1)

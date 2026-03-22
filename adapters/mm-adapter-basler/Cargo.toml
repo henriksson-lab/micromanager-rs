@@ -7,5 +7,5 @@ edition = "2021"
 basler = ["dep:pylon-cxx"]
 
 [dependencies]
-mm-device = { path = "../../mm-device" }
+micromanager = { path = "../../micromanager" }
 pylon-cxx = { version = "0.4", optional = true }

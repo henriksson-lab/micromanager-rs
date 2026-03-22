@@ -47,8 +47,8 @@ pub use pwm::FpgaPwm;
 pub use ttl::FpgaTtl;
 pub use servo::FpgaServo;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_HUB: &str = "MicroFPGA-Hub";
 pub const DEVICE_NAME_CAM_TRIG: &str = "Camera Trigger";

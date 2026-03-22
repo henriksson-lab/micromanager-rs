@@ -1,7 +1,7 @@
 use std::collections::HashMap;
-use mm_device::error::{MmError, MmResult};
-use mm_device::traits::AdapterModule;
-use mm_device::types::{DeviceType, PropertyValue};
+use crate::error::{MmError, MmResult};
+use crate::traits::AdapterModule;
+use crate::types::{DeviceType, PropertyValue};
 
 use crate::adapter_registry::AdapterRegistry;
 use crate::circular_buffer::{CircularBuffer, ImageFrame};

@@ -9,5 +9,5 @@ edition = "2021"
 opencv = ["dep:opencv"]
 
 [dependencies]
-mm-device = { path = "../../mm-device" }
+micromanager = { path = "../../micromanager" }
 opencv = { version = "0.98", default-features = false, features = ["videoio", "imgproc"], optional = true }

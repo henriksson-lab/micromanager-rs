@@ -23,11 +23,11 @@
 ///
 /// Position: device uses mm; mm-device `XYStage` uses µm.
 /// Precision: 15.26 nm (programming mode), step_size = 1 µm.
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct HydraXYStage {
     props: PropertyMap,
@@ -289,7 +289,7 @@ impl HydraXYStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_initialized() -> HydraXYStage {
         let t = MockTransport::new()

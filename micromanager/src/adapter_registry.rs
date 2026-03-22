@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use mm_device::traits::{AdapterModule, AnyDevice};
-use mm_device::error::{MmError, MmResult};
+use crate::traits::{AdapterModule, AnyDevice};
+use crate::error::{MmError, MmResult};
 
 /// Registry of all known adapter modules.
 /// Adapters are registered explicitly via `register()`.

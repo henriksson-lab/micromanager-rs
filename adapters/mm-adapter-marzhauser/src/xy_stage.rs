@@ -8,11 +8,11 @@
 ///   `!mor <dx> <dy>\r`→ move relative (µm)
 ///   `?pos\r`          → current position: `<x> <y>` in µm
 ///   `?statusaxis\r`   → motion status; 'M' in response = moving
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, XYStage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, XYStage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct MarzhauserXYStage {
     props: PropertyMap,
@@ -175,7 +175,7 @@ impl XYStage for MarzhauserXYStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

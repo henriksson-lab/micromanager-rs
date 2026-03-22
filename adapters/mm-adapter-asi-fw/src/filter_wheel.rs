@@ -8,11 +8,11 @@
 ///   `MP\r`        → current filter position (0-indexed digit)
 ///   `MP <n>\r`    → move to filter position n (0-indexed)
 ///   `?\r`         → busy status ('3' = busy, other = idle)
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct AsiFW1000 {
     props: PropertyMap,
@@ -182,7 +182,7 @@ impl StateDevice for AsiFW1000 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         MockTransport::new()

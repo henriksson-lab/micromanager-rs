@@ -1,8 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "mm-device",
-    "mm-core",
+    "micromanager",
     "adapters/mm-adapter-demo",
     "adapters/mm-adapter-cobolt",
     "adapters/mm-adapter-coherent-cube",

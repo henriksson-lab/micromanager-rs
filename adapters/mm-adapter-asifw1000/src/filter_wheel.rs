@@ -8,11 +8,11 @@
 ///   `NF\n\r`          → "NF <N>\n\r"      number of filter positions
 ///   `MP\n\r`          → "MP <pos>\n\r"    current position (0-based)
 ///   `MP <pos>\n\r`    → echo              set position (0-based)
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, StateDevice};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, StateDevice};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, PropertyValue};
 
 pub struct AsiFw1000FilterWheel {
     props: PropertyMap,
@@ -156,7 +156,7 @@ impl StateDevice for AsiFw1000FilterWheel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
         MockTransport::new()

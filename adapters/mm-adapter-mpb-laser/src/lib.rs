@@ -22,8 +22,8 @@ pub mod mpb_laser;
 
 pub use mpb_laser::MpbLaser;
 
-use mm_device::traits::{AdapterModule, AnyDevice, DeviceInfo};
-use mm_device::types::DeviceType;
+use micromanager::traits::{AdapterModule, AnyDevice, DeviceInfo};
+use micromanager::types::DeviceType;
 
 pub const DEVICE_NAME_MPB: &str = "MPBLaser";
 

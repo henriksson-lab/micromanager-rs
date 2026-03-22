@@ -11,11 +11,11 @@
 ///   `?err\r`          → error code; 0 = OK
 ///   `!pos z 0\r`      → set current Z position as origin
 ///   `a\r`             → abort / stop
-use mm_device::error::{MmError, MmResult};
-use mm_device::property::PropertyMap;
-use mm_device::traits::{Device, Stage};
-use mm_device::transport::Transport;
-use mm_device::types::{DeviceType, FocusDirection, PropertyValue};
+use micromanager::error::{MmError, MmResult};
+use micromanager::property::PropertyMap;
+use micromanager::traits::{Device, Stage};
+use micromanager::transport::Transport;
+use micromanager::types::{DeviceType, FocusDirection, PropertyValue};
 
 pub struct LStepZStage {
     props: PropertyMap,
@@ -166,7 +166,7 @@ impl Stage for LStepZStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mm_device::transport::MockTransport;
+    use micromanager::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
         // send_only calls ("!autostatus 0", "!dim z 1") do NOT consume script entries.
