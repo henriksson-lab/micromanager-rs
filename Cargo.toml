@@ -10,7 +10,7 @@ description = "Rust port of the MicroManager microscopy control framework"
 license-file = "LICENSE.txt"
 repository = "https://github.com/ripp/micromanager-rs"
 exclude = ["mmCoreAndDevices/", "mm-demo/"]
-website = "https://micro-manager.org/"
+homepage = "https://micro-manager.org/"
 
 [features]
 andor-sdk3 = []
