@@ -1,2 +1,0 @@
-pub mod pm100x;
-pub use pm100x::ThorlabsPM100x;

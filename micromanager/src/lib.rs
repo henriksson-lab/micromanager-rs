@@ -25,3 +25,5 @@ pub use core::CMMCore;
 pub use circular_buffer::{CircularBuffer, ImageFrame};
 pub use config::{ConfigGroup, ConfigFile};
 pub use adapter_registry::AdapterRegistry;
+
+pub mod adapters;

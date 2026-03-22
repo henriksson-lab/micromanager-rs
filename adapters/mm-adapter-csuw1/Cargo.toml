@@ -1,7 +1,0 @@
-[package]
-name = "mm-adapter-csuw1"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-micromanager = { path = "../../micromanager" }

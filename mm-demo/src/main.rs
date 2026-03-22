@@ -1,5 +1,5 @@
 use minifb::{Key, Window, WindowOptions};
-use mm_adapter_demo::DemoAdapter;
+use micromanager::adapters::demo::DemoAdapter;
 use micromanager::CMMCore;
 
 fn main() {

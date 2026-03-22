@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 micromanager = { path = "../micromanager" }
-mm-adapter-demo = { path = "../adapters/mm-adapter-demo" }
+
 minifb = "0.28"

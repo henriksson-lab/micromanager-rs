@@ -3,9 +3,25 @@ name = "micromanager"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+andor-sdk3 = []
+jai = []
+picam = []
+spot = []
+tsi = []
+twain = []
+iidc = []
+basler = ["dep:pylon-cxx"]
+opencv = ["dep:opencv"]
+
 [dependencies]
 thiserror = "2"
 parking_lot = "0.12"
+serde_json = "1"
+pylon-cxx = { version = "0.4", optional = true }
+opencv = { version = "0.98", default-features = false, features = ["videoio", "imgproc"], optional = true }
+
+[build-dependencies]
+cc = { version = "1", features = ["parallel"] }
 
 [dev-dependencies]
-mm-adapter-demo = { path = "../adapters/mm-adapter-demo" }

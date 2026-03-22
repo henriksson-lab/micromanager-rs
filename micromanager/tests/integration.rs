@@ -1,4 +1,4 @@
-use mm_adapter_demo::DemoAdapter;
+use micromanager::adapters::demo::DemoAdapter;
 use micromanager::CMMCore;
 use micromanager::PropertyValue;
 
