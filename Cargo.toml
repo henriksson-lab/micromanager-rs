@@ -6,6 +6,11 @@ members = [".", "mm-demo"]
 name = "micromanager"
 version = "0.1.0"
 edition = "2021"
+description = "Rust port of the MicroManager microscopy control framework"
+license-file = "LICENSE.txt"
+repository = "https://github.com/ripp/micromanager-rs"
+exclude = ["mmCoreAndDevices/", "mm-demo/"]
+website = "https://micro-manager.org/"
 
 [features]
 andor-sdk3 = []
