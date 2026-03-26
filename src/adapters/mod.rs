@@ -25,6 +25,7 @@ pub mod coolled_pe4000;
 pub mod coolled;
 pub mod corvus;
 pub mod csuw1;
+pub mod daheng;
 pub mod demo;
 pub mod diskovery;
 pub mod elliptec;

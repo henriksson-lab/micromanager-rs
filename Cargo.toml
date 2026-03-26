@@ -15,6 +15,7 @@ homepage = "https://micro-manager.org/"
 [features]
 andor-sdk3 = []
 aravis = ["dep:aravis"]
+daheng = []
 jai = []
 picam = []
 spot = []
