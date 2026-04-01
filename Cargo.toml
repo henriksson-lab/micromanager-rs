@@ -4,7 +4,7 @@ members = [".", "mm-demo"]
 
 [package]
 name = "micromanager"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Rust port of the MicroManager microscopy control framework"
 license-file = "LICENSE.txt"
