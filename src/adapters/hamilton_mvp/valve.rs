@@ -26,6 +26,7 @@ pub struct HamiltonMvpValve {
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
     address: char,
+    device_name: String,
     num_positions: u64,
     position: u64,
     labels: Vec<String>,
@@ -34,9 +35,15 @@ pub struct HamiltonMvpValve {
 impl HamiltonMvpValve {
     pub fn new(address: char) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Address", PropertyValue::String(address.to_string()), false).unwrap();
-        props.define_property("ValveType", PropertyValue::String(String::new()), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Address", PropertyValue::String(address.to_string()), false)
+            .unwrap();
+        props
+            .define_property("ValveType", PropertyValue::String(String::new()), true)
+            .unwrap();
         let num = 6u64;
         let labels: Vec<String> = (1..=num).map(|i| format!("Position-{}", i)).collect();
         Self {
@@ -44,6 +51,7 @@ impl HamiltonMvpValve {
             transport: None,
             initialized: false,
             address,
+            device_name: format!("HamiltonMVP-{}", address),
             num_positions: num,
             position: 0,
             labels,
@@ -56,7 +64,9 @@ impl HamiltonMvpValve {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -96,22 +106,36 @@ impl HamiltonMvpValve {
     }
 }
 
-impl Default for HamiltonMvpValve { fn default() -> Self { Self::new('a') } }
+impl Default for HamiltonMvpValve {
+    fn default() -> Self {
+        Self::new('a')
+    }
+}
 
 impl Device for HamiltonMvpValve {
-    fn name(&self) -> &str { "HamiltonMvpValve" }
-    fn description(&self) -> &str { "Hamilton MVP Modular Valve Positioner" }
+    fn name(&self) -> &str {
+        &self.device_name
+    }
+    fn description(&self) -> &str {
+        "Hamilton Modular Valve Positioner"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Reset/initialize
         self.cmd_ack("LXR")?;
         // Query valve type to determine number of positions
         let type_data = self.cmd_ack("LQT")?;
         let type_char = type_data.chars().next().unwrap_or('3');
         self.num_positions = Self::valve_type_to_positions(type_char);
-        self.props.entry_mut("ValveType").map(|e| e.value = PropertyValue::String(type_char.to_string()));
-        self.labels = (1..=self.num_positions).map(|i| format!("Position-{}", i)).collect();
+        self.props
+            .entry_mut("ValveType")
+            .map(|e| e.value = PropertyValue::String(type_char.to_string()));
+        self.labels = (1..=self.num_positions)
+            .map(|i| format!("Position-{}", i))
+            .collect();
         // Query current position
         let pos_data = self.cmd_ack("LQP")?;
         let pos1: u64 = pos_data.trim().parse().unwrap_or(1);
@@ -120,7 +144,10 @@ impl Device for HamiltonMvpValve {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         self.props.get(name).cloned()
@@ -130,19 +157,30 @@ impl Device for HamiltonMvpValve {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for HamiltonMvpValve {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!("Position {} out of range", pos)));
+            return Err(MmError::LocallyDefined(format!(
+                "Position {} out of range",
+                pos
+            )));
         }
         // Device uses 1-based positions; 0=CW rotation
         let cmd = format!("LP0{}R", pos + 1);
@@ -151,30 +189,46 @@ impl StateDevice for HamiltonMvpValve {
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
-    fn get_number_of_positions(&self) -> u64 { self.num_positions }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned()
+        self.labels
+            .get(pos as usize)
+            .cloned()
             .ok_or_else(|| MmError::LocallyDefined(format!("Position {} out of range", pos)))
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
 
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!("Position {} out of range", pos)));
+            return Err(MmError::LocallyDefined(format!(
+                "Position {} out of range",
+                pos
+            )));
         }
         self.labels[pos as usize] = label.to_string();
         Ok(())
     }
 
-    fn set_gate_open(&mut self, _open: bool) -> MmResult<()> { Ok(()) }
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(true) }
+    fn set_gate_open(&mut self, _open: bool) -> MmResult<()> {
+        Ok(())
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -185,9 +239,9 @@ mod tests {
     fn make_init_transport() -> MockTransport {
         // LXR → ACK; LQT → ACK + '3' (6-pos valve); LQP → ACK + '1' (pos 1)
         MockTransport::new()
-            .expect("aLXR\r", "\x061")         // LXR init echo+ACK (data ignored)
-            .expect("aLQT\r", "\x063")         // type '3' = 6 positions
-            .expect("aLQP\r", "\x061")         // position 1
+            .expect("aLXR\r", "\x061") // LXR init echo+ACK (data ignored)
+            .expect("aLQT\r", "\x063") // type '3' = 6 positions
+            .expect("aLQP\r", "\x061") // position 1
     }
 
     #[test]
@@ -200,8 +254,7 @@ mod tests {
 
     #[test]
     fn set_position() {
-        let t = make_init_transport()
-            .expect("aLP02R\r", "\x06"); // set position 2 (1-based)
+        let t = make_init_transport().expect("aLP02R\r", "\x06"); // set position 2 (1-based)
         let mut v = HamiltonMvpValve::new('a').with_transport(Box::new(t));
         v.initialize().unwrap();
         v.set_position(1).unwrap(); // 0-based → device sends 2
@@ -210,8 +263,7 @@ mod tests {
 
     #[test]
     fn nak_fails() {
-        let t = make_init_transport()
-            .expect("aLP02R\r", "\x15"); // NAK
+        let t = make_init_transport().expect("aLP02R\r", "\x15"); // NAK
         let mut v = HamiltonMvpValve::new('a').with_transport(Box::new(t));
         v.initialize().unwrap();
         assert!(v.set_position(1).is_err());
@@ -219,8 +271,7 @@ mod tests {
 
     #[test]
     fn label_roundtrip() {
-        let t = make_init_transport()
-            .expect("aLP02R\r", "\x06");
+        let t = make_init_transport().expect("aLP02R\r", "\x06");
         let mut v = HamiltonMvpValve::new('a').with_transport(Box::new(t));
         v.initialize().unwrap();
         v.set_position_label(1, "Buffer").unwrap();
@@ -241,5 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(HamiltonMvpValve::new('a').initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(HamiltonMvpValve::new('a').initialize().is_err());
+    }
 }

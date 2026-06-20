@@ -1,4 +1,4 @@
-/// Raw `extern "C"` bindings to the Andor SDK3 shim (`src/shim.c`).
+//! Raw `extern "C"` bindings to the Andor SDK3 shim (`src/shim.c`).
 
 #![allow(dead_code)]
 

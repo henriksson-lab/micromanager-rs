@@ -110,12 +110,19 @@ impl PropertyMap {
             .ok_or_else(|| MmError::UnknownLabel(name.to_string()))?;
 
         if entry.read_only {
-            return Err(MmError::CanNotSetProperty);
+            return Ok(());
         }
 
         if !entry.allowed_values.is_empty() {
             let val_str = val.to_string();
             if !entry.allowed_values.iter().any(|v| v == &val_str) {
+                return Err(MmError::InvalidPropertyValue);
+            }
+        }
+
+        if entry.has_limits {
+            let numeric = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            if numeric < entry.lower_limit || numeric > entry.upper_limit {
                 return Err(MmError::InvalidPropertyValue);
             }
         }
@@ -168,7 +175,8 @@ mod tests {
     fn read_only_rejected() {
         let mut map = PropertyMap::new();
         map.define_property("Width", PropertyValue::Integer(512), true).unwrap();
-        assert!(map.set("Width", PropertyValue::Integer(256)).is_err());
+        assert!(map.set("Width", PropertyValue::Integer(256)).is_ok());
+        assert_eq!(*map.get("Width").unwrap(), PropertyValue::Integer(512));
     }
 
     #[test]
@@ -185,5 +193,15 @@ mod tests {
         let mut map = PropertyMap::new();
         map.define_property("Gain", PropertyValue::Float(1.0), false).unwrap();
         assert!(map.define_property("Gain", PropertyValue::Float(2.0), false).is_err());
+    }
+
+    #[test]
+    fn property_limits_enforced() {
+        let mut map = PropertyMap::new();
+        map.define_property("Power", PropertyValue::Float(10.0), false).unwrap();
+        map.set_property_limits("Power", 0.0, 100.0).unwrap();
+        assert!(map.set("Power", PropertyValue::Float(100.0)).is_ok());
+        assert_eq!(map.set("Power", PropertyValue::Float(101.0)).unwrap_err(), MmError::InvalidPropertyValue);
+        assert_eq!(map.set("Power", PropertyValue::String("bad".into())).unwrap_err(), MmError::InvalidPropertyValue);
     }
 }

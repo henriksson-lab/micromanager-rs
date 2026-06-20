@@ -1,7 +1,7 @@
 /// Zeiss CAN-bus turret/filter-wheel devices (StateDevice).
 ///
 /// Protocol (TX `\r`, RX `\r`):
-///   `HPCr{id},0\r`      → `PH{pos}\r`      (query current position)
+///   `HPCr{id},1\r`      → `PH{pos}\r`      (query current position)
 ///   `HPCR{id},{pos}\r`  → `PH\r`           (set position)
 ///   `HPSb1\r`           → `PH{byte}\r`      (group-1 busy status bitmask)
 ///   `HPSb2\r`           → `PH{byte}\r`      (group-2 busy status bitmask)
@@ -12,26 +12,22 @@
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TurretId {
-    Reflector     = 1,
-    Objective     = 2,
-    FilterWheel1  = 10,
-    FilterWheel2  = 11,
-    FilterWheel3  = 12,
-    FilterWheel4  = 13,
-    FilterWheel5  = 20,
-    FilterWheel6  = 21,
-    FilterWheel7  = 22,
-    FilterWheel8  = 23,
-    Condenser     = 3,
-    BasePort      = 30,
-    SidePort      = 31,
-    LampMirror    = 32,
-    Optovar       = 33,
-    TubeLens      = 34,
+    Reflector = 1,
+    Objective = 2,
+    FilterWheel1 = 7,
+    FilterWheel2 = 8,
+    Condenser = 32,
+    BasePort = 38,
+    SidePort = 39,
+    LampMirror = 51,
+    Optovar = 6,
+    TubeLens = 36,
 }
 
 impl TurretId {
-    pub fn id(self) -> u8 { self as u8 }
+    pub fn id(self) -> u8 {
+        self as u8
+    }
 }
 
 use crate::error::{MmError, MmResult};
@@ -57,7 +53,9 @@ impl ZeissTurret {
     pub fn new(turret: TurretId, num_positions: u64) -> Self {
         let name = format!("ZeissTurret{}", turret.id());
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         let labels = (0..num_positions).map(|i| format!("{}", i)).collect();
         Self {
             props,
@@ -84,13 +82,19 @@ impl ZeissTurret {
 }
 
 impl Device for ZeissTurret {
-    fn name(&self) -> &str { &self.name }
-    fn description(&self) -> &str { "Zeiss CAN-bus turret / filter wheel" }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        "Zeiss CAN-bus turret / filter wheel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if !self.hub.is_connected() { return Err(MmError::NotConnected); }
+        if !self.hub.is_connected() {
+            return Err(MmError::NotConnected);
+        }
         let id = self.turret_id;
-        let resp = self.send(&format!("HPCr{},0", id))?;
+        let resp = self.send(&format!("HPCr{},1", id))?;
         // Response: "PH{pos}" → strip "PH"
         let pos_str = resp.strip_prefix("PH").unwrap_or(&resp).trim().to_string();
         let pos: u64 = pos_str.parse().unwrap_or(0);
@@ -99,23 +103,41 @@ impl Device for ZeissTurret {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for ZeissTurret {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!("Turret position {} out of range", pos)));
+            return Err(MmError::LocallyDefined(format!(
+                "Turret position {} out of range",
+                pos
+            )));
         }
         let id = self.turret_id;
         let zeiss_pos = pos + 1; // Zeiss is 1-indexed
@@ -124,27 +146,41 @@ impl StateDevice for ZeissTurret {
             self.current_pos = pos;
             Ok(())
         } else {
-            Err(MmError::LocallyDefined(format!("Turret set error: '{}'", resp)))
+            Err(MmError::LocallyDefined(format!(
+                "Turret set error: '{}'",
+                resp
+            )))
         }
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.current_pos) }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.current_pos)
+    }
 
-    fn get_number_of_positions(&self) -> u64 { self.num_positions }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned()
+        self.labels
+            .get(pos as usize)
+            .cloned()
             .ok_or(MmError::UnknownPosition)
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
 
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
-        if pos >= self.num_positions { return Err(MmError::UnknownPosition); }
+        if pos >= self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
         self.labels[pos as usize] = label.to_string();
         Ok(())
     }
@@ -154,7 +190,9 @@ impl StateDevice for ZeissTurret {
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]
@@ -169,8 +207,8 @@ mod tests {
 
     #[test]
     fn initialize_reads_position() {
-        // HPCr2,0 → PH3 (Zeiss position 3 → 0-indexed position 2)
-        let t = MockTransport::new().any("PH3");
+        // HPCr2,1 → PH3 (Zeiss position 3 → 0-indexed position 2)
+        let t = MockTransport::new().expect("HPCr2,1\r", "PH3");
         let mut s = turret_with(t);
         s.initialize().unwrap();
         assert_eq!(s.get_position().unwrap(), 2);
@@ -178,7 +216,9 @@ mod tests {
 
     #[test]
     fn set_position() {
-        let t = MockTransport::new().any("PH1").any("PH");
+        let t = MockTransport::new()
+            .expect("HPCr2,1\r", "PH1")
+            .expect("HPCR2,4\r", "PH");
         let mut s = turret_with(t);
         s.initialize().unwrap();
         s.set_position(3).unwrap();
@@ -187,9 +227,23 @@ mod tests {
 
     #[test]
     fn out_of_range_fails() {
-        let t = MockTransport::new().any("PH1");
+        let t = MockTransport::new().expect("HPCr2,1\r", "PH1");
         let mut s = turret_with(t);
         s.initialize().unwrap();
         assert!(s.set_position(10).is_err());
+    }
+
+    #[test]
+    fn turret_ids_match_zeiss_can_constants() {
+        assert_eq!(TurretId::Reflector.id(), 1);
+        assert_eq!(TurretId::Objective.id(), 2);
+        assert_eq!(TurretId::Optovar.id(), 6);
+        assert_eq!(TurretId::FilterWheel1.id(), 7);
+        assert_eq!(TurretId::FilterWheel2.id(), 8);
+        assert_eq!(TurretId::Condenser.id(), 32);
+        assert_eq!(TurretId::TubeLens.id(), 36);
+        assert_eq!(TurretId::BasePort.id(), 38);
+        assert_eq!(TurretId::SidePort.id(), 39);
+        assert_eq!(TurretId::LampMirror.id(), 51);
     }
 }

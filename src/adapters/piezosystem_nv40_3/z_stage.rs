@@ -8,8 +8,8 @@
 ///   `\r`                  → identify; response ends with `>`
 ///   `cloop,<ch>\r`        → get loop mode for channel; response: `cloop,<ch>,<0|1>`
 ///   `cloop,<ch>,<0|1>\r`  → set loop mode (no response)
-///   `rd,<ch>\r`           → read channel value; response: `rd,<ch>,<val>`
-///   `wr,<ch>,<val>\r`     → write set-point (no response)
+///   `rk,<ch>\r`           → read channel value; response: `rk,<ch>,<val>`
+///   `set,<ch>,<val>\r`    → write set-point (no response)
 ///   `setk,<ch>,<0|1>\r`   → remote control on/off for channel
 ///
 /// Channel numbering: internal 0-2, external 1-3.
@@ -23,7 +23,7 @@ pub struct PsjNV40_3Stage {
     props: PropertyMap,
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
-    channel: u8,   // internal 0-2
+    channel: u8, // internal 0-2
     position_um: f64,
     loop_closed: bool,
     min_v: f64,
@@ -36,12 +36,24 @@ impl PsjNV40_3Stage {
     /// Create a stage for `channel` (0-based internal channel, i.e. 0, 1, or 2).
     pub fn new(channel: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Channel", PropertyValue::Integer(channel as i64), false).unwrap();
-        props.define_property("MinVoltage", PropertyValue::Float(0.0), false).unwrap();
-        props.define_property("MaxVoltage", PropertyValue::Float(100.0), false).unwrap();
-        props.define_property("MinPosition_um", PropertyValue::Float(0.0), false).unwrap();
-        props.define_property("MaxPosition_um", PropertyValue::Float(100.0), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Channel", PropertyValue::Integer(channel as i64), false)
+            .unwrap();
+        props
+            .define_property("MinVoltage", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("MaxVoltage", PropertyValue::Float(100.0), false)
+            .unwrap();
+        props
+            .define_property("MinPosition_um", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("MaxPosition_um", PropertyValue::Float(100.0), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -78,7 +90,10 @@ impl PsjNV40_3Stage {
 
     fn send_only(&mut self, command: &str) -> MmResult<()> {
         let cmd = command.to_string();
-        self.call_transport(|t| { t.send(&cmd)?; Ok(()) })
+        self.call_transport(|t| {
+            t.send(&cmd)?;
+            Ok(())
+        })
     }
 
     fn parse_csv_last(resp: &str) -> MmResult<f64> {
@@ -100,12 +115,18 @@ impl PsjNV40_3Stage {
 }
 
 impl Default for PsjNV40_3Stage {
-    fn default() -> Self { Self::new(0) }
+    fn default() -> Self {
+        Self::new(0)
+    }
 }
 
 impl Device for PsjNV40_3Stage {
-    fn name(&self) -> &str { "PSJ-NV40-3-Stage" }
-    fn description(&self) -> &str { "Piezosystem Jena NV40/3 piezo Z stage (single channel)" }
+    fn name(&self) -> &str {
+        "PSJ-NV40-3-Stage"
+    }
+    fn description(&self) -> &str {
+        "Piezosystem Jena NV40/3 piezo Z stage (single channel)"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -128,7 +149,7 @@ impl Device for PsjNV40_3Stage {
         self.loop_closed = loop_val == 1;
 
         // Read current value
-        let rd_resp = self.cmd(&format!("rd,{}", ch))?;
+        let rd_resp = self.cmd(&format!("rk,{}", ch))?;
         if let Ok(raw) = Self::parse_csv_last(&rd_resp) {
             self.position_um = if self.loop_closed {
                 raw
@@ -154,25 +175,39 @@ impl Device for PsjNV40_3Stage {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for PsjNV40_3Stage {
     fn set_position_um(&mut self, pos: f64) -> MmResult<()> {
         let ch = self.channel;
-        let set_val = if self.loop_closed { pos } else { self.um_to_voltage(pos) };
-        self.send_only(&format!("wr,{},{:.3}", ch, set_val))?;
+        let set_val = if self.loop_closed {
+            pos
+        } else {
+            self.um_to_voltage(pos)
+        };
+        self.send_only(&format!("set,{},{:.3}", ch, set_val))?;
         self.position_um = pos;
         Ok(())
     }
 
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.position_um) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.position_um)
+    }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
         let new_pos = self.position_um + d;
@@ -183,11 +218,19 @@ impl Stage for PsjNV40_3Stage {
         self.set_position_um(self.min_um)
     }
 
-    fn stop(&mut self) -> MmResult<()> { Ok(()) }
+    fn stop(&mut self) -> MmResult<()> {
+        Ok(())
+    }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((self.min_um, self.max_um)) }
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((self.min_um, self.max_um))
+    }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -198,10 +241,10 @@ mod tests {
     fn make_transport_ch0() -> MockTransport {
         // "setk,0,1" is send_only — no script entry needed.
         MockTransport::new()
-            .expect("",        "NV40/3 V1.0>")
+            .expect("", "NV40/3 V1.0>")
             // setk,0,1 is send_only
-            .expect("cloop,0", "cloop,0,0")   // open loop
-            .expect("rd,0",    "rd,0,25.0")   // 25V
+            .expect("cloop,0", "cloop,0,0") // open loop
+            .expect("rk,0", "rk,0,25.0") // 25V
     }
 
     #[test]
@@ -215,7 +258,7 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        // "wr,0,..." is send_only — no script entry.
+        // "set,0,..." is send_only — no script entry.
         let t = make_transport_ch0();
         let mut stage = PsjNV40_3Stage::new(0).with_transport(Box::new(t));
         stage.initialize().unwrap();
@@ -225,7 +268,7 @@ mod tests {
 
     #[test]
     fn move_relative() {
-        // "wr,0,..." is send_only — no script entry.
+        // "set,0,..." is send_only — no script entry.
         let t = make_transport_ch0();
         let mut stage = PsjNV40_3Stage::new(0).with_transport(Box::new(t));
         stage.initialize().unwrap();
@@ -238,10 +281,10 @@ mod tests {
     fn channel_2_init() {
         // "setk,2,1" is send_only — no script entry needed.
         let t = MockTransport::new()
-            .expect("",        "NV40/3 V1.0>")
+            .expect("", "NV40/3 V1.0>")
             // setk,2,1 is send_only
             .expect("cloop,2", "cloop,2,0")
-            .expect("rd,2",    "rd,2,75.0");
+            .expect("rk,2", "rk,2,75.0");
         let mut stage = PsjNV40_3Stage::new(2).with_transport(Box::new(t));
         stage.initialize().unwrap();
         assert!((stage.get_position_um().unwrap() - 75.0).abs() < 1e-6);

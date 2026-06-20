@@ -26,8 +26,14 @@ fn encode_cmd(bytes: &[u8]) -> String {
 }
 
 fn decode_resp(hex: &str) -> Vec<u8> {
-    hex.trim().as_bytes().chunks(2)
-        .filter_map(|c| std::str::from_utf8(c).ok().and_then(|s| u8::from_str_radix(s, 16).ok()))
+    hex.trim()
+        .as_bytes()
+        .chunks(2)
+        .filter_map(|c| {
+            std::str::from_utf8(c)
+                .ok()
+                .and_then(|s| u8::from_str_radix(s, 16).ok())
+        })
         .collect()
 }
 
@@ -35,16 +41,24 @@ pub struct SpectralLmm5 {
     props: PropertyMap,
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
-    wavelengths_nm: Vec<u32>,      // nm for each detected line
-    transmissions: Vec<f64>,       // 0.0–100.0 per line
+    wavelengths_nm: Vec<u32>, // nm for each detected line
+    transmissions: Vec<f64>,  // 0.0–100.0 per line
     shutter_open: bool,
 }
 
 impl SpectralLmm5 {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("FirmwareVersion", PropertyValue::String(String::new()), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property(
+                "Firmware Version",
+                PropertyValue::String(String::new()),
+                true,
+            )
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -61,7 +75,9 @@ impl SpectralLmm5 {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -77,62 +93,115 @@ impl SpectralLmm5 {
         })
     }
 
-    pub fn num_lines(&self) -> usize { self.wavelengths_nm.len() }
+    pub fn num_lines(&self) -> usize {
+        self.wavelengths_nm.len()
+    }
 
     pub fn set_transmission(&mut self, line: usize, pct: f64) -> MmResult<()> {
         if line >= self.wavelengths_nm.len() {
-            return Err(MmError::LocallyDefined(format!("Line {} out of range", line)));
+            return Err(MmError::LocallyDefined(format!(
+                "Line {} out of range",
+                line
+            )));
         }
-        let val = ((pct * 10.0).round() as i16).clamp(0, 1000) as u16;
+        if !(0.0..=100.0).contains(&pct) {
+            return Err(MmError::InvalidPropertyValue);
+        }
+        let val = (pct * 10.0).round() as u16;
         let [th, tl] = val.to_be_bytes();
-        self.cmd_bytes(&[0x04, line as u8, th, tl])?;
+        let resp = self.cmd_bytes(&[0x04, line as u8, th, tl])?;
+        if resp.first() != Some(&0x04) {
+            return Err(MmError::SerialInvalidResponse);
+        }
         self.transmissions[line] = pct;
         let key = format!("Transmission_{}nm", self.wavelengths_nm[line]);
-        self.props.entry_mut(&key).map(|e| e.value = PropertyValue::Float(pct));
+        self.props
+            .entry_mut(&key)
+            .map(|e| e.value = PropertyValue::Float(pct));
         Ok(())
     }
 }
 
-impl Default for SpectralLmm5 { fn default() -> Self { Self::new() } }
+impl Default for SpectralLmm5 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for SpectralLmm5 {
-    fn name(&self) -> &str { "SpectralLMM5" }
-    fn description(&self) -> &str { "Spectral LMM5 Laser Combiner" }
+    fn name(&self) -> &str {
+        "LMM5-Shutter"
+    }
+    fn description(&self) -> &str {
+        "Spectral LMM5 Laser Combiner"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Get firmware version
         let fw = self.cmd_bytes(&[0x14])?;
+        let mut new_firmware = false;
         if fw.len() >= 3 {
+            if fw[0] != 0x14 {
+                return Err(MmError::SerialInvalidResponse);
+            }
+            new_firmware = fw[1] == 1 && fw[2] >= 30;
             let ver = format!("{}.{}", fw[1], fw[2]);
-            self.props.entry_mut("FirmwareVersion").map(|e| e.value = PropertyValue::String(ver));
+            self.props
+                .entry_mut("Firmware Version")
+                .map(|e| e.value = PropertyValue::String(ver));
         }
         // Detect laser lines
         let lines = self.cmd_bytes(&[0x08])?;
+        if lines.first() != Some(&0x08) {
+            return Err(MmError::SerialInvalidResponse);
+        }
         // Response: [0x08, nm_h0, nm_l0, nm_h1, nm_l1, ...]
-        let n = if lines.len() > 1 { (lines.len() - 1) / 2 } else { 0 };
+        let n = if lines.len() > 1 {
+            (lines.len() - 1) / 2
+        } else {
+            0
+        };
         let n = n.min(MAX_LINES);
         self.wavelengths_nm.clear();
         self.transmissions.clear();
         for i in 0..n {
             let nm_raw = u16::from_be_bytes([lines[1 + i * 2], lines[2 + i * 2]]);
             let nm = (nm_raw / 10) as u32;
+            if nm_raw == 0 || (new_firmware && nm <= 100) {
+                continue;
+            }
             self.wavelengths_nm.push(nm);
             self.transmissions.push(100.0);
+            let line_idx = self.wavelengths_nm.len() - 1;
             // Get current transmission
             let tr = self.cmd_bytes(&[0x05, i as u8])?;
             if tr.len() >= 3 {
+                if tr[0] != 0x05 {
+                    return Err(MmError::SerialInvalidResponse);
+                }
                 let val = u16::from_be_bytes([tr[1], tr[2]]);
                 let pct = val as f64 / 10.0;
-                self.transmissions[i] = pct;
+                self.transmissions[line_idx] = pct;
             }
             // Define property per line
             let key = format!("Transmission_{}nm", nm);
-            let _ = self.props.define_property(&key, PropertyValue::Float(self.transmissions[i]), false);
+            let _ = self.props.define_property(
+                &key,
+                PropertyValue::Float(self.transmissions[line_idx]),
+                false,
+            );
         }
         // Query shutter state
         let sh = self.cmd_bytes(&[0x02])?;
-        if sh.len() >= 2 { self.shutter_open = sh[1] != 0; }
+        if sh.len() >= 2 {
+            if sh[0] != 0x02 {
+                return Err(MmError::SerialInvalidResponse);
+            }
+            self.shutter_open = sh[1] != 0;
+        }
         self.initialized = true;
         Ok(())
     }
@@ -159,7 +228,9 @@ impl Device for SpectralLmm5 {
                     self.set_transmission(i, pct)?;
                 } else {
                     self.transmissions[i] = pct;
-                    self.props.entry_mut(name).map(|e| e.value = PropertyValue::Float(pct));
+                    self.props
+                        .entry_mut(name)
+                        .map(|e| e.value = PropertyValue::Float(pct));
                 }
                 return Ok(());
             }
@@ -167,25 +238,40 @@ impl Device for SpectralLmm5 {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for SpectralLmm5 {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
-        self.cmd_bytes(&[0x01, if open { 1 } else { 0 }])?;
+        let resp = self.cmd_bytes(&[0x01, if open { 1 } else { 0 }])?;
+        if resp.first() != Some(&0x01) {
+            return Err(MmError::SerialInvalidResponse);
+        }
         self.shutter_open = open;
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.shutter_open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.shutter_open)
+    }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { Ok(()) }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]
@@ -199,12 +285,12 @@ mod tests {
             .expect("14\r", "14011E")
             // detect lines: 488nm=0x12C0/10=4800/10=480 (use 0x1310=4880→488nm)
             // Use 0x1310 = 4880 → 488nm exactly
-            .expect("08\r", "08131007D0")   // 2 lines: 0x1310=488nm, 0x07D0=200?nm → 488, 20
+            .expect("08\r", "08131007D0") // 2 lines: 0x1310=488nm, 0x07D0=200?nm → 488, 20
             // Actually: 0x1310=4880/10=488, 0x07D0=2000/10=200
             // get transmission line 0: 0x03E8=1000/10=100.0%
             .expect("0500\r", "0503E8")
             // get transmission line 1
-            .expect("0501\r", "050190")     // 0x0190=400/10=40.0%
+            .expect("0501\r", "050190") // 0x0190=400/10=40.0%
             // get shutter state: closed
             .expect("02\r", "02000000")
     }
@@ -224,7 +310,7 @@ mod tests {
     #[test]
     fn open_close() {
         let t = make_init_transport()
-            .expect("0101\r", "01")  // open
+            .expect("0101\r", "01") // open
             .expect("0100\r", "01"); // close
         let mut dev = SpectralLmm5::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
@@ -235,17 +321,39 @@ mod tests {
     }
 
     #[test]
+    fn fire_is_unsupported() {
+        let mut dev = SpectralLmm5::new().with_transport(Box::new(make_init_transport()));
+        dev.initialize().unwrap();
+        assert_eq!(dev.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
     fn set_transmission() {
-        let t = make_init_transport()
-            .expect("04003200\r", "04"); // set line 0 to 50% → 500 = 0x01F4... wait:
-            // 50% * 10 = 500 = 0x01F4 → "040001F4"
-        // Fix the test: 50% → 500 (0x01F4)
-        let t = make_init_transport()
-            .expect("040001F4\r", "04");
+        let t = make_init_transport().expect("040001F4\r", "04");
         let mut dev = SpectralLmm5::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_transmission(0, 50.0).unwrap();
         assert!((dev.transmissions[0] - 50.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn rejects_invalid_transmission() {
+        let mut dev = SpectralLmm5::new().with_transport(Box::new(make_init_transport()));
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.set_transmission(0, -1.0).unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            dev.set_transmission(0, 101.0).unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            dev.set_property("Transmission_488nm", PropertyValue::Float(f64::NAN))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert!((dev.transmissions[0] - 100.0).abs() < 0.1);
     }
 
     #[test]
@@ -256,5 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(SpectralLmm5::new().initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(SpectralLmm5::new().initialize().is_err());
+    }
 }

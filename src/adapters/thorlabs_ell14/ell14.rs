@@ -49,11 +49,7 @@ impl ThorlabsEll14 {
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
         props
-            .define_property(
-                "Channel",
-                PropertyValue::String("0".into()),
-                false,
-            )
+            .define_property("Channel", PropertyValue::String("0".into()), false)
             .unwrap();
 
         Self {
@@ -141,6 +137,12 @@ impl ThorlabsEll14 {
         if msg.len() < 33 {
             return Err(MmError::SerialInvalidResponse);
         }
+        if &msg[3..5] != "0E" {
+            return Err(MmError::LocallyDefined(format!(
+                "Wrong ELL14 module code: {}",
+                &msg[3..5]
+            )));
+        }
         let ppr_str = &msg[25..33];
         let ppr = i32::from_str_radix(ppr_str, 16)
             .map_err(|_| MmError::LocallyDefined(format!("Bad ppr hex: {}", ppr_str)))?;
@@ -150,7 +152,11 @@ impl ThorlabsEll14 {
 
 fn modulo360(angle: f64) -> f64 {
     let r = angle % 360.0;
-    if r < 0.0 { r + 360.0 } else { r }
+    if r < 0.0 {
+        r + 360.0
+    } else {
+        r
+    }
 }
 
 impl Default for ThorlabsEll14 {
@@ -161,11 +167,11 @@ impl Default for ThorlabsEll14 {
 
 impl Device for ThorlabsEll14 {
     fn name(&self) -> &str {
-        "ThorlabsEll14"
+        " ELL14"
     }
 
     fn description(&self) -> &str {
-        "Thorlabs ELL14 rotation mount"
+        "Thorlab's ELL14 Rotation Mount"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -328,6 +334,13 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(ThorlabsEll14::new().initialize().is_err());
+    }
+
+    #[test]
+    fn initialize_rejects_non_ell14_module_code() {
+        let t = MockTransport::new().expect("0in", "0IN0D1234567822001000000000023000");
+        let mut d = ThorlabsEll14::new().with_transport(Box::new(t));
+        assert!(d.initialize().is_err());
     }
 
     #[test]

@@ -20,8 +20,14 @@ fn cstr(s: &str) -> CString {
 
 fn read_str<F: FnOnce(*mut i8, i32) -> i32>(f: F) -> Option<String> {
     let mut buf = [0i8; BUF];
-    if f(buf.as_mut_ptr(), BUF as i32) != 0 { return None; }
-    Some(unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned())
+    if f(buf.as_mut_ptr(), BUF as i32) != 0 {
+        return None;
+    }
+    Some(
+        unsafe { CStr::from_ptr(buf.as_ptr()) }
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 fn read_enum(ctx: *mut ffi::Andor3Ctx, feature: &str) -> Option<String> {
@@ -32,30 +38,45 @@ fn read_enum(ctx: *mut ffi::Andor3Ctx, feature: &str) -> Option<String> {
 fn enum_values(ctx: *mut ffi::Andor3Ctx, feature: &str) -> Vec<String> {
     let feat = cstr(feature);
     let mut buf = vec![0i8; VALS_BUF];
-    let rc = unsafe { ffi::andor3_enum_values(ctx, feat.as_ptr(), buf.as_mut_ptr(), VALS_BUF as i32) };
-    if rc <= 0 { return vec![]; }
-    let s = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().into_owned();
-    s.split('\n').map(|v| v.to_string()).filter(|v| !v.is_empty()).collect()
+    let rc =
+        unsafe { ffi::andor3_enum_values(ctx, feat.as_ptr(), buf.as_mut_ptr(), VALS_BUF as i32) };
+    if rc <= 0 {
+        return vec![];
+    }
+    let s = unsafe { CStr::from_ptr(buf.as_ptr()) }
+        .to_string_lossy()
+        .into_owned();
+    s.split('\n')
+        .map(|v| v.to_string())
+        .filter(|v| !v.is_empty())
+        .collect()
+}
+
+fn sdk_enum_feature_for_property(prop: &str) -> &str {
+    match prop {
+        "Binning" => "AOIBinning",
+        _ => prop,
+    }
 }
 
 // ── Camera struct ──────────────────────────────────────────────────────────────
 
 pub struct Andor3Camera {
-    props:        PropertyMap,
-    ctx:          *mut ffi::Andor3Ctx,
+    props: PropertyMap,
+    ctx: *mut ffi::Andor3Ctx,
 
     // Pre-init
     camera_index: i32,
-    exposure_ms:  f64,
-    pixel_enc:    String,  // "Mono16" default
-    binning:      String,  // "1x1" default
-    trigger_mode: String,  // "Internal" default
+    exposure_ms: f64,
+    pixel_enc: String,    // "Mono16" default
+    binning: String,      // "1x1" default
+    trigger_mode: String, // "Internal" default
 
     // Post-init (refreshed after snap / ROI changes)
-    img_width:       u32,
-    img_height:      u32,
+    img_width: u32,
+    img_height: u32,
     bytes_per_pixel: u32,
-    bit_depth:       u32,
+    bit_depth: u32,
 
     capturing: bool,
 }
@@ -63,50 +84,98 @@ pub struct Andor3Camera {
 impl Andor3Camera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("CameraIndex",  PropertyValue::Integer(0),                 false).unwrap();
-        props.define_property("Exposure",     PropertyValue::Float(10.0),                false).unwrap();
-        props.define_property("PixelEncoding",PropertyValue::String("Mono16".into()),    false).unwrap();
-        props.define_property("Binning",      PropertyValue::String("1x1".into()),       false).unwrap();
-        props.define_property("TriggerMode",  PropertyValue::String("Internal".into()),  false).unwrap();
-        props.define_property("Width",        PropertyValue::Integer(0),                 true).unwrap();
-        props.define_property("Height",       PropertyValue::Integer(0),                 true).unwrap();
-        props.define_property("BitDepth",     PropertyValue::Integer(16),                true).unwrap();
-        props.define_property("SensorWidth",  PropertyValue::Integer(0),                 true).unwrap();
-        props.define_property("SensorHeight", PropertyValue::Integer(0),                 true).unwrap();
-        props.define_property("Temperature",  PropertyValue::Float(0.0),                 true).unwrap();
-        props.define_property("SerialNumber", PropertyValue::String("".into()),          true).unwrap();
-        props.define_property("CameraModel",  PropertyValue::String("".into()),          true).unwrap();
-        props.define_property("FirmwareVersion", PropertyValue::String("".into()),       true).unwrap();
+        props
+            .define_property("CameraIndex", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Exposure", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props
+            .define_property(
+                "PixelEncoding",
+                PropertyValue::String("Mono16".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("Binning", PropertyValue::String("1x1".into()), false)
+            .unwrap();
+        props
+            .define_property(
+                "TriggerMode",
+                PropertyValue::String("Internal".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("Width", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Height", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("BitDepth", PropertyValue::Integer(16), true)
+            .unwrap();
+        props
+            .define_property("SensorWidth", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("SensorHeight", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Temperature", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("SerialNumber", PropertyValue::String("".into()), true)
+            .unwrap();
+        props
+            .define_property("CameraModel", PropertyValue::String("".into()), true)
+            .unwrap();
+        props
+            .define_property("FirmwareVersion", PropertyValue::String("".into()), true)
+            .unwrap();
 
         Self {
             props,
             ctx: std::ptr::null_mut(),
-            camera_index:    0,
-            exposure_ms:     10.0,
-            pixel_enc:       "Mono16".into(),
-            binning:         "1x1".into(),
-            trigger_mode:    "Internal".into(),
-            img_width:       0,
-            img_height:      0,
+            camera_index: 0,
+            exposure_ms: 10.0,
+            pixel_enc: "Mono16".into(),
+            binning: "1x1".into(),
+            trigger_mode: "Internal".into(),
+            img_width: 0,
+            img_height: 0,
             bytes_per_pixel: 2,
-            bit_depth:       16,
-            capturing:       false,
+            bit_depth: 16,
+            capturing: false,
         }
     }
 
     fn check_open(&self) -> MmResult<()> {
-        if self.ctx.is_null() { Err(MmError::NotConnected) } else { Ok(()) }
+        if self.ctx.is_null() {
+            Err(MmError::NotConnected)
+        } else {
+            Ok(())
+        }
     }
 
     fn sync_dims(&mut self) {
-        if self.ctx.is_null() { return; }
-        self.img_width       = unsafe { ffi::andor3_get_image_width(self.ctx)       } as u32;
-        self.img_height      = unsafe { ffi::andor3_get_image_height(self.ctx)      } as u32;
-        self.bytes_per_pixel = unsafe { ffi::andor3_get_bytes_per_pixel(self.ctx)   } as u32;
-        self.bit_depth       = unsafe { ffi::andor3_get_bit_depth(self.ctx)         } as u32;
-        self.props.entry_mut("Width")   .map(|e| e.value = PropertyValue::Integer(self.img_width    as i64));
-        self.props.entry_mut("Height")  .map(|e| e.value = PropertyValue::Integer(self.img_height   as i64));
-        self.props.entry_mut("BitDepth").map(|e| e.value = PropertyValue::Integer(self.bit_depth    as i64));
+        if self.ctx.is_null() {
+            return;
+        }
+        self.img_width = unsafe { ffi::andor3_get_image_width(self.ctx) } as u32;
+        self.img_height = unsafe { ffi::andor3_get_image_height(self.ctx) } as u32;
+        self.bytes_per_pixel = unsafe { ffi::andor3_get_bytes_per_pixel(self.ctx) } as u32;
+        self.bit_depth = unsafe { ffi::andor3_get_bit_depth(self.ctx) } as u32;
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.img_width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
+        self.props
+            .entry_mut("BitDepth")
+            .map(|e| e.value = PropertyValue::Integer(self.bit_depth as i64));
     }
 
     fn snap_timeout_ms(&self) -> i32 {
@@ -115,7 +184,9 @@ impl Andor3Camera {
 }
 
 impl Default for Andor3Camera {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for Andor3Camera {
@@ -132,19 +203,29 @@ impl Drop for Andor3Camera {
 // ── Device trait ───────────────────────────────────────────────────────────────
 
 impl Device for Andor3Camera {
-    fn name(&self) -> &str { "Andor3Camera" }
-    fn description(&self) -> &str { "Andor camera via SDK3 (atcore)" }
+    fn name(&self) -> &str {
+        "Andor3Camera"
+    }
+    fn description(&self) -> &str {
+        "Andor camera via SDK3 (atcore)"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if !self.ctx.is_null() { return Ok(()); }
+        if !self.ctx.is_null() {
+            return Ok(());
+        }
 
         if unsafe { ffi::andor3_sdk_open() } != 0 {
-            return Err(MmError::LocallyDefined("Andor SDK3: library initialisation failed".into()));
+            return Err(MmError::LocallyDefined(
+                "Andor SDK3: library initialisation failed".into(),
+            ));
         }
 
         let count = unsafe { ffi::andor3_get_device_count() };
         if count <= 0 {
-            return Err(MmError::LocallyDefined("Andor SDK3: no cameras found".into()));
+            return Err(MmError::LocallyDefined(
+                "Andor SDK3: no cameras found".into(),
+            ));
         }
         if self.camera_index >= count {
             return Err(MmError::LocallyDefined(format!(
@@ -155,52 +236,59 @@ impl Device for Andor3Camera {
 
         let ctx = unsafe { ffi::andor3_open(self.camera_index) };
         if ctx.is_null() {
-            return Err(MmError::LocallyDefined(
-                format!("Andor SDK3: failed to open camera {}", self.camera_index),
-            ));
+            return Err(MmError::LocallyDefined(format!(
+                "Andor SDK3: failed to open camera {}",
+                self.camera_index
+            )));
         }
         self.ctx = ctx;
 
         // Read static properties.
-        let sw = unsafe { ffi::andor3_get_sensor_width(ctx)  } as i64;
+        let sw = unsafe { ffi::andor3_get_sensor_width(ctx) } as i64;
         let sh = unsafe { ffi::andor3_get_sensor_height(ctx) } as i64;
-        self.props.entry_mut("SensorWidth") .map(|e| e.value = PropertyValue::Integer(sw));
-        self.props.entry_mut("SensorHeight").map(|e| e.value = PropertyValue::Integer(sh));
+        self.props
+            .entry_mut("SensorWidth")
+            .map(|e| e.value = PropertyValue::Integer(sw));
+        self.props
+            .entry_mut("SensorHeight")
+            .map(|e| e.value = PropertyValue::Integer(sh));
 
         for (feat, prop) in &[
-            ("SerialNumber",     "SerialNumber"),
-            ("CameraModel",      "CameraModel"),
-            ("FirmwareVersion",  "FirmwareVersion"),
+            ("SerialNumber", "SerialNumber"),
+            ("CameraModel", "CameraModel"),
+            ("FirmwareVersion", "FirmwareVersion"),
         ] {
             if let Some(s) = read_str(|b, l| {
                 let f = cstr(feat);
                 unsafe { ffi::andor3_get_string(ctx, f.as_ptr(), b, l) }
             }) {
-                self.props.entry_mut(prop).map(|e| e.value = PropertyValue::String(s));
+                self.props
+                    .entry_mut(prop)
+                    .map(|e| e.value = PropertyValue::String(s));
             }
         }
 
         // Populate allowed values for enum properties.
-        for feat in &["PixelEncoding", "Binning", "TriggerMode"] {
-            let vals = enum_values(ctx, feat);
+        for prop in &["PixelEncoding", "Binning", "TriggerMode"] {
+            let vals = enum_values(ctx, sdk_enum_feature_for_property(prop));
             if !vals.is_empty() {
                 let refs: Vec<&str> = vals.iter().map(|s| s.as_str()).collect();
-                self.props.set_allowed_values(feat, &refs).ok();
+                self.props.set_allowed_values(prop, &refs).ok();
             }
         }
 
         // Apply pre-init settings.
         unsafe { ffi::andor3_set_exposure_s(ctx, self.exposure_ms / 1_000.0) };
-        let pe   = cstr("PixelEncoding");
-        let pev  = cstr(&self.pixel_enc);
+        let pe = cstr("PixelEncoding");
+        let pev = cstr(&self.pixel_enc);
         unsafe { ffi::andor3_set_enum(ctx, pe.as_ptr(), pev.as_ptr()) };
 
-        let bf  = cstr("AOIBinning");
-        let bv  = cstr(&self.binning);
+        let bf = cstr("AOIBinning");
+        let bv = cstr(&self.binning);
         unsafe { ffi::andor3_set_enum(ctx, bf.as_ptr(), bv.as_ptr()) };
 
-        let tf  = cstr("TriggerMode");
-        let tv  = cstr(&self.trigger_mode);
+        let tf = cstr("TriggerMode");
+        let tv = cstr(&self.trigger_mode);
         unsafe { ffi::andor3_set_enum(ctx, tf.as_ptr(), tv.as_ptr()) };
 
         self.sync_dims();
@@ -219,14 +307,17 @@ impl Device for Andor3Camera {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "CameraIndex"  => Ok(PropertyValue::Integer(self.camera_index as i64)),
-            "Exposure"     => Ok(PropertyValue::Float(self.exposure_ms)),
-            "PixelEncoding"=> Ok(PropertyValue::String(self.pixel_enc.clone())),
-            "Binning"      => Ok(PropertyValue::String(self.binning.clone())),
-            "TriggerMode"  => Ok(PropertyValue::String(self.trigger_mode.clone())),
-            "Temperature"  => {
-                let t = if self.ctx.is_null() { 0.0 }
-                        else { unsafe { ffi::andor3_get_temperature(self.ctx) } };
+            "CameraIndex" => Ok(PropertyValue::Integer(self.camera_index as i64)),
+            "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
+            "PixelEncoding" => Ok(PropertyValue::String(self.pixel_enc.clone())),
+            "Binning" => Ok(PropertyValue::String(self.binning.clone())),
+            "TriggerMode" => Ok(PropertyValue::String(self.trigger_mode.clone())),
+            "Temperature" => {
+                let t = if self.ctx.is_null() {
+                    0.0
+                } else {
+                    unsafe { ffi::andor3_get_temperature(self.ctx) }
+                };
                 Ok(PropertyValue::Float(t))
             }
             _ => self.props.get(name).cloned(),
@@ -246,7 +337,8 @@ impl Device for Andor3Camera {
             }
             "Exposure" => {
                 self.exposure_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Float(self.exposure_ms))?;
+                self.props
+                    .set(name, PropertyValue::Float(self.exposure_ms))?;
                 if !self.ctx.is_null() {
                     unsafe { ffi::andor3_set_exposure_s(self.ctx, self.exposure_ms / 1_000.0) };
                 }
@@ -288,13 +380,21 @@ impl Device for Andor3Camera {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Camera }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Camera
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 // ── Camera trait ───────────────────────────────────────────────────────────────
@@ -305,18 +405,24 @@ impl Camera for Andor3Camera {
         if self.capturing {
             let timeout = self.snap_timeout_ms();
             let rc = unsafe { ffi::andor3_get_next_frame(self.ctx, timeout) };
-            if rc != 0 { return Err(MmError::SnapImageFailed); }
+            if rc != 0 {
+                return Err(MmError::SnapImageFailed);
+            }
             return Ok(());
         }
         let timeout = self.snap_timeout_ms();
         let rc = unsafe { ffi::andor3_snap(self.ctx, timeout) };
-        if rc != 0 { return Err(MmError::SnapImageFailed); }
+        if rc != 0 {
+            return Err(MmError::SnapImageFailed);
+        }
         self.sync_dims();
         Ok(())
     }
 
     fn get_image_buffer(&self) -> MmResult<&[u8]> {
-        if self.ctx.is_null() { return Err(MmError::NotConnected); }
+        if self.ctx.is_null() {
+            return Err(MmError::NotConnected);
+        }
         let ptr = unsafe { ffi::andor3_get_frame_ptr(self.ctx) };
         if ptr.is_null() {
             return Err(MmError::LocallyDefined("No image captured yet".into()));
@@ -328,17 +434,33 @@ impl Camera for Andor3Camera {
         Ok(unsafe { std::slice::from_raw_parts(ptr, bytes) })
     }
 
-    fn get_image_width(&self) -> u32  { self.img_width }
-    fn get_image_height(&self) -> u32 { self.img_height }
-    fn get_image_bytes_per_pixel(&self) -> u32 { self.bytes_per_pixel.max(1) }
-    fn get_bit_depth(&self) -> u32 { self.bit_depth }
-    fn get_number_of_components(&self) -> u32 { 1 }
-    fn get_number_of_channels(&self) -> u32 { 1 }
-    fn get_exposure(&self) -> f64 { self.exposure_ms }
+    fn get_image_width(&self) -> u32 {
+        self.img_width
+    }
+    fn get_image_height(&self) -> u32 {
+        self.img_height
+    }
+    fn get_image_bytes_per_pixel(&self) -> u32 {
+        self.bytes_per_pixel.max(1)
+    }
+    fn get_bit_depth(&self) -> u32 {
+        self.bit_depth
+    }
+    fn get_number_of_components(&self) -> u32 {
+        1
+    }
+    fn get_number_of_channels(&self) -> u32 {
+        1
+    }
+    fn get_exposure(&self) -> f64 {
+        self.exposure_ms
+    }
 
     fn set_exposure(&mut self, exp_ms: f64) {
         self.exposure_ms = exp_ms;
-        self.props.set("Exposure", PropertyValue::Float(exp_ms)).ok();
+        self.props
+            .set("Exposure", PropertyValue::Float(exp_ms))
+            .ok();
         if !self.ctx.is_null() {
             unsafe { ffi::andor3_set_exposure_s(self.ctx, exp_ms / 1_000.0) };
         }
@@ -346,7 +468,9 @@ impl Camera for Andor3Camera {
 
     fn get_binning(&self) -> i32 {
         // Parse "NxN" → N
-        self.binning.split('x').next()
+        self.binning
+            .split('x')
+            .next()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1)
     }
@@ -370,11 +494,15 @@ impl Camera for Andor3Camera {
         let rc = unsafe {
             ffi::andor3_set_aoi(
                 self.ctx,
-                roi.x as i32, roi.y as i32,
-                roi.width as i32, roi.height as i32,
+                roi.x as i32,
+                roi.y as i32,
+                roi.width as i32,
+                roi.height as i32,
             )
         };
-        if rc != 0 { return Err(MmError::Err); }
+        if rc != 0 {
+            return Err(MmError::Err);
+        }
         self.sync_dims();
         Ok(())
     }
@@ -388,7 +516,9 @@ impl Camera for Andor3Camera {
 
     fn start_sequence_acquisition(&mut self, _count: i64, _interval_ms: f64) -> MmResult<()> {
         self.check_open()?;
-        if self.capturing { return Ok(()); }
+        if self.capturing {
+            return Ok(());
+        }
         let rc = unsafe { ffi::andor3_start_cont(self.ctx) };
         if rc != 0 {
             return Err(MmError::LocallyDefined(
@@ -400,7 +530,9 @@ impl Camera for Andor3Camera {
     }
 
     fn stop_sequence_acquisition(&mut self) -> MmResult<()> {
-        if !self.capturing { return Ok(()); }
+        if !self.capturing {
+            return Ok(());
+        }
         if !self.ctx.is_null() {
             unsafe { ffi::andor3_stop_cont(self.ctx) };
         }
@@ -408,7 +540,9 @@ impl Camera for Andor3Camera {
         Ok(())
     }
 
-    fn is_capturing(&self) -> bool { self.capturing }
+    fn is_capturing(&self) -> bool {
+        self.capturing
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -430,14 +564,16 @@ mod tests {
     #[test]
     fn set_camera_index_pre_init() {
         let mut d = Andor3Camera::new();
-        d.set_property("CameraIndex", PropertyValue::Integer(1)).unwrap();
+        d.set_property("CameraIndex", PropertyValue::Integer(1))
+            .unwrap();
         assert_eq!(d.camera_index, 1);
     }
 
     #[test]
     fn set_exposure_pre_init() {
         let mut d = Andor3Camera::new();
-        d.set_property("Exposure", PropertyValue::Float(50.0)).unwrap();
+        d.set_property("Exposure", PropertyValue::Float(50.0))
+            .unwrap();
         assert_eq!(d.exposure_ms, 50.0);
         assert_eq!(d.get_exposure(), 50.0);
     }
@@ -445,14 +581,16 @@ mod tests {
     #[test]
     fn set_pixel_encoding_pre_init() {
         let mut d = Andor3Camera::new();
-        d.set_property("PixelEncoding", PropertyValue::String("Mono12".into())).unwrap();
+        d.set_property("PixelEncoding", PropertyValue::String("Mono12".into()))
+            .unwrap();
         assert_eq!(d.pixel_enc, "Mono12");
     }
 
     #[test]
     fn set_trigger_mode_pre_init() {
         let mut d = Andor3Camera::new();
-        d.set_property("TriggerMode", PropertyValue::String("Software".into())).unwrap();
+        d.set_property("TriggerMode", PropertyValue::String("Software".into()))
+            .unwrap();
         assert_eq!(d.trigger_mode, "Software");
     }
 
@@ -503,7 +641,7 @@ mod tests {
     #[test]
     fn exposure_ms_to_s_conversion() {
         let ms = 33.3_f64;
-        let s  = ms / 1_000.0;
+        let s = ms / 1_000.0;
         assert!((s - 0.0333).abs() < 1e-6);
     }
 
@@ -511,5 +649,15 @@ mod tests {
     fn snap_timeout_at_least_5s() {
         let d = Andor3Camera::new();
         assert!(d.snap_timeout_ms() >= 5_000);
+    }
+
+    #[test]
+    fn public_binning_property_maps_to_sdk_aoi_binning_feature() {
+        assert_eq!(sdk_enum_feature_for_property("Binning"), "AOIBinning");
+        assert_eq!(
+            sdk_enum_feature_for_property("PixelEncoding"),
+            "PixelEncoding"
+        );
+        assert_eq!(sdk_enum_feature_for_property("TriggerMode"), "TriggerMode");
     }
 }

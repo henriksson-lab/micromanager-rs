@@ -5,14 +5,14 @@
 //!
 //! | Command           | Response      | Meaning                             |
 //! |-------------------|---------------|-------------------------------------|
-//! | `sn?\r`           | serial number | Get serial number                   |
-//! | `l1\r`            | `OK`          | Turn laser on                       |
-//! | `l0\r`            | `OK`          | Turn laser off                      |
+//! | `gsn?\r`          | serial number | Get serial number                   |
+//! | `l1r\r`           | `OK`          | Open emission shutter               |
+//! | `l0r\r`           | `OK`          | Close emission shutter              |
 //! | `l?\r`            | `0` or `1`    | Get laser on/off state              |
-//! | `p?\r`            | float         | Get actual output power (mW)        |
+//! | `pa?\r`           | float         | Get actual output power (mW)        |
 //! | `slp <mW>\r`      | `OK`          | Set laser power setpoint            |
 //! | `glp?\r`          | float         | Get laser power setpoint (mW)       |
-//! | `ver?\r`          | string        | Get firmware version                |
+//! | `gfv?\r`          | string        | Get firmware version                |
 //! | `hrs?\r`          | float         | Get usage hours                     |
 
 pub mod cobolt_official;

@@ -1,21 +1,21 @@
 pub mod camera;
-pub mod stage;
-pub mod xy_stage;
 pub mod shutter;
+pub mod stage;
 pub mod state_device;
+pub mod xy_stage;
 
 use crate::traits::{AdapterModule, AnyDevice, DeviceInfo};
 use crate::types::DeviceType;
 
 pub use camera::DemoCamera;
-pub use stage::DemoStage;
-pub use xy_stage::DemoXYStage;
 pub use shutter::DemoShutter;
+pub use stage::DemoStage;
 pub use state_device::DemoStateDevice;
+pub use xy_stage::DemoXYStage;
 
 // ─── Device name constants ────────────────────────────────────────────────────
 
-pub const DEVICE_NAME_CAMERA: &str = "DCamera";
+pub const DEVICE_NAME_CAMERA: &str = "DCam";
 pub const DEVICE_NAME_STAGE: &str = "DStage";
 pub const DEVICE_NAME_XYSTAGE: &str = "DXYStage";
 pub const DEVICE_NAME_SHUTTER: &str = "DShutter";

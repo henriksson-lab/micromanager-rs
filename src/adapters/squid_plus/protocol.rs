@@ -18,6 +18,9 @@ pub const CMD_MOVE_Y: u8 = 0x01;
 pub const CMD_MOVE_Z: u8 = 0x02;
 pub const CMD_MOVE_W: u8 = 0x04;
 pub const CMD_HOME_OR_ZERO: u8 = 0x05;
+pub const CMD_MOVETO_X: u8 = 0x06;
+pub const CMD_MOVETO_Y: u8 = 0x07;
+pub const CMD_MOVETO_Z: u8 = 0x08;
 
 // Command codes — illumination
 pub const CMD_TURN_ON_ILLUMINATION: u8 = 0x0A;
@@ -29,8 +32,10 @@ pub const AXIS_X: u8 = 0;
 pub const AXIS_Y: u8 = 1;
 pub const AXIS_Z: u8 = 2;
 pub const AXIS_W: u8 = 5;
+pub const AXIS_XY: u8 = 4;
 
 // Home direction / zero flags
+pub const HOME_POSITIVE: u8 = 0;
 pub const HOME_NEGATIVE: u8 = 1;
 pub const ZERO: u8 = 2;
 
@@ -101,6 +106,18 @@ pub fn build_home(cmd_id: u8, axis: u8, mode: u8) -> [u8; CMD_LENGTH] {
     pkt[1] = CMD_HOME_OR_ZERO;
     pkt[2] = axis;
     pkt[3] = mode;
+    pkt[7] = crc8(&pkt[..7]);
+    pkt
+}
+
+/// Build a HOME_OR_ZERO command for the XY pair.
+pub fn build_home_xy(cmd_id: u8, mode_x: u8, mode_y: u8) -> [u8; CMD_LENGTH] {
+    let mut pkt = [0u8; CMD_LENGTH];
+    pkt[0] = cmd_id;
+    pkt[1] = CMD_HOME_OR_ZERO;
+    pkt[2] = AXIS_XY;
+    pkt[3] = mode_x;
+    pkt[4] = mode_y;
     pkt[7] = crc8(&pkt[..7]);
     pkt
 }

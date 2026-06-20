@@ -1,6 +1,7 @@
-/// ArduinoShutter — controls the LSB of the digital output as a shutter.
+/// ArduinoShutter — gates the digital output pattern as a shutter.
 ///
-/// In the original firmware, shutter state is bit 0 of the switch state.
+/// In the original adapter, opening restores the switch state and closing
+/// writes zero while preserving the selected switch state.
 /// This implementation owns a reference to the hub's shared state so it can
 /// compose the full switch_state before sending to the hub.
 use parking_lot::Mutex;
@@ -26,8 +27,10 @@ pub struct ArduinoShutter {
 impl ArduinoShutter {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("OnOff", PropertyValue::String("Off".into()), false).unwrap();
-        props.set_allowed_values("OnOff", &["On", "Off"]).unwrap();
+        props
+            .define_property("OnOff", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("OnOff", &["0", "1"]).unwrap();
 
         Self {
             props,
@@ -49,15 +52,15 @@ impl ArduinoShutter {
         let writer = self.writer.as_ref().ok_or(MmError::NotConnected)?;
 
         let mut state = shared.lock();
-        if open {
-            state.switch_state |= 1;  // set bit 0
-        } else {
-            state.switch_state &= !1; // clear bit 0
-        }
-        let new_state = state.switch_state;
+        let output_state = if open { state.switch_state } else { 0 };
+        state.shutter_state = open;
         drop(state);
-        writer(new_state)
+        writer(output_state)
     }
+}
+
+fn on_off_value(open: bool) -> PropertyValue {
+    PropertyValue::Integer(if open { 1 } else { 0 })
 }
 
 impl Default for ArduinoShutter {
@@ -67,8 +70,12 @@ impl Default for ArduinoShutter {
 }
 
 impl Device for ArduinoShutter {
-    fn name(&self) -> &str { "Arduino-Shutter" }
-    fn description(&self) -> &str { "Arduino shutter (digital out LSB)" }
+    fn name(&self) -> &str {
+        "Arduino-Shutter"
+    }
+    fn description(&self) -> &str {
+        "Arduino shutter (digital out LSB)"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.shared.is_none() {
@@ -79,24 +86,34 @@ impl Device for ArduinoShutter {
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.write_state(false);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "OnOff" => {
+                let open = self
+                    .shared
+                    .as_ref()
+                    .map(|s| s.lock().shutter_state)
+                    .unwrap_or(false);
+                Ok(on_off_value(open))
+            }
+            _ => self.props.get(name).cloned(),
+        }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         if name == "OnOff" {
-            let s = val.as_str().to_string();
-            let open = s == "On";
+            let open = val.as_i64().ok_or(MmError::InvalidPropertyValue)? > 0;
             if self.initialized {
                 self.write_state(open)?;
+            } else if let Some(shared) = &self.shared {
+                shared.lock().shutter_state = open;
             }
+            self.props.set(name, on_off_value(open))?;
+            return Ok(());
         }
         self.props.set(name, val)
     }
@@ -113,8 +130,12 @@ impl Device for ArduinoShutter {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
 
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for ArduinoShutter {
@@ -123,17 +144,61 @@ impl Shutter for ArduinoShutter {
             return Err(MmError::NotConnected);
         }
         self.write_state(open)?;
-        let val = PropertyValue::String(if open { "On" } else { "Off" }.into());
-        let _ = self.props.set("OnOff", val);
+        self.props.set("OnOff", on_off_value(open))?;
         Ok(())
     }
 
     fn get_open(&self) -> MmResult<bool> {
         let shared = self.shared.as_ref().ok_or(MmError::NotConnected)?;
-        Ok(shared.lock().switch_state & 1 != 0)
+        Ok(shared.lock().shutter_state)
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)
+        Err(MmError::UnsupportedCommand)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_shutter() -> (
+        ArduinoShutter,
+        Arc<Mutex<HubState>>,
+        Arc<std::sync::Mutex<Vec<u16>>>,
+    ) {
+        let shared = Arc::new(Mutex::new(HubState::default()));
+        let writes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writes2 = writes.clone();
+        let writer: SwitchWriter = Arc::new(move |state| {
+            writes2.lock().unwrap().push(state);
+            Ok(())
+        });
+        (
+            ArduinoShutter::new().connect(shared.clone(), writer),
+            shared,
+            writes,
+        )
+    }
+
+    #[test]
+    fn open_restores_switch_state_and_close_writes_zero() {
+        let (mut shutter, shared, writes) = make_shutter();
+        shared.lock().switch_state = 42;
+        shutter.initialize().unwrap();
+
+        shutter.set_open(true).unwrap();
+        shutter.set_open(false).unwrap();
+
+        assert_eq!(&*writes.lock().unwrap(), &[42, 0]);
+        assert_eq!(shared.lock().switch_state, 42);
+        assert!(!shared.lock().shutter_state);
+    }
+
+    #[test]
+    fn fire_is_unsupported() {
+        let (mut shutter, _, _) = make_shutter();
+        shutter.initialize().unwrap();
+        assert_eq!(shutter.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
     }
 }

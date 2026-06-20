@@ -19,6 +19,8 @@ const SCREW_PITCH_XY_MM: f64 = 2.54;
 const MICROSTEPPING_XY: f64 = 256.0;
 const FULLSTEPS_PER_REV_XY: f64 = 200.0;
 const USTEPS_PER_MM_XY: f64 = MICROSTEPPING_XY * FULLSTEPS_PER_REV_XY / SCREW_PITCH_XY_MM;
+const DIRECTION_X: f64 = -1.0;
+const DIRECTION_Y: f64 = -1.0;
 
 pub struct SquidPlusXYStage {
     props: PropertyMap,
@@ -35,7 +37,6 @@ impl SquidPlusXYStage {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
-        common::define_illumination_props(&mut props);
 
         Self {
             props,
@@ -53,9 +54,8 @@ impl SquidPlusXYStage {
     }
 
     fn next_cmd_id(&mut self) -> u8 {
-        let id = self.cmd_id;
         self.cmd_id = self.cmd_id.wrapping_add(1);
-        id
+        self.cmd_id
     }
 
     fn send_and_wait(&mut self, pkt: &[u8]) -> MmResult<()> {
@@ -63,8 +63,12 @@ impl SquidPlusXYStage {
         common::send_and_wait(t.as_mut(), pkt)
     }
 
-    fn um_to_usteps(um: f64) -> i32 {
-        (um / 1000.0 * USTEPS_PER_MM_XY).round() as i32
+    fn um_to_usteps_x(um: f64) -> i32 {
+        (um / 1000.0 * USTEPS_PER_MM_XY / DIRECTION_X) as i32
+    }
+
+    fn um_to_usteps_y(um: f64) -> i32 {
+        (um / 1000.0 * USTEPS_PER_MM_XY / DIRECTION_Y) as i32
     }
 }
 
@@ -86,15 +90,6 @@ impl Device for SquidPlusXYStage {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        // Home X
-        let id = self.next_cmd_id();
-        let pkt = protocol::build_home(id, protocol::AXIS_X, protocol::HOME_NEGATIVE);
-        self.send_and_wait(&pkt)?;
-        // Home Y
-        let id = self.next_cmd_id();
-        let pkt = protocol::build_home(id, protocol::AXIS_Y, protocol::HOME_NEGATIVE);
-        self.send_and_wait(&pkt)?;
-
         self.x_um = 0.0;
         self.y_um = 0.0;
         self.initialized = true;
@@ -102,12 +97,7 @@ impl Device for SquidPlusXYStage {
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let id = self.next_cmd_id();
-            let pkt = protocol::build_turn_off_illumination(id);
-            let _ = self.send_and_wait(&pkt);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
@@ -116,16 +106,6 @@ impl Device for SquidPlusXYStage {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        if let Some(t) = self.transport.as_mut() {
-            if let Some(result) =
-                common::handle_illumination_set(name, &val, t.as_mut(), &mut self.cmd_id)
-            {
-                if result.is_ok() {
-                    self.props.set(name, val)?;
-                }
-                return result;
-            }
-        }
         self.props.set(name, val)
     }
 
@@ -138,10 +118,7 @@ impl Device for SquidPlusXYStage {
     }
 
     fn is_property_read_only(&self, name: &str) -> bool {
-        self.props
-            .entry(name)
-            .map(|e| e.read_only)
-            .unwrap_or(false)
+        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
 
     fn device_type(&self) -> DeviceType {
@@ -155,15 +132,13 @@ impl Device for SquidPlusXYStage {
 
 impl XYStage for SquidPlusXYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
-        let dx = x - self.x_um;
-        let dy = y - self.y_um;
-        let ux = Self::um_to_usteps(dx);
-        let uy = Self::um_to_usteps(dy);
+        let ux = Self::um_to_usteps_x(x);
+        let uy = Self::um_to_usteps_y(y);
         let id = self.next_cmd_id();
-        let pkt = protocol::build_move(id, protocol::CMD_MOVE_X, ux);
+        let pkt = protocol::build_move(id, protocol::CMD_MOVETO_X, ux);
         self.send_and_wait(&pkt)?;
         let id = self.next_cmd_id();
-        let pkt = protocol::build_move(id, protocol::CMD_MOVE_Y, uy);
+        let pkt = protocol::build_move(id, protocol::CMD_MOVETO_Y, uy);
         self.send_and_wait(&pkt)?;
         self.x_um = x;
         self.y_um = y;
@@ -175,8 +150,8 @@ impl XYStage for SquidPlusXYStage {
     }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
-        let ux = Self::um_to_usteps(dx);
-        let uy = Self::um_to_usteps(dy);
+        let ux = Self::um_to_usteps_x(dx);
+        let uy = Self::um_to_usteps_y(dy);
         let id = self.next_cmd_id();
         let pkt = protocol::build_move(id, protocol::CMD_MOVE_X, ux);
         self.send_and_wait(&pkt)?;
@@ -190,10 +165,7 @@ impl XYStage for SquidPlusXYStage {
 
     fn home(&mut self) -> MmResult<()> {
         let id = self.next_cmd_id();
-        let pkt = protocol::build_home(id, protocol::AXIS_X, protocol::HOME_NEGATIVE);
-        self.send_and_wait(&pkt)?;
-        let id = self.next_cmd_id();
-        let pkt = protocol::build_home(id, protocol::AXIS_Y, protocol::HOME_NEGATIVE);
+        let pkt = protocol::build_home_xy(id, protocol::HOME_POSITIVE, protocol::HOME_POSITIVE);
         self.send_and_wait(&pkt)?;
         self.x_um = 0.0;
         self.y_um = 0.0;
@@ -201,28 +173,20 @@ impl XYStage for SquidPlusXYStage {
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        Ok(())
+        Err(MmError::UnsupportedCommand)
     }
 
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Ok((0.0, 0.0, 0.0, 0.0))
+        Err(MmError::UnsupportedCommand)
     }
 
     fn get_step_size_um(&self) -> (f64, f64) {
         let step = 1000.0 / USTEPS_PER_MM_XY;
-        (step, step)
+        (DIRECTION_X * step, DIRECTION_Y * step)
     }
 
     fn set_origin(&mut self) -> MmResult<()> {
-        let id = self.next_cmd_id();
-        let pkt = protocol::build_home(id, protocol::AXIS_X, protocol::ZERO);
-        self.send_and_wait(&pkt)?;
-        let id = self.next_cmd_id();
-        let pkt = protocol::build_home(id, protocol::AXIS_Y, protocol::ZERO);
-        self.send_and_wait(&pkt)?;
-        self.x_um = 0.0;
-        self.y_um = 0.0;
-        Ok(())
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -241,8 +205,6 @@ mod tests {
 
     fn make_init_transport() -> MockTransport {
         MockTransport::new()
-            .expect_binary(&ok_response(0)) // home X
-            .expect_binary(&ok_response(1)) // home Y
     }
 
     #[test]
@@ -256,8 +218,8 @@ mod tests {
     #[test]
     fn set_xy_position() {
         let t = make_init_transport()
-            .expect_binary(&ok_response(2)) // move X
-            .expect_binary(&ok_response(3)); // move Y
+            .expect_binary(&ok_response(1)) // move X
+            .expect_binary(&ok_response(2)); // move Y
         let mut dev = SquidPlusXYStage::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_xy_position_um(100.0, 200.0).unwrap();
@@ -269,8 +231,8 @@ mod tests {
     #[test]
     fn relative_move() {
         let t = make_init_transport()
-            .expect_binary(&ok_response(2))
-            .expect_binary(&ok_response(3));
+            .expect_binary(&ok_response(1))
+            .expect_binary(&ok_response(2));
         let mut dev = SquidPlusXYStage::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_relative_xy_position_um(50.0, -30.0).unwrap();
@@ -281,9 +243,7 @@ mod tests {
 
     #[test]
     fn home() {
-        let t = make_init_transport()
-            .expect_binary(&ok_response(2)) // home X
-            .expect_binary(&ok_response(3)); // home Y
+        let t = make_init_transport().expect_binary(&ok_response(1)); // home XY
         let mut dev = SquidPlusXYStage::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.x_um = 500.0;
@@ -294,30 +254,27 @@ mod tests {
 
     #[test]
     fn set_origin() {
-        let t = make_init_transport()
-            .expect_binary(&ok_response(2)) // zero X
-            .expect_binary(&ok_response(3)); // zero Y
+        let t = make_init_transport();
         let mut dev = SquidPlusXYStage::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.x_um = 100.0;
-        dev.set_origin().unwrap();
-        assert_eq!(dev.get_xy_position_um().unwrap(), (0.0, 0.0));
+        assert_eq!(dev.set_origin().unwrap_err(), MmError::UnsupportedCommand);
     }
 
     #[test]
     fn step_size() {
         let dev = SquidPlusXYStage::new();
         let (sx, sy) = dev.get_step_size_um();
-        // 1000 / 20157.48 ≈ 0.0496 µm
-        assert!((sx - 0.0496).abs() < 0.001);
+        // C++ default DirectionX/Y is Negative, making the exposed step size signed.
+        assert!((sx + 0.0496).abs() < 0.001);
         assert_eq!(sx, sy);
     }
 
     #[test]
     fn ustep_conversion() {
         // 1 mm = 1000 µm → 20157 usteps
-        let usteps = SquidPlusXYStage::um_to_usteps(1000.0);
-        assert_eq!(usteps, 20157);
+        let usteps = SquidPlusXYStage::um_to_usteps_x(1000.0);
+        assert_eq!(usteps, -20157);
     }
 
     #[test]

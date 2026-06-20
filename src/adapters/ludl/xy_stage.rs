@@ -1,8 +1,8 @@
 /// Ludl Electronic Products MAC5000/MAC6000 XY stage.
 ///
 /// Protocol (TX `\r`, RX `\n`):
-///   `VER\r`            → `:A <version>` or `:N <code>`
-///   `MOVE X=<n> Y=<n>\r` → `:A` (steps, 0.1 µm resolution)
+///   `MOVE X=<n> Y=<n>\r` → `:A` (steps, default 0.1 µm resolution)
+///   `MOVREL X=<n> Y=<n>\r` → `:A`
 ///   `WHERE X Y\r`      → `:A <x> <y>`
 ///   `HOME X Y\r`       → `:A`
 ///   `HALT\r`           → `:A`
@@ -15,7 +15,7 @@ use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
-const STEPS_PER_UM: f64 = 10.0;
+const STEP_SIZE_UM: f64 = 0.1;
 
 pub struct LudlXYStage {
     props: PropertyMap,
@@ -23,14 +23,51 @@ pub struct LudlXYStage {
     initialized: bool,
     x_um: f64,
     y_um: f64,
+    step_size_um: f64,
+    step_size_x_um: f64,
+    step_size_y_um: f64,
+    speed_um_s: f64,
+    start_speed_um_s: f64,
+    accel: f64,
 }
 
 impl LudlXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Version", PropertyValue::String(String::new()), true).unwrap();
-        Self { props, transport: None, initialized: false, x_um: 0.0, y_um: 0.0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("StepSize", PropertyValue::Float(1.0), false)
+            .unwrap();
+        props
+            .define_property("StepSize-X", PropertyValue::Float(0.1), false)
+            .unwrap();
+        props
+            .define_property("StepSize-Y", PropertyValue::Float(0.1), false)
+            .unwrap();
+        props
+            .define_property("Speed", PropertyValue::Float(2500.0), false)
+            .unwrap();
+        props
+            .define_property("StartSpeed", PropertyValue::Float(500.0), false)
+            .unwrap();
+        props
+            .define_property("Acceleration", PropertyValue::Float(100.0), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            x_um: 0.0,
+            y_um: 0.0,
+            step_size_um: 1.0,
+            step_size_x_um: 0.1,
+            step_size_y_um: 0.1,
+            speed_um_s: 2500.0,
+            start_speed_um_s: 500.0,
+            accel: 100.0,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -39,7 +76,9 @@ impl LudlXYStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -48,7 +87,10 @@ impl LudlXYStage {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     /// Check `:A ...` response; strip prefix and return remainder.
@@ -66,73 +108,162 @@ impl LudlXYStage {
         let body = Self::check_a(resp)?;
         let parts: Vec<&str> = body.split_whitespace().collect();
         if parts.len() < 2 {
-            return Err(MmError::LocallyDefined(format!("Cannot parse WHERE response: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Cannot parse WHERE response: {}",
+                resp
+            )));
         }
         let x: i64 = parts[0].parse().unwrap_or(0);
         let y: i64 = parts[1].parse().unwrap_or(0);
-        Ok((x as f64 / STEPS_PER_UM, y as f64 / STEPS_PER_UM))
+        Ok((x as f64 * STEP_SIZE_UM, y as f64 * STEP_SIZE_UM))
     }
 }
 
-impl Default for LudlXYStage { fn default() -> Self { Self::new() } }
+impl Default for LudlXYStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for LudlXYStage {
-    fn name(&self) -> &str { "LudlXYStage" }
-    fn description(&self) -> &str { "Ludl MAC5000/MAC6000 XY stage" }
+    fn name(&self) -> &str {
+        "LudlXYStage"
+    }
+    fn description(&self) -> &str {
+        "Ludl MAC5000/MAC6000 XY stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
-        let ver = self.cmd("VER")?;
-        let ver_str = Self::check_a(&ver)?.to_string();
-        self.props.entry_mut("Version").map(|e| e.value = PropertyValue::String(ver_str));
-        let pos = self.cmd("WHERE X Y")?;
-        let (x, y) = Self::parse_xy(&pos)?;
-        self.x_um = x;
-        self.y_um = y;
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        match name {
+            "StepSize" => Ok(PropertyValue::Float(self.step_size_um)),
+            "StepSize-X" => Ok(PropertyValue::Float(self.step_size_x_um)),
+            "StepSize-Y" => Ok(PropertyValue::Float(self.step_size_y_um)),
+            "Speed" => Ok(PropertyValue::Float(self.speed_um_s)),
+            "StartSpeed" => Ok(PropertyValue::Float(self.start_speed_um_s)),
+            "Acceleration" => Ok(PropertyValue::Float(self.accel)),
+            _ => self.props.get(name).cloned(),
+        }
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        match name {
+            "StepSize" => {
+                let step = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if step <= 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.step_size_um = step;
+                self.step_size_x_um = step;
+                self.step_size_y_um = step;
+                self.props.set("StepSize-X", PropertyValue::Float(step))?;
+                self.props.set("StepSize-Y", PropertyValue::Float(step))?;
+                self.props.set(name, PropertyValue::Float(step))
+            }
+            "StepSize-X" => {
+                let step = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if step <= 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.step_size_x_um = step;
+                self.props.set(name, PropertyValue::Float(step))
+            }
+            "StepSize-Y" => {
+                let step = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if step <= 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.step_size_y_um = step;
+                self.props.set(name, PropertyValue::Float(step))
+            }
+            "Speed" => {
+                self.speed_um_s = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(self.speed_um_s))
+            }
+            "StartSpeed" => {
+                self.start_speed_um_s = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Float(self.start_speed_um_s))
+            }
+            "Acceleration" => {
+                self.accel = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(self.accel))
+            }
+            _ => self.props.set(name, val),
+        }
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for LudlXYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
-        let xs = (x * STEPS_PER_UM).round() as i64;
-        let ys = (y * STEPS_PER_UM).round() as i64;
+        let xs = (x / self.step_size_x_um).round() as i64;
+        let ys = (y / self.step_size_y_um).round() as i64;
         let r = self.cmd(&format!("MOVE X={} Y={}", xs, ys))?;
         Self::check_a(&r)?;
-        self.x_um = x; self.y_um = y;
+        self.x_um = x;
+        self.y_um = y;
         Ok(())
     }
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        Ok((self.x_um, self.y_um))
+    }
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
-        let new_x = self.x_um + dx;
-        let new_y = self.y_um + dy;
-        self.set_xy_position_um(new_x, new_y)
+        let xs = (dx / self.step_size_x_um).round() as i64;
+        let ys = (dy / self.step_size_y_um).round() as i64;
+        let r = self.cmd(&format!("MOVREL X={} Y={}", xs, ys))?;
+        Self::check_a(&r)?;
+        self.x_um += dx;
+        self.y_um += dy;
+        Ok(())
     }
     fn home(&mut self) -> MmResult<()> {
         let r = self.cmd("HOME X Y")?;
         Self::check_a(&r)?;
-        self.x_um = 0.0; self.y_um = 0.0;
         Ok(())
     }
-    fn stop(&mut self) -> MmResult<()> { let _ = self.cmd("HALT"); Ok(()) }
-    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> { Ok((-100_000.0, 100_000.0, -100_000.0, 100_000.0)) }
-    fn get_step_size_um(&self) -> (f64, f64) { (0.1, 0.1) }
+    fn stop(&mut self) -> MmResult<()> {
+        let _ = self.cmd("HALT");
+        Ok(())
+    }
+    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
+        Err(MmError::UnsupportedCommand)
+    }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (self.step_size_x_um, self.step_size_y_um)
+    }
     fn set_origin(&mut self) -> MmResult<()> {
-        let _ = self.cmd("HERE X=0 Y=0");
-        self.x_um = 0.0; self.y_um = 0.0;
+        let r = self.cmd("HERE X=0 Y=0")?;
+        Self::check_a(&r)?;
+        let pos = self.cmd("WHERE X Y")?;
+        let (x, y) = Self::parse_xy(&pos)?;
+        self.x_um = x;
+        self.y_um = y;
         Ok(())
     }
 }
@@ -144,17 +275,20 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .any(":A MAC6000 v5.0")    // VER
-            .any(":A 1000 2000")       // WHERE X Y → 100 µm, 200 µm
     }
 
     #[test]
     fn initialize() {
         let mut s = LudlXYStage::new().with_transport(Box::new(make_transport()));
         s.initialize().unwrap();
-        let (x, y) = s.get_xy_position_um().unwrap();
-        assert!((x - 100.0).abs() < 1e-9);
-        assert!((y - 200.0).abs() < 1e-9);
+        assert_eq!(s.get_xy_position_um().unwrap(), (0.0, 0.0));
+        assert!(s.has_property("StepSize"));
+        assert!(s.has_property("StepSize-X"));
+        assert!(s.has_property("StepSize-Y"));
+        assert!(s.has_property("Speed"));
+        assert!(s.has_property("StartSpeed"));
+        assert!(s.has_property("Acceleration"));
+        assert!(!s.has_property("Version"));
     }
 
     #[test]
@@ -164,6 +298,15 @@ mod tests {
         s.initialize().unwrap();
         s.set_xy_position_um(300.0, 400.0).unwrap();
         assert_eq!(s.get_xy_position_um().unwrap(), (300.0, 400.0));
+    }
+
+    #[test]
+    fn move_relative_uses_upstream_movrel() {
+        let t = make_transport().expect("MOVREL X=20 Y=-30\r", ":A");
+        let mut s = LudlXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_relative_xy_position_um(2.0, -3.0).unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (2.0, -3.0));
     }
 
     #[test]
@@ -182,5 +325,27 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(LudlXYStage::new().initialize().is_err()); }
+    fn step_size_and_limit_behavior_match_upstream_surface() {
+        let mut s = LudlXYStage::new();
+        s.set_property("StepSize", PropertyValue::Float(0.2))
+            .unwrap();
+        assert_eq!(s.get_step_size_um(), (0.2, 0.2));
+        assert_eq!(s.get_limits_um().unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn set_origin_queries_current_stage_position_like_upstream() {
+        let t = make_transport()
+            .expect("HERE X=0 Y=0\r", ":A")
+            .expect("WHERE X Y\r", ":A 15 -25");
+        let mut s = LudlXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_origin().unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (1.5, -2.5));
+    }
+
+    #[test]
+    fn no_transport_error() {
+        assert!(LudlXYStage::new().initialize().is_err());
+    }
 }

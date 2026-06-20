@@ -46,7 +46,7 @@ impl Default for Uc2Hub {
 }
 
 impl Device for Uc2Hub {
-    fn name(&self) -> &str { "UC2Hub" }
+    fn name(&self) -> &str { "openUC2-Hub" }
     fn description(&self) -> &str { "openUC2 hub device" }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -75,9 +75,9 @@ impl Device for Uc2Hub {
 impl Hub for Uc2Hub {
     fn detect_installed_devices(&mut self) -> MmResult<Vec<String>> {
         Ok(vec![
-            "UC2XYStage".into(),
-            "UC2ZStage".into(),
-            "UC2Shutter".into(),
+            "openUC2-XYStage".into(),
+            "openUC2-ZStage".into(),
+            "openUC2-LED-Laser".into(),
         ])
     }
 }

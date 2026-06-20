@@ -59,6 +59,12 @@ pub enum MmError {
     ImageParamsFailed,
     #[error("focus stage undefined")]
     CoreFocusStageUndef,
+    #[error("camera not loaded or initialized")]
+    CoreCameraNotAvailable,
+    #[error("invalid shutter device")]
+    CoreInvalidShutterDevice,
+    #[error("invalid XY stage device")]
+    CoreInvalidXYStageDevice,
     #[error("exposure failed")]
     CoreExposureFailed,
     #[error("config failed")]

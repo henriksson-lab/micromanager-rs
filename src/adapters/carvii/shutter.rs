@@ -20,8 +20,18 @@ pub struct CarviiShutter {
 impl CarviiShutter {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, transport: None, initialized: false, open: false }
+        props
+            .define_property("State", PropertyValue::String("Closed".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("State", &["Closed", "Open"])
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            open: false,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -30,7 +40,9 @@ impl CarviiShutter {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -39,18 +51,31 @@ impl CarviiShutter {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let full = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&full)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&full)?;
+            Ok(r.trim().to_string())
+        })
     }
 }
 
-impl Default for CarviiShutter { fn default() -> Self { Self::new() } }
+impl Default for CarviiShutter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for CarviiShutter {
-    fn name(&self) -> &str { "CarviiShutter" }
-    fn description(&self) -> &str { "CARVII Shutter" }
+    fn name(&self) -> &str {
+        "CARVII Shutter"
+    }
+    fn description(&self) -> &str {
+        "CARVII Shutter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let resp = self.cmd("rS")?;
         self.open = resp.as_bytes().get(2) == Some(&b'1');
         self.initialized = true;
@@ -58,19 +83,45 @@ impl Device for CarviiShutter {
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized { let _ = self.set_open(false); self.initialized = false; }
+        if self.initialized {
+            self.initialized = false;
+        }
         Ok(())
     }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        match name {
+            "State" => Ok(PropertyValue::String(
+                if self.open { "Open" } else { "Closed" }.into(),
+            )),
+            _ => self.props.get(name).cloned(),
+        }
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        match name {
+            "State" => match val.as_str() {
+                "Open" => self.set_open(true),
+                "Closed" => self.set_open(false),
+                _ => Err(MmError::InvalidPropertyValue),
+            },
+            _ => self.props.set(name, val),
+        }
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for CarviiShutter {
@@ -79,8 +130,12 @@ impl Shutter for CarviiShutter {
         self.open = open;
         Ok(())
     }
-    fn get_open(&self) -> MmResult<bool> { Ok(self.open) }
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { Ok(()) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.open)
+    }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]
@@ -111,5 +166,25 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(CarviiShutter::new().initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(CarviiShutter::new().initialize().is_err());
+    }
+
+    #[test]
+    fn fire_is_unsupported() {
+        let mut s = CarviiShutter::new();
+        assert_eq!(s.fire(1.0), Err(MmError::UnsupportedCommand));
+    }
+
+    #[test]
+    fn shutdown_does_not_close_like_upstream() {
+        let t = MockTransport::new()
+            .expect("rS\r", "rS0")
+            .expect("S1\r", "S1");
+        let mut s = CarviiShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_open(true).unwrap();
+        s.shutdown().unwrap();
+        assert!(s.get_open().unwrap());
+    }
 }

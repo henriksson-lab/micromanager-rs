@@ -30,8 +30,16 @@ pub struct LStepXYStage {
 impl LStepXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, transport: None, initialized: false, x_um: 0.0, y_um: 0.0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            x_um: 0.0,
+            y_um: 0.0,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -50,20 +58,26 @@ impl LStepXYStage {
     }
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let cmd = command.to_string();
+        let cmd = format!("{}\r", command);
         self.call_transport(|t| Ok(t.send_recv(&cmd)?.trim().to_string()))
     }
 
     fn send_only(&mut self, command: &str) -> MmResult<()> {
-        let cmd = command.to_string();
-        self.call_transport(|t| { t.send(&cmd)?; Ok(()) })
+        let cmd = format!("{}\r", command);
+        self.call_transport(|t| {
+            t.send(&cmd)?;
+            Ok(())
+        })
     }
 
     fn check_err(&mut self) -> MmResult<()> {
         let resp = self.cmd("?err")?;
         let code: i32 = resp.trim().parse().unwrap_or(1);
         if code != 0 {
-            return Err(MmError::LocallyDefined(format!("LStep error code: {}", code)));
+            return Err(MmError::LocallyDefined(format!(
+                "LStep error code: {}",
+                code
+            )));
         }
         Ok(())
     }
@@ -71,23 +85,34 @@ impl LStepXYStage {
     fn parse_pos(resp: &str) -> MmResult<(f64, f64)> {
         let parts: Vec<&str> = resp.trim().split_whitespace().collect();
         if parts.len() < 2 {
-            return Err(MmError::LocallyDefined(format!("Cannot parse position: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Cannot parse position: {}",
+                resp
+            )));
         }
-        let x = parts[0].parse::<f64>()
+        let x = parts[0]
+            .parse::<f64>()
             .map_err(|_| MmError::LocallyDefined(format!("Bad X: {}", parts[0])))?;
-        let y = parts[1].parse::<f64>()
+        let y = parts[1]
+            .parse::<f64>()
             .map_err(|_| MmError::LocallyDefined(format!("Bad Y: {}", parts[1])))?;
         Ok((x, y))
     }
 }
 
 impl Default for LStepXYStage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for LStepXYStage {
-    fn name(&self) -> &str { "LStepXYStage" }
-    fn description(&self) -> &str { "Marzhauser L-Step XY stage" }
+    fn name(&self) -> &str {
+        "XYStage"
+    }
+    fn description(&self) -> &str {
+        "LStep XY Stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -96,9 +121,10 @@ impl Device for LStepXYStage {
 
         let ver = self.cmd("?ver")?;
         if !ver.contains("Vers:L") {
-            return Err(MmError::LocallyDefined(
-                format!("Unexpected controller version: {}", ver)
-            ));
+            return Err(MmError::LocallyDefined(format!(
+                "Unexpected controller version: {}",
+                ver
+            )));
         }
 
         let _ = self.send_only("!autostatus 0");
@@ -108,9 +134,10 @@ impl Device for LStepXYStage {
         let config: i32 = det.trim().parse().unwrap_or(0);
         let num_axes = (config >> 4) & 0x0f;
         if num_axes < 2 {
-            return Err(MmError::LocallyDefined(
-                format!("Controller has fewer than 2 axes (det={})", config)
-            ));
+            return Err(MmError::LocallyDefined(format!(
+                "Controller has fewer than 2 axes (det={})",
+                config
+            )));
         }
 
         // Switch to µm and read current position
@@ -137,13 +164,21 @@ impl Device for LStepXYStage {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for LStepXYStage {
@@ -156,7 +191,9 @@ impl XYStage for LStepXYStage {
         Ok(())
     }
 
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        Ok((self.x_um, self.y_um))
+    }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let _ = self.send_only("!dim 1 1");
@@ -184,7 +221,9 @@ impl XYStage for LStepXYStage {
         Ok((-100_000.0, 100_000.0, -100_000.0, 100_000.0))
     }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (0.02, 0.02) }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (0.02, 0.02)
+    }
 
     fn set_origin(&mut self) -> MmResult<()> {
         let _ = self.send_only("!pos 0 0");
@@ -204,11 +243,11 @@ mod tests {
         // Only include commands that are send_recv (cmd()), not send_only().
         // send_only() calls transport.send() but NOT receive_line(), so no script entry needed.
         MockTransport::new()
-            .expect("?ver",  "Vers:LS v3.1")
+            .expect("?ver\r", "Vers:LS v3.1")
             // "!autostatus 0" is send_only — no script entry
-            .expect("?det",  "32")   // 2 axes: (32 >> 4) & 0x0f = 2
+            .expect("?det\r", "32") // 2 axes: (32 >> 4) & 0x0f = 2
             // "!dim 1 1" is send_only — no script entry
-            .expect("?pos",  "10.000 20.000")
+            .expect("?pos\r", "10.000 20.000")
     }
 
     #[test]
@@ -220,7 +259,7 @@ mod tests {
 
     #[test]
     fn wrong_controller_rejected() {
-        let t = MockTransport::new().expect("?ver", "Other v1.0");
+        let t = MockTransport::new().expect("?ver\r", "Other v1.0");
         let mut stage = LStepXYStage::new().with_transport(Box::new(t));
         assert!(stage.initialize().is_err());
     }
@@ -229,8 +268,7 @@ mod tests {
     fn move_absolute() {
         // "!dim 1 1" and "!moa ..." are send_only (no response consumed).
         // "?err" is send_recv (response consumed).
-        let t = make_transport()
-            .expect("?err", "0");
+        let t = make_transport().expect("?err\r", "0");
         let mut stage = LStepXYStage::new().with_transport(Box::new(t));
         stage.initialize().unwrap();
         stage.set_xy_position_um(100.0, 200.0).unwrap();
@@ -240,8 +278,7 @@ mod tests {
     #[test]
     fn move_relative() {
         // "!dim 1 1" and "!mor ..." are send_only (no response consumed).
-        let t = make_transport()
-            .expect("?err", "0");
+        let t = make_transport().expect("?err\r", "0");
         let mut stage = LStepXYStage::new().with_transport(Box::new(t));
         stage.initialize().unwrap();
         stage.set_relative_xy_position_um(5.0, 10.0).unwrap();

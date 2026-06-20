@@ -9,8 +9,8 @@
 /// Commands (sent via `SendSerialCommand` with empty terminator ""):
 ///
 ///   Set pressure:
-///     `<ID>s<PPPPPPPP>` where PPPPPPPP is 8-char fixed-point decimal (0..76)
-///     e.g. "As00076.00" (pressure 76.0)
+///     `<ID>s<pressure>` formatted like C++ `std::fixed << setw(8)` with
+///     default precision 6, e.g. "As76.000000" (pressure 76.0)
 ///
 ///   Set valve state (all 8 valves):
 ///     `<ID>v<b0><b1>...<b7>` where each bit is '0' or '1' LSB first
@@ -38,26 +38,19 @@ impl AquinasController {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
         props
-            .define_property("DeviceID", PropertyValue::String("A".into()), false)
+            .define_pre_init_property("Device ID", PropertyValue::String("A".into()))
             .unwrap();
         props
-            .define_property("PressureSetPoint", PropertyValue::Float(0.0), false)
+            .set_allowed_values(
+                "Device ID",
+                &[
+                    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O",
+                ],
+            )
             .unwrap();
-        props
-            .define_property("ValveState", PropertyValue::Integer(0), false)
-            .unwrap();
-        for i in 0..8usize {
-            props
-                .define_property(
-                    &format!("Valve{}", i + 1),
-                    PropertyValue::Integer(0),
-                    false,
-                )
-                .unwrap();
-        }
         Self {
             props,
             transport: None,
@@ -75,7 +68,7 @@ impl AquinasController {
 
     /// Set the device ID ('A'–'O').
     pub fn set_device_id(&mut self, id: char) -> MmResult<()> {
-        if !id.is_ascii_uppercase() || id > 'O' {
+        if !('A'..='O').contains(&id) {
             return Err(MmError::InvalidInputParam);
         }
         self.device_id = id;
@@ -95,10 +88,10 @@ impl AquinasController {
     /// Set pressure in cm H₂O (0–76).
     pub fn set_pressure(&mut self, pressure: f64) -> MmResult<()> {
         let clamped = pressure.max(0.0).min(76.0);
-        // Format: "<ID>s<8 chars fixed>" — use 8 chars total with 2 decimal places
-        let cmd = format!("{}s{:08.2}", self.device_id, clamped);
-        self.call_transport(|t| t.send(&cmd))?;
+        // C++ uses std::fixed with default precision 6 and setw(8).
+        let cmd = format!("{}s{:08.6}", self.device_id, clamped);
         self.pressure_set_point = clamped;
+        self.call_transport(|t| t.send(&cmd))?;
         Ok(())
     }
 
@@ -111,8 +104,8 @@ impl AquinasController {
             cmd.push(if t & 1 != 0 { '1' } else { '0' });
             t >>= 1;
         }
-        self.call_transport(|t| t.send(&cmd))?;
         self.valve_state = state;
+        self.call_transport(|t| t.send(&cmd))?;
         Ok(())
     }
 
@@ -154,30 +147,109 @@ impl Device for AquinasController {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
-            return Err(MmError::NotConnected);
+        if !self.props.has_property("Pressure Set Point") {
+            self.props
+                .define_property("Pressure Set Point", PropertyValue::Float(0.0), false)
+                .unwrap();
         }
-        // No hardware handshake required; just set initial state
-        self.set_pressure(0.0)?;
-        self.set_valve_state(0)?;
+        self.props
+            .set_property_limits("Pressure Set Point", 0.0, 76.0)?;
+        if !self.props.has_property("Valve State") {
+            self.props
+                .define_property("Valve State", PropertyValue::Integer(0), false)
+                .unwrap();
+        }
+        self.props.set_property_limits("Valve State", 0.0, 255.0)?;
+        for i in 0..8usize {
+            let name = format!("Valve nr. {}", i + 1);
+            if !self.props.has_property(&name) {
+                self.props
+                    .define_property(&name, PropertyValue::Integer(0), false)
+                    .unwrap();
+            }
+            self.props.set_property_limits(&name, 0.0, 1.0)?;
+        }
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.set_pressure(0.0);
-            let _ = self.set_valve_state(0);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "Device ID" => Ok(PropertyValue::String(self.device_id.to_string())),
+            "Pressure Set Point" => Ok(PropertyValue::Float(self.pressure_set_point)),
+            "Valve State" => Ok(PropertyValue::Integer(self.valve_state as i64)),
+            name if name.starts_with("Valve nr. ") && self.props.has_property(name) => {
+                let suffix = name
+                    .strip_prefix("Valve nr. ")
+                    .ok_or(MmError::InvalidPropertyValue)?;
+                let valve = suffix
+                    .parse::<usize>()
+                    .map_err(|_| MmError::InvalidPropertyValue)?;
+                if !(1..=8).contains(&valve) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let open = (self.valve_state >> (valve - 1)) & 1;
+                Ok(PropertyValue::Integer(open as i64))
+            }
+            _ => self.props.get(name).cloned(),
+        }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            "Device ID" => {
+                let id = val.as_str();
+                let mut chars = id.chars();
+                let ch = chars.next().ok_or(MmError::InvalidPropertyValue)?;
+                if chars.next().is_some() {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.set_device_id(ch)?;
+                self.props.set(name, PropertyValue::String(id.to_string()))
+            }
+            "Pressure Set Point" => {
+                let pressure = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.0..=76.0).contains(&pressure) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.set_pressure(pressure)?;
+                self.props
+                    .set(name, PropertyValue::Float(self.pressure_set_point))
+            }
+            "Valve State" => {
+                let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0..=255).contains(&state) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.set_valve_state(state as u8)?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.valve_state as i64))
+            }
+            name if name.starts_with("Valve nr. ") => {
+                let suffix = name
+                    .strip_prefix("Valve nr. ")
+                    .ok_or(MmError::InvalidPropertyValue)?;
+                let valve = suffix
+                    .parse::<usize>()
+                    .map_err(|_| MmError::InvalidPropertyValue)?;
+                if !(1..=8).contains(&valve) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let open = match val.as_i64().ok_or(MmError::InvalidPropertyValue)? {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(MmError::InvalidPropertyValue),
+                };
+                self.set_valve(valve - 1, open)?;
+                self.props.set(name, PropertyValue::Integer(open as i64))
+            }
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -202,9 +274,50 @@ impl Generic for AquinasController {}
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingTransport {
+        sent: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingTransport {
+        fn new(sent: Arc<Mutex<Vec<String>>>) -> Self {
+            Self { sent }
+        }
+    }
+
+    impl Transport for RecordingTransport {
+        fn send(&mut self, cmd: &str) -> MmResult<()> {
+            self.sent.lock().unwrap().push(cmd.to_string());
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            Err(MmError::SerialTimeout)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            Ok(())
+        }
+    }
+
+    struct FailingTransport;
+
+    impl Transport for FailingTransport {
+        fn send(&mut self, _cmd: &str) -> MmResult<()> {
+            Err(MmError::SerialCommandFailed)
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            Err(MmError::SerialTimeout)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            Ok(())
+        }
+    }
 
     fn make_initialized() -> AquinasController {
-        // init: set_pressure(0) → "As00000.00", set_valve_state(0) → "Av00000000"
         let t = MockTransport::new();
         let mut c = AquinasController::new().with_transport(Box::new(t));
         c.initialize().unwrap();
@@ -217,6 +330,18 @@ mod tests {
         assert!(c.initialized);
         assert_eq!(c.pressure(), 0.0);
         assert_eq!(c.valve_state(), 0);
+        assert!(c.has_property("Device ID"));
+        assert!(c.has_property("Pressure Set Point"));
+        assert!(c.has_property("Valve State"));
+        assert!(c.has_property("Valve nr. 1"));
+        assert!(c.has_property("Valve nr. 8"));
+        assert!(c.props.entry("Port").unwrap().pre_init);
+        assert!(c.props.entry("Device ID").unwrap().pre_init);
+        assert!(!c.props.entry("Pressure Set Point").unwrap().pre_init);
+        assert!(!c.has_property("DeviceID"));
+        assert!(!c.has_property("PressureSetPoint"));
+        assert!(!c.has_property("ValveState"));
+        assert!(!c.has_property("Valve1"));
     }
 
     #[test]
@@ -226,20 +351,16 @@ mod tests {
         c.transport = Some(Box::new(mock));
         c.set_pressure(38.5).unwrap();
         assert_eq!(c.pressure(), 38.5);
-        // Verify the sent string
-        if let Some(t) = c.transport.as_ref() {
-            // Access underlying mock via Any downcast is not available,
-            // but we verify the logic: the command format is correct.
-        }
     }
 
     #[test]
     fn pressure_command_format() {
-        // Verify command string format directly
+        let sent = Arc::new(Mutex::new(Vec::new()));
         let mut c = make_initialized();
-        c.transport = Some(Box::new(MockTransport::new()));
+        c.transport = Some(Box::new(RecordingTransport::new(sent.clone())));
         c.set_pressure(76.0).unwrap();
         assert_eq!(c.pressure(), 76.0);
+        assert_eq!(sent.lock().unwrap().as_slice(), &["As76.000000"]);
     }
 
     #[test]
@@ -278,17 +399,29 @@ mod tests {
 
     #[test]
     fn valve_state_bitmask_format() {
-        // valve_state = 0b00000101 (valves 0 and 2 open)
-        // command should be "Av10100000" (LSB first: bit0=1, bit1=0, bit2=1, ...)
+        let sent = Arc::new(Mutex::new(Vec::new()));
         let mut c = make_initialized();
-        c.valve_state = 0b00000101;
-        let mut cmd = format!("{}v", c.device_id);
-        let mut t = c.valve_state;
-        for _ in 0..8 {
-            cmd.push(if t & 1 != 0 { '1' } else { '0' });
-            t >>= 1;
-        }
-        assert_eq!(cmd, "Av10100000");
+        c.transport = Some(Box::new(RecordingTransport::new(sent.clone())));
+        c.set_valve_state(0b00000101).unwrap();
+        assert_eq!(sent.lock().unwrap().as_slice(), &["Av10100000"]);
+    }
+
+    #[test]
+    fn cached_state_updates_before_send_like_upstream() {
+        let mut c = make_initialized();
+        c.transport = Some(Box::new(FailingTransport));
+        assert_eq!(
+            c.set_pressure(12.5).unwrap_err(),
+            MmError::SerialCommandFailed
+        );
+        assert_eq!(c.pressure(), 12.5);
+
+        c.transport = Some(Box::new(FailingTransport));
+        assert_eq!(
+            c.set_valve_state(0b00000101).unwrap_err(),
+            MmError::SerialCommandFailed
+        );
+        assert_eq!(c.valve_state(), 0b00000101);
     }
 
     #[test]
@@ -296,20 +429,78 @@ mod tests {
         let mut c = AquinasController::new();
         c.set_device_id('B').unwrap();
         assert_eq!(c.device_id, 'B');
-        assert!(c.set_device_id('Z').is_err()); // > 'O'
+        c.set_device_id('O').unwrap();
+        assert_eq!(c.device_id, 'O');
+        assert!(c.set_device_id('Z').is_err());
     }
 
     #[test]
-    fn no_transport_error() {
-        assert!(AquinasController::new().initialize().is_err());
+    fn initialize_does_not_require_transport_like_upstream() {
+        let mut c = AquinasController::new();
+        c.initialize().unwrap();
+        assert!(c.initialized);
+        c.shutdown().unwrap();
+        assert!(!c.initialized);
     }
 
     #[test]
-    fn pressure_format_string() {
-        // verify 8 chars, 2 decimal places
-        let cmd = format!("As{:08.2}", 0.0f64);
-        assert_eq!(cmd, "As00000.00");
-        let cmd = format!("As{:08.2}", 76.0f64);
-        assert_eq!(cmd, "As00076.00");
+    fn property_setters_use_upstream_command_paths() {
+        let mut c = make_initialized();
+        c.transport = Some(Box::new(MockTransport::new()));
+
+        c.set_property("Pressure Set Point", PropertyValue::Float(12.5))
+            .unwrap();
+        assert_eq!(c.pressure(), 12.5);
+
+        c.transport = Some(Box::new(MockTransport::new()));
+        c.set_property("Valve State", PropertyValue::Integer(5))
+            .unwrap();
+        assert_eq!(c.valve_state(), 5);
+
+        c.transport = Some(Box::new(MockTransport::new()));
+        c.set_property("Valve nr. 2", PropertyValue::Integer(1))
+            .unwrap();
+        assert_eq!(c.valve_state() & 0b10, 0b10);
+    }
+
+    #[test]
+    fn property_getters_reflect_upstream_before_get_state() {
+        let mut c = make_initialized();
+        c.transport = Some(Box::new(MockTransport::new()));
+        c.set_property("Valve State", PropertyValue::Integer(5))
+            .unwrap();
+
+        assert_eq!(
+            c.get_property("Valve State").unwrap(),
+            PropertyValue::Integer(5)
+        );
+        assert_eq!(
+            c.get_property("Valve nr. 1").unwrap(),
+            PropertyValue::Integer(1)
+        );
+        assert_eq!(
+            c.get_property("Valve nr. 2").unwrap(),
+            PropertyValue::Integer(0)
+        );
+        assert_eq!(
+            c.get_property("Valve nr. 3").unwrap(),
+            PropertyValue::Integer(1)
+        );
+    }
+
+    #[test]
+    fn property_limits_follow_upstream() {
+        let mut c = make_initialized();
+        c.transport = Some(Box::new(MockTransport::new()));
+
+        assert!(c
+            .set_property("Pressure Set Point", PropertyValue::Float(76.1))
+            .is_err());
+        assert!(c
+            .set_property("Valve State", PropertyValue::Integer(256))
+            .is_err());
+        assert!(c
+            .set_property("Device ID", PropertyValue::String("Z".into()))
+            .is_err());
     }
 }

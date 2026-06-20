@@ -43,7 +43,9 @@ pub struct ZaberStage {
 impl ZaberStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -63,7 +65,9 @@ impl ZaberStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -99,37 +103,62 @@ impl ZaberStage {
     }
 }
 
-impl Default for ZaberStage { fn default() -> Self { Self::new() } }
+impl Default for ZaberStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for ZaberStage {
-    fn name(&self) -> &str { "ZaberStage" }
-    fn description(&self) -> &str { "Zaber linear stage" }
+    fn name(&self) -> &str {
+        "ZaberStage"
+    }
+    fn description(&self) -> &str {
+        "Zaber linear stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let resolution = self.get_setting_i64("resolution")? as f64;
         self.step_size_um = DEFAULT_LINEAR_MOTION_MM / DEFAULT_MOTOR_STEPS / resolution * 1000.0;
         let min_steps = self.get_setting_i64("limit.min")?;
         let max_steps = self.get_setting_i64("limit.max")?;
-        self.limit_min_um = min_steps as f64 * self.step_size_um;
-        self.limit_max_um = max_steps as f64 * self.step_size_um;
+        self.limit_min_um = min_steps as f64;
+        self.limit_max_um = max_steps as f64;
         let pos_steps = self.get_setting_i64("pos")?;
         self.position_um = pos_steps as f64 * self.step_size_um;
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for ZaberStage {
@@ -140,7 +169,9 @@ impl Stage for ZaberStage {
         Ok(())
     }
 
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.position_um) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.position_um)
+    }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
         let steps = (d / self.step_size_um).round() as i64;
@@ -160,10 +191,16 @@ impl Stage for ZaberStage {
         Ok(())
     }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((self.limit_min_um, self.limit_max_um)) }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((self.limit_min_um, self.limit_max_um))
+    }
 
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -174,9 +211,9 @@ mod tests {
     fn make_init_transport() -> MockTransport {
         MockTransport::new()
             .expect("/1 1 get resolution\n", "@01 01 IDLE -- 64")
-            .expect("/1 1 get limit.min\n",  "@01 01 IDLE -- 0")
-            .expect("/1 1 get limit.max\n",  "@01 01 IDLE -- 305175")
-            .expect("/1 1 get pos\n",         "@01 01 IDLE -- 0")
+            .expect("/1 1 get limit.min\n", "@01 01 IDLE -- 0")
+            .expect("/1 1 get limit.max\n", "@01 01 IDLE -- 305175")
+            .expect("/1 1 get pos\n", "@01 01 IDLE -- 0")
     }
 
     #[test]
@@ -185,14 +222,14 @@ mod tests {
         s.initialize().unwrap();
         assert!((s.get_position_um().unwrap()).abs() < 0.001);
         let (lo, hi) = s.get_limits().unwrap();
-        assert!(lo < hi);
+        assert_eq!(lo, 0.0);
+        assert_eq!(hi, 305175.0);
     }
 
     #[test]
     fn move_absolute() {
         // 100 µm / 0.15625 µm/step = 640 steps
-        let t = make_init_transport()
-            .expect("/1 1 move abs 640\n", "@01 01 IDLE -- 640");
+        let t = make_init_transport().expect("/1 1 move abs 640\n", "@01 01 IDLE -- 640");
         let mut s = ZaberStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_position_um(100.0).unwrap();
@@ -202,8 +239,7 @@ mod tests {
     #[test]
     fn move_relative() {
         // 50 µm / 0.15625 µm/step = 320 steps
-        let t = make_init_transport()
-            .expect("/1 1 move rel 320\n", "@01 01 IDLE -- 320");
+        let t = make_init_transport().expect("/1 1 move rel 320\n", "@01 01 IDLE -- 320");
         let mut s = ZaberStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_position_um(50.0).unwrap();
@@ -212,8 +248,7 @@ mod tests {
 
     #[test]
     fn home() {
-        let t = make_init_transport()
-            .expect("/1 1 home\n", "@01 01 IDLE -- OK");
+        let t = make_init_transport().expect("/1 1 home\n", "@01 01 IDLE -- OK");
         let mut s = ZaberStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.home().unwrap();
@@ -222,13 +257,14 @@ mod tests {
 
     #[test]
     fn stop() {
-        let t = make_init_transport()
-            .expect("/1 0 stop\n", "@01 00 IDLE -- OK");
+        let t = make_init_transport().expect("/1 0 stop\n", "@01 00 IDLE -- OK");
         let mut s = ZaberStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.stop().unwrap();
     }
 
     #[test]
-    fn no_transport_error() { assert!(ZaberStage::new().initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(ZaberStage::new().initialize().is_err());
+    }
 }

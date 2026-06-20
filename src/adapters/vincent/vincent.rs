@@ -116,7 +116,7 @@ impl Shutter for VincentShutter {
         Ok(())
     }
     fn get_open(&self) -> MmResult<bool> { Ok(self.is_open) }
-    fn fire(&mut self, _dt: f64) -> MmResult<()> { self.set_open(true) }
+    fn fire(&mut self, _dt: f64) -> MmResult<()> { Err(MmError::UnsupportedCommand) }
 }
 
 #[cfg(test)]

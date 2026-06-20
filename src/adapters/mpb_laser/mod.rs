@@ -30,7 +30,7 @@ pub const DEVICE_NAME_MPB: &str = "MPBLaser";
 static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
     name: DEVICE_NAME_MPB,
     description: "Lasers from MPB Communications Inc.",
-    device_type: DeviceType::Shutter,
+    device_type: DeviceType::Generic,
 }];
 
 pub struct MpbLaserAdapter;
@@ -46,7 +46,7 @@ impl AdapterModule for MpbLaserAdapter {
 
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
-            DEVICE_NAME_MPB => Some(AnyDevice::Shutter(Box::new(MpbLaser::new()))),
+            DEVICE_NAME_MPB => Some(AnyDevice::Generic(Box::new(MpbLaser::new()))),
             _ => None,
         }
     }

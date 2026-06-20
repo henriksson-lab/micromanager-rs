@@ -29,7 +29,7 @@ pub const DEVICE_NAME_IBEAM: &str = "iBeamSmartCW";
 static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
     name: DEVICE_NAME_IBEAM,
     description: "Toptica iBeam smart laser in CW mode",
-    device_type: DeviceType::Shutter,
+    device_type: DeviceType::Generic,
 }];
 
 pub struct TopticaIBeamAdapter;
@@ -45,7 +45,7 @@ impl AdapterModule for TopticaIBeamAdapter {
 
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
-            DEVICE_NAME_IBEAM => Some(AnyDevice::Shutter(Box::new(IBeamSmartCW::new()))),
+            DEVICE_NAME_IBEAM => Some(AnyDevice::Generic(Box::new(IBeamSmartCW::new()))),
             _ => None,
         }
     }

@@ -14,63 +14,38 @@ use crate::traits::Device;
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum WptrCommand {
-    None,
-    Org,
-    Get,
-    Put,
-    Aes,
-    Drt,
-}
-
-impl WptrCommand {
-    fn from_str(s: &str) -> Option<Self> {
-        match s.trim().to_uppercase().as_str() {
-            "ORG" => Some(Self::Org),
-            "GET" => Some(Self::Get),
-            "PUT" => Some(Self::Put),
-            "AES" => Some(Self::Aes),
-            "DRT" => Some(Self::Drt),
-            _ => None,
-        }
-    }
-
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::None => "None",
-            Self::Org => "ORG",
-            Self::Get => "GET",
-            Self::Put => "PUT",
-            Self::Aes => "AES",
-            Self::Drt => "DRT",
-        }
-    }
-}
-
 pub struct AsiWPTR {
     props: PropertyMap,
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
     stage: i64,
     slot: i64,
-    last_command: WptrCommand,
+    command: String,
 }
 
 impl AsiWPTR {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Stage", PropertyValue::Integer(1), false).unwrap();
-        props.define_property("Slot", PropertyValue::Integer(1), false).unwrap();
-        props.define_property("Command", PropertyValue::String("None".into()), false).unwrap();
+        props
+            .define_property("Name", PropertyValue::String("WPTRobot".into()), true)
+            .unwrap();
+        props
+            .define_property(
+                "Description",
+                PropertyValue::String("Wellplate Transfer Robot".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
+            .unwrap();
         Self {
             props,
             transport: None,
             initialized: false,
             stage: 1,
             slot: 1,
-            last_command: WptrCommand::None,
+            command: "Undefined".into(),
         }
     }
 
@@ -80,7 +55,9 @@ impl AsiWPTR {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -90,43 +67,64 @@ impl AsiWPTR {
     /// Send a command (with `\r\n` terminator) and read 3-char echo response.
     fn send_cmd(&mut self, command: &str) -> MmResult<String> {
         let full = format!("{}\r\n", command);
-        self.call_transport(|t| {
-            let r = t.send_recv(&full)?;
-            Ok(r.trim().to_string())
-        })
+        self.call_transport(|t| t.send_recv(&full))
     }
 
-    /// Execute the command currently stored in `last_command`.
-    fn execute_command(&mut self, cmd: WptrCommand) -> MmResult<()> {
-        let raw_cmd = match &cmd {
-            WptrCommand::Org => "ORG".to_string(),
-            WptrCommand::Get => format!("GET {},{}", self.stage, self.slot),
-            WptrCommand::Put => format!("PUT {},{}", self.stage, self.slot),
-            WptrCommand::Aes => "AES".to_string(),
-            WptrCommand::Drt => "DRT".to_string(),
-            WptrCommand::None => return Ok(()),
+    fn execute_command(&mut self, command: &str) -> MmResult<()> {
+        let Some(prefix) = command.get(0..3) else {
+            return Ok(());
+        };
+        let raw_cmd = match prefix {
+            "ORG" => "ORG".to_string(),
+            "GET" => format!("GET {},{}", self.stage, self.slot),
+            "PUT" => format!("PUT {},{}", self.stage, self.slot),
+            "AES" => "AES".to_string(),
+            "DRT" => "DRT".to_string(),
+            _ => return Ok(()),
         };
 
         let expected_echo = &raw_cmd[..3];
         let resp = self.send_cmd(&raw_cmd)?;
-        if resp.len() < 3 || &resp[..3] != expected_echo {
-            return Err(MmError::LocallyDefined(
-                format!("W-PTR unexpected response '{}' for command '{}'", resp, raw_cmd)
-            ));
+        if resp.len() != 3 || &resp[..3] != expected_echo {
+            return Err(MmError::LocallyDefined(format!(
+                "W-PTR unexpected response '{}' for command '{}'",
+                resp, raw_cmd
+            )));
         }
-        self.last_command = cmd;
         Ok(())
     }
 }
 
-impl Default for AsiWPTR { fn default() -> Self { Self::new() } }
+impl Default for AsiWPTR {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for AsiWPTR {
-    fn name(&self) -> &str { "ASI-WPTRobot" }
-    fn description(&self) -> &str { "ASI W-PTR Wellplate Transfer Robot" }
+    fn name(&self) -> &str {
+        "WPTRobot"
+    }
+    fn description(&self) -> &str {
+        "Wellplate Transfer Robot"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
+        self.call_transport(|t| t.purge())?;
+        if !self.props.has_property("Stage") {
+            self.props
+                .define_property("Stage", PropertyValue::Integer(1), false)
+                .unwrap();
+            self.props
+                .define_property("Slot", PropertyValue::Integer(1), false)
+                .unwrap();
+            self.props
+                .define_property("Command", PropertyValue::String("Undefined".into()), false)
+                .unwrap();
+        }
         self.initialized = true;
         Ok(())
     }
@@ -140,7 +138,7 @@ impl Device for AsiWPTR {
         match name {
             "Stage" => Ok(PropertyValue::Integer(self.stage)),
             "Slot" => Ok(PropertyValue::Integer(self.slot)),
-            "Command" => Ok(PropertyValue::String(self.last_command.as_str().to_string())),
+            "Command" => Ok(PropertyValue::String(self.command.clone())),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -157,24 +155,39 @@ impl Device for AsiWPTR {
             }
             "Command" => {
                 let s = val.as_str().to_string();
-                if let Some(cmd) = WptrCommand::from_str(&s) {
-                    if self.initialized {
-                        self.execute_command(cmd)?;
-                    }
+                self.command = s.clone();
+                self.props
+                    .set("Command", PropertyValue::String(s.clone()))?;
+                if self.initialized {
+                    self.execute_command(&s)?;
                 }
                 Ok(())
+            }
+            "Port" => {
+                if self.initialized {
+                    return Err(MmError::InvalidProperty);
+                }
+                self.props.set(name, val)
             }
             _ => self.props.set(name, val),
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Generic }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Generic
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -192,8 +205,14 @@ mod tests {
         let t = MockTransport::new();
         let mut robot = AsiWPTR::new().with_transport(Box::new(t));
         robot.initialize().unwrap();
-        assert_eq!(robot.get_property("Stage").unwrap(), PropertyValue::Integer(1));
-        assert_eq!(robot.get_property("Slot").unwrap(), PropertyValue::Integer(1));
+        assert_eq!(
+            robot.get_property("Stage").unwrap(),
+            PropertyValue::Integer(1)
+        );
+        assert_eq!(
+            robot.get_property("Slot").unwrap(),
+            PropertyValue::Integer(1)
+        );
     }
 
     #[test]
@@ -201,7 +220,9 @@ mod tests {
         let t = MockTransport::new().expect("ORG\r\n", "ORG");
         let mut robot = AsiWPTR::new().with_transport(Box::new(t));
         robot.initialize().unwrap();
-        robot.set_property("Command", PropertyValue::String("ORG".into())).unwrap();
+        robot
+            .set_property("Command", PropertyValue::String("ORG".into()))
+            .unwrap();
     }
 
     #[test]
@@ -209,9 +230,15 @@ mod tests {
         let t = MockTransport::new().expect("GET 2,5\r\n", "GET");
         let mut robot = AsiWPTR::new().with_transport(Box::new(t));
         robot.initialize().unwrap();
-        robot.set_property("Stage", PropertyValue::Integer(2)).unwrap();
-        robot.set_property("Slot", PropertyValue::Integer(5)).unwrap();
-        robot.set_property("Command", PropertyValue::String("GET".into())).unwrap();
+        robot
+            .set_property("Stage", PropertyValue::Integer(2))
+            .unwrap();
+        robot
+            .set_property("Slot", PropertyValue::Integer(5))
+            .unwrap();
+        robot
+            .set_property("Command", PropertyValue::String("GET".into()))
+            .unwrap();
     }
 
     #[test]
@@ -219,9 +246,15 @@ mod tests {
         let t = MockTransport::new().expect("PUT 1,3\r\n", "PUT");
         let mut robot = AsiWPTR::new().with_transport(Box::new(t));
         robot.initialize().unwrap();
-        robot.set_property("Stage", PropertyValue::Integer(1)).unwrap();
-        robot.set_property("Slot", PropertyValue::Integer(3)).unwrap();
-        robot.set_property("Command", PropertyValue::String("PUT".into())).unwrap();
+        robot
+            .set_property("Stage", PropertyValue::Integer(1))
+            .unwrap();
+        robot
+            .set_property("Slot", PropertyValue::Integer(3))
+            .unwrap();
+        robot
+            .set_property("Command", PropertyValue::String("PUT".into()))
+            .unwrap();
     }
 
     #[test]
@@ -229,12 +262,23 @@ mod tests {
         let t = MockTransport::new().expect("AES\r\n", "AES");
         let mut robot = AsiWPTR::new().with_transport(Box::new(t));
         robot.initialize().unwrap();
-        robot.set_property("Command", PropertyValue::String("AES".into())).unwrap();
+        robot
+            .set_property("Command", PropertyValue::String("AES".into()))
+            .unwrap();
     }
 
     #[test]
     fn wrong_echo_is_error() {
         let t = MockTransport::new().expect("ORG\r\n", "ERR");
+        let mut robot = AsiWPTR::new().with_transport(Box::new(t));
+        robot.initialize().unwrap();
+        let result = robot.set_property("Command", PropertyValue::String("ORG".into()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn padded_echo_is_error() {
+        let t = MockTransport::new().expect("ORG\r\n", "ORG ");
         let mut robot = AsiWPTR::new().with_transport(Box::new(t));
         robot.initialize().unwrap();
         let result = robot.set_property("Command", PropertyValue::String("ORG".into()));

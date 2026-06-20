@@ -7,10 +7,10 @@
 //! - Shutter: {"task":"/laser_act","LASERid":1,"LASERval":<0 or 255>}
 //!
 //! Devices exported:
-//! - `UC2Hub`    — Hub
-//! - `XYStage`   — XYStage
-//! - `ZStage`    — Stage
-//! - `UC2Shutter` — Shutter
+//! - `openUC2-Hub` — Hub
+//! - `openUC2-XYStage` — XYStage
+//! - `openUC2-ZStage` — Stage
+//! - `openUC2-LED-Laser` — Shutter
 
 pub mod hub;
 pub mod xystage;
@@ -25,10 +25,10 @@ pub use shutter::Uc2Shutter;
 use crate::traits::{AdapterModule, AnyDevice, DeviceInfo};
 use crate::types::DeviceType;
 
-pub const DEVICE_NAME_HUB: &str = "UC2Hub";
-pub const DEVICE_NAME_XYSTAGE: &str = "UC2XYStage";
-pub const DEVICE_NAME_ZSTAGE: &str = "UC2ZStage";
-pub const DEVICE_NAME_SHUTTER: &str = "UC2Shutter";
+pub const DEVICE_NAME_HUB: &str = "openUC2-Hub";
+pub const DEVICE_NAME_XYSTAGE: &str = "openUC2-XYStage";
+pub const DEVICE_NAME_ZSTAGE: &str = "openUC2-ZStage";
+pub const DEVICE_NAME_SHUTTER: &str = "openUC2-LED-Laser";
 
 static DEVICE_LIST: &[DeviceInfo] = &[
     DeviceInfo { name: DEVICE_NAME_HUB,     description: "openUC2 hub device",                device_type: DeviceType::Hub },

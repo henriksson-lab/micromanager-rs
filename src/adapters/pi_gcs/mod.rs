@@ -2,7 +2,7 @@
 ///
 /// Protocol (TX `\n`, RX `\n`):
 ///   `SVO A 1\n`        → enable servo for axis A
-///   `MOV A {pos}\n`    → move to absolute position in mm
+///   `MOV A {pos}\n`    → move to absolute position in µm
 ///   `POS? A\n`         → query position; response `A={value}\n`
 ///   `ERR?\n`           → query last error code; 0 = success
 ///
@@ -88,8 +88,7 @@ impl Device for PiGcsZStage {
         self.send(&format!("SVO {} 1", axis))?;
         // Query current position
         let resp = self.send(&format!("POS? {}", axis))?;
-        let pos_mm = Self::parse_value(&resp)?;
-        self.pos_um = pos_mm * 1000.0;
+        self.pos_um = Self::parse_value(&resp)?;
         self.initialized = true;
         Ok(())
     }
@@ -119,8 +118,7 @@ impl Device for PiGcsZStage {
 impl Stage for PiGcsZStage {
     fn set_position_um(&mut self, z: f64) -> MmResult<()> {
         let axis = self.axis.clone();
-        let pos_mm = z / 1000.0;
-        self.send(&format!("MOV {} {:.6}", axis, pos_mm))?;
+        self.send(&format!("MOV {} {}", axis, z))?;
         self.check_error()?;
         self.pos_um = z;
         Ok(())
@@ -153,8 +151,8 @@ mod tests {
 
     #[test]
     fn initialize_reads_position() {
-        // SVO → empty ok, POS? → A=0.05000 (50 µm = 0.05 mm)
-        let t = MockTransport::new().any("").any("A=0.05000");
+        // SVO -> empty ok, POS? -> A=50.0 um
+        let t = MockTransport::new().any("").any("A=50.0");
         let mut s = PiGcsZStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!((s.get_position_um().unwrap() - 50.0).abs() < 1e-6);

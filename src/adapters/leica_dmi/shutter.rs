@@ -1,12 +1,10 @@
 /// Leica DMI shutter (TL or IL).
 ///
 /// Protocol (ASCII, `\r` terminated):
-///   TL Shutter device address: "78"
-///   IL Shutter device address: "79"
+///   Lamp/shutter device address: "77"
 ///
-///   Open shutter:   `"<dev>32 1\r"` → `"<dev>32 1\r"`
-///   Close shutter:  `"<dev>32 0\r"` → `"<dev>32 0\r"`
-///   Get state:      `"<dev>33\r"`   → `"<dev>33 <0|1>\r"`
+///   TL shutter: `77032 0 <0|1>\r`
+///   IL shutter: `77032 1 <0|1>\r` on DMI 4000/5000/6000 family
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
@@ -15,8 +13,8 @@ use crate::types::{DeviceType, PropertyValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutterType {
-    TransmittedLight,   // device address "78"
-    IncidentLight,      // device address "79"
+    TransmittedLight, // lamp channel 0
+    IncidentLight,    // lamp channel 1
 }
 
 pub struct LeicaDMIShutter {
@@ -30,12 +28,20 @@ pub struct LeicaDMIShutter {
 impl LeicaDMIShutter {
     pub fn new(shutter_type: ShutterType) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         let type_str = match shutter_type {
             ShutterType::TransmittedLight => "TL",
-            ShutterType::IncidentLight    => "IL",
+            ShutterType::IncidentLight => "IL",
         };
-        props.define_property("ShutterType", PropertyValue::String(type_str.into()), true).unwrap();
+        props
+            .define_property("ShutterType", PropertyValue::String(type_str.into()), true)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1"]).unwrap();
         Self {
             props,
             transport: None,
@@ -50,10 +56,10 @@ impl LeicaDMIShutter {
         self
     }
 
-    fn device_addr(&self) -> &'static str {
+    fn shutter_channel(&self) -> u8 {
         match self.shutter_type {
-            ShutterType::TransmittedLight => "78",
-            ShutterType::IncidentLight    => "79",
+            ShutterType::TransmittedLight => 0,
+            ShutterType::IncidentLight => 1,
         }
     }
 
@@ -71,23 +77,23 @@ impl LeicaDMIShutter {
         self.call_transport(|t| Ok(t.send_recv(cmd)?.trim().to_string()))
     }
 
+    fn send_no_response(&mut self, cmd: &str) -> MmResult<()> {
+        self.call_transport(|t| t.send(cmd))
+    }
+
     fn send_open(&mut self, open: bool) -> MmResult<()> {
-        let dev = self.device_addr();
+        let dev = "77";
+        let channel = self.shutter_channel();
         let val = if open { 1 } else { 0 };
-        let cmd = format!("{}32 {}\r", dev, val);
-        let resp = self.send_recv(&cmd)?;
-        let expected_prefix = format!("{}32", dev);
-        if !resp.starts_with(&expected_prefix) {
-            return Err(MmError::SerialInvalidResponse);
-        }
-        Ok(())
+        let cmd = format!("{}032 {} {}\r", dev, channel, val);
+        self.send_no_response(&cmd)
     }
 
     pub fn query_state(&mut self) -> MmResult<bool> {
-        let dev = self.device_addr();
-        let cmd = format!("{}33\r", dev);
+        let dev = "77";
+        let cmd = format!("{}033\r", dev);
         let resp = self.send_recv(&cmd)?;
-        let prefix = format!("{}33", dev);
+        let prefix = format!("{}033", dev);
         if !resp.starts_with(&prefix) {
             return Err(MmError::SerialInvalidResponse);
         }
@@ -97,8 +103,12 @@ impl LeicaDMIShutter {
 }
 
 impl Device for LeicaDMIShutter {
-    fn name(&self) -> &str { "LeicaDMIShutter" }
-    fn description(&self) -> &str { "Leica DMI shutter" }
+    fn name(&self) -> &str {
+        "LeicaDMIShutter"
+    }
+    fn description(&self) -> &str {
+        "Leica DMI shutter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -119,34 +129,58 @@ impl Device for LeicaDMIShutter {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "State" => Ok(PropertyValue::Integer(if self.is_open { 1 } else { 0 })),
+            _ => self.props.get(name).cloned(),
+        }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "State" => {
+                let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                match state {
+                    0 => self.set_open(false),
+                    1 => self.set_open(true),
+                    _ => Err(MmError::InvalidPropertyValue),
+                }
+            }
+            _ => self.props.set(name, val),
+        }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for LeicaDMIShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         self.send_open(open)?;
         self.is_open = open;
+        self.props
+            .set("State", PropertyValue::Integer(if open { 1 } else { 0 }))?;
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.is_open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.is_open)
+    }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -158,9 +192,9 @@ mod tests {
     #[test]
     fn tl_shutter_open_close() {
         let t = MockTransport::new()
-            .expect("7832 0\r", "7832 0")   // init close
-            .expect("7832 1\r", "7832 1")   // open
-            .expect("7832 0\r", "7832 0");  // close
+            .expect("77032 0 0\r", "") // init close
+            .expect("77032 0 1\r", "") // open
+            .expect("77032 0 0\r", ""); // close
         let mut s = LeicaDMIShutter::new(ShutterType::TransmittedLight).with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
@@ -172,8 +206,8 @@ mod tests {
     #[test]
     fn il_shutter_open_close() {
         let t = MockTransport::new()
-            .expect("7932 0\r", "7932 0")
-            .expect("7932 1\r", "7932 1");
+            .expect("77032 1 0\r", "")
+            .expect("77032 1 1\r", "");
         let mut s = LeicaDMIShutter::new(ShutterType::IncidentLight).with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
@@ -181,14 +215,11 @@ mod tests {
     }
 
     #[test]
-    fn fire_opens_closes() {
-        let t = MockTransport::new()
-            .expect("7832 0\r", "7832 0")   // init
-            .expect("7832 1\r", "7832 1")   // fire open
-            .expect("7832 0\r", "7832 0");  // fire close
+    fn fire_is_unsupported() {
+        let t = MockTransport::new().expect("77032 0 0\r", ""); // init
         let mut s = LeicaDMIShutter::new(ShutterType::TransmittedLight).with_transport(Box::new(t));
         s.initialize().unwrap();
-        s.fire(5.0).unwrap();
+        assert_eq!(s.fire(5.0), Err(MmError::UnsupportedCommand));
         assert!(!s.get_open().unwrap());
     }
 }

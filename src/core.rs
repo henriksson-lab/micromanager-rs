@@ -176,7 +176,7 @@ impl CMMCore {
     fn camera_label(&self) -> MmResult<String> {
         self.camera_label
             .clone()
-            .ok_or(MmError::CoreFocusStageUndef)
+            .ok_or(MmError::CoreCameraNotAvailable)
     }
 
     /// Snap a single image using the current camera.
@@ -287,7 +287,7 @@ impl CMMCore {
     fn xy_stage_label(&self) -> MmResult<String> {
         self.xy_stage_label
             .clone()
-            .ok_or(MmError::CoreFocusStageUndef)
+            .ok_or(MmError::CoreInvalidXYStageDevice)
     }
 
     pub fn set_xy_position(&mut self, x: f64, y: f64) -> MmResult<()> {
@@ -311,7 +311,7 @@ impl CMMCore {
     // ─── Shutter operations ───────────────────────────────────────────────────
 
     fn shutter_label(&self) -> MmResult<String> {
-        self.shutter_label.clone().ok_or(MmError::NotConnected)
+        self.shutter_label.clone().ok_or(MmError::CoreInvalidShutterDevice)
     }
 
     pub fn set_shutter_open(&mut self, open: bool) -> MmResult<()> {

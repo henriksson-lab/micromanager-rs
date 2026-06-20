@@ -23,7 +23,9 @@
    static void shim_sleep_ms(int ms) { Sleep((DWORD)ms); }
 #else
 #  include <unistd.h>
+#  ifdef __APPLE__
    static void shim_sleep_ms(int ms) { usleep((useconds_t)(ms) * 1000u); }
+#  endif
 #endif
 
 /* ── SDK headers ───────────────────────────────────────────────────────────── */
@@ -60,6 +62,123 @@ typedef struct SpotCtx {
     size_t   image_buf_bytes;
     int      frame_bytes;   /* bytes in the last snapped frame */
 } SpotCtx;
+
+#if !defined(__APPLE__) && !defined(_WIN32)
+
+/* Linux has no SpotCam SDK.  Keep the Rust feature buildable and let
+   initialize() report zero devices instead of failing at C compile time. */
+int spot_find_devices(void) { return 0; }
+
+int spot_get_device_name(int idx, char* buf, int len) {
+    (void)idx;
+    if (buf && len > 0) buf[0] = '\0';
+    return -1;
+}
+
+int spot_get_serial_number(int idx, char* buf, int len) {
+    (void)idx;
+    if (buf && len > 0) buf[0] = '\0';
+    return -1;
+}
+
+SpotCtx* spot_open(int device_index) {
+    (void)device_index;
+    return NULL;
+}
+
+void spot_close(SpotCtx* ctx) {
+    (void)ctx;
+}
+
+int spot_get_image_width(SpotCtx* ctx) {
+    (void)ctx;
+    return 0;
+}
+
+int spot_get_image_height(SpotCtx* ctx) {
+    (void)ctx;
+    return 0;
+}
+
+int spot_get_bit_depth(SpotCtx* ctx) {
+    (void)ctx;
+    return 0;
+}
+
+double spot_get_exposure_ms(SpotCtx* ctx) {
+    (void)ctx;
+    return 0.0;
+}
+
+int spot_set_exposure_ms(SpotCtx* ctx, double ms) {
+    (void)ctx;
+    (void)ms;
+    return -1;
+}
+
+int spot_get_gain(SpotCtx* ctx) {
+    (void)ctx;
+    return 1;
+}
+
+int spot_set_gain(SpotCtx* ctx, int gain) {
+    (void)ctx;
+    (void)gain;
+    return -1;
+}
+
+int spot_get_binning(SpotCtx* ctx) {
+    (void)ctx;
+    return 1;
+}
+
+int spot_set_binning(SpotCtx* ctx, int bin) {
+    (void)ctx;
+    (void)bin;
+    return -1;
+}
+
+float spot_get_temperature_c(SpotCtx* ctx) {
+    (void)ctx;
+    return 0.0f;
+}
+
+int spot_get_gain_max(SpotCtx* ctx) {
+    (void)ctx;
+    return 1;
+}
+
+int spot_set_roi(SpotCtx* ctx, int x, int y, int w, int h) {
+    (void)ctx;
+    (void)x;
+    (void)y;
+    (void)w;
+    (void)h;
+    return -1;
+}
+
+int spot_clear_roi(SpotCtx* ctx) {
+    (void)ctx;
+    return -1;
+}
+
+int spot_snap(SpotCtx* ctx, int timeout_ms) {
+    (void)ctx;
+    (void)timeout_ms;
+    return -1;
+}
+
+const uint8_t* spot_get_frame_ptr(SpotCtx* ctx) {
+    (void)ctx;
+    return NULL;
+}
+
+int spot_get_frame_bytes(SpotCtx* ctx) {
+    (void)ctx;
+    return 0;
+}
+
+#else
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
@@ -341,3 +460,5 @@ const uint8_t* spot_get_frame_ptr(SpotCtx* ctx) {
 int spot_get_frame_bytes(SpotCtx* ctx) {
     return ctx ? ctx->frame_bytes : 0;
 }
+
+#endif

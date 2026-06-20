@@ -114,7 +114,7 @@ impl Default for ScopeLedShutter {
 
 impl Device for ScopeLedShutter {
     fn name(&self) -> &str {
-        "ScopeLED-Shutter"
+        "ScopeLED-F"
     }
     fn description(&self) -> &str {
         "ScopeLED fluorescence illuminator shutter"
@@ -176,8 +176,7 @@ impl Shutter for ScopeLedShutter {
     }
 
     fn fire(&mut self, _dt: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -218,14 +217,9 @@ mod tests {
     }
 
     #[test]
-    fn fire_opens_then_closes() {
+    fn fire_is_unsupported() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(
-            MockTransport::new()
-                .expect_binary(&[0x01]) // open ack
-                .expect_binary(&[0x01]), // close ack
-        ));
-        s.fire(10.0).unwrap();
+        assert_eq!(s.fire(10.0).unwrap_err(), MmError::UnsupportedCommand);
         assert!(!s.get_open().unwrap());
     }
 

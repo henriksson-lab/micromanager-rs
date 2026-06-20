@@ -25,9 +25,17 @@ pub struct MarzhauserXYStage {
 impl MarzhauserXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
 
-        Self { props, transport: None, initialized: false, x_um: 0.0, y_um: 0.0 }
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            x_um: 0.0,
+            y_um: 0.0,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -46,7 +54,7 @@ impl MarzhauserXYStage {
     }
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let cmd = command.to_string();
+        let cmd = format!("{}\r", command);
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
@@ -57,23 +65,34 @@ impl MarzhauserXYStage {
     fn parse_pos(resp: &str) -> MmResult<(f64, f64)> {
         let parts: Vec<&str> = resp.trim().split_whitespace().collect();
         if parts.len() < 2 {
-            return Err(MmError::LocallyDefined(format!("Cannot parse position: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Cannot parse position: {}",
+                resp
+            )));
         }
-        let x = parts[0].parse::<f64>()
+        let x = parts[0]
+            .parse::<f64>()
             .map_err(|_| MmError::LocallyDefined(format!("Bad X: {}", parts[0])))?;
-        let y = parts[1].parse::<f64>()
+        let y = parts[1]
+            .parse::<f64>()
             .map_err(|_| MmError::LocallyDefined(format!("Bad Y: {}", parts[1])))?;
         Ok((x, y))
     }
 }
 
 impl Default for MarzhauserXYStage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for MarzhauserXYStage {
-    fn name(&self) -> &str { "MarzhauserXYStage" }
-    fn description(&self) -> &str { "Marzhauser TANGO XY-stage" }
+    fn name(&self) -> &str {
+        "XYStage"
+    }
+    fn description(&self) -> &str {
+        "Tango XY stage driver adapter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -82,9 +101,10 @@ impl Device for MarzhauserXYStage {
 
         let ver = self.cmd("?version")?;
         if !ver.to_lowercase().contains("tango") {
-            return Err(MmError::LocallyDefined(
-                format!("Unexpected controller: {}", ver)
-            ));
+            return Err(MmError::LocallyDefined(format!(
+                "Unexpected controller: {}",
+                ver
+            )));
         }
 
         let _ = self.cmd("!autostatus 0");
@@ -112,32 +132,48 @@ impl Device for MarzhauserXYStage {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for MarzhauserXYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
         let resp = self.cmd(&format!("!moa {:.3} {:.3}", x, y))?;
         if resp.contains('E') {
-            return Err(MmError::LocallyDefined(format!("Marzhauser error: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Marzhauser error: {}",
+                resp
+            )));
         }
         self.x_um = x;
         self.y_um = y;
         Ok(())
     }
 
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        Ok((self.x_um, self.y_um))
+    }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let resp = self.cmd(&format!("!mor {:.3} {:.3}", dx, dy))?;
         if resp.contains('E') {
-            return Err(MmError::LocallyDefined(format!("Marzhauser error: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Marzhauser error: {}",
+                resp
+            )));
         }
         self.x_um += dx;
         self.y_um += dy;
@@ -147,7 +183,10 @@ impl XYStage for MarzhauserXYStage {
     fn home(&mut self) -> MmResult<()> {
         let resp = self.cmd("!cal")?;
         if resp.contains('E') {
-            return Err(MmError::LocallyDefined(format!("Marzhauser error: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Marzhauser error: {}",
+                resp
+            )));
         }
         self.x_um = 0.0;
         self.y_um = 0.0;
@@ -155,7 +194,8 @@ impl XYStage for MarzhauserXYStage {
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        let _ = self.cmd("\\");
+        let _ = self.cmd("a x");
+        let _ = self.cmd("a y");
         Ok(())
     }
 
@@ -163,7 +203,9 @@ impl XYStage for MarzhauserXYStage {
         Ok((-100_000.0, 100_000.0, -100_000.0, 100_000.0))
     }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (0.1, 0.1) }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (0.1, 0.1)
+    }
 
     fn set_origin(&mut self) -> MmResult<()> {
         self.x_um = 0.0;
@@ -179,10 +221,10 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("?version",      "TANGO:v1.2")
-            .expect("!autostatus 0", "OK")
-            .expect("!dim 1 1",      "OK")
-            .expect("?pos",          "100.000 200.000")
+            .expect("?version\r", "TANGO:v1.2")
+            .expect("!autostatus 0\r", "OK")
+            .expect("!dim 1 1\r", "OK")
+            .expect("?pos\r", "100.000 200.000")
     }
 
     #[test]
@@ -214,7 +256,7 @@ mod tests {
 
     #[test]
     fn wrong_controller_rejected() {
-        let t = MockTransport::new().expect("?version", "Unknown v1.0");
+        let t = MockTransport::new().expect("?version\r", "Unknown v1.0");
         let mut stage = MarzhauserXYStage::new().with_transport(Box::new(t));
         assert!(stage.initialize().is_err());
     }

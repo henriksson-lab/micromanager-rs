@@ -20,7 +20,9 @@ pub struct OfXYStage {
 impl OfXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("StepSizeUm", PropertyValue::Float(0.07), false).unwrap();
+        props
+            .define_property("StepSizeUm", PropertyValue::Float(0.07), false)
+            .unwrap();
         Self {
             props,
             initialized: false,
@@ -44,8 +46,14 @@ impl OfXYStage {
     fn sync_state(&mut self) -> MmResult<()> {
         let resp = self.send("p")?;
         let mut parts = resp.split_whitespace();
-        let x: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(self.steps_x);
-        let y: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(self.steps_y);
+        let x: i64 = parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(self.steps_x);
+        let y: i64 = parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(self.steps_y);
         self.steps_x = x;
         self.steps_y = y;
         Ok(())
@@ -53,47 +61,68 @@ impl OfXYStage {
 }
 
 impl Default for OfXYStage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for OfXYStage {
-    fn name(&self) -> &str { "OFXYStage" }
-    fn description(&self) -> &str { "OpenFlexure XY stage" }
+    fn name(&self) -> &str {
+        "OFXYStage"
+    }
+    fn description(&self) -> &str {
+        "OpenFlexure XY stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.commander.is_none() { return Err(MmError::CommHubMissing); }
+        if self.commander.is_none() {
+            return Err(MmError::CommHubMissing);
+        }
+        let response = self.send("blocking_moves false")?;
+        if !response.contains("done") {
+            return Err(MmError::SerialInvalidResponse);
+        }
         self.sync_state()?;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized { let _ = self.send("release"); self.initialized = false; }
+        if self.initialized {
+            let _ = self.send("release");
+            self.initialized = false;
+        }
         Ok(())
     }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for OfXYStage {
-    fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
-        let tx = (x / self.step_size_um).round() as i64;
-        let ty = (y / self.step_size_um).round() as i64;
-        let dx = tx - self.steps_x;
-        let dy = ty - self.steps_y;
-        if dx != 0 { self.send(&format!("mrx {}", dx))?; }
-        if dy != 0 { self.send(&format!("mry {}", dy))?; }
-        self.steps_x = tx;
-        self.steps_y = ty;
+    fn set_xy_position_um(&mut self, _x: f64, _y: f64) -> MmResult<()> {
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
         Ok(())
     }
 
@@ -105,19 +134,22 @@ impl XYStage for OfXYStage {
     }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
         let dx_steps = (dx / self.step_size_um).round() as i64;
         let dy_steps = (dy / self.step_size_um).round() as i64;
-        if dx_steps != 0 { self.send(&format!("mrx {}", dx_steps))?; }
-        if dy_steps != 0 { self.send(&format!("mry {}", dy_steps))?; }
+        self.send(&format!("mrx {}\nmry {}", dx_steps, dy_steps))?;
         self.steps_x += dx_steps;
         self.steps_y += dy_steps;
         Ok(())
     }
 
     fn home(&mut self) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
-        self.set_xy_position_um(0.0, 0.0)
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
+        Ok(())
     }
 
     fn stop(&mut self) -> MmResult<()> {
@@ -126,14 +158,16 @@ impl XYStage for OfXYStage {
         Ok(())
     }
 
-    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> { Ok((0.0, 0.0, 0.0, 0.0)) }
+    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
+        Ok((0.0, 0.0, 0.0, 0.0))
+    }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (self.step_size_um, self.step_size_um) }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (self.step_size_um, self.step_size_um)
+    }
 
     fn set_origin(&mut self) -> MmResult<()> {
         self.send("zero")?;
-        self.steps_x = 0;
-        self.steps_y = 0;
         Ok(())
     }
 }
@@ -143,23 +177,49 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    fn make_stage() -> OfXYStage {
+    fn make_stage() -> (OfXYStage, Arc<Mutex<Vec<String>>>) {
         let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let log_for_return = Arc::clone(&log);
         let commander: Commander = Arc::new(move |cmd| {
             log.lock().unwrap().push(cmd.to_string());
             // Return "0 0 0" for "p" queries
-            if cmd == "p" { Ok("0 0 0".to_string()) } else { Ok("ok".to_string()) }
+            if cmd == "blocking_moves false" {
+                Ok("done".to_string())
+            } else if cmd == "p" {
+                Ok("0 0 0".to_string())
+            } else {
+                Ok("ok".to_string())
+            }
         });
-        OfXYStage::new().with_commander(commander)
+        (OfXYStage::new().with_commander(commander), log_for_return)
     }
 
     #[test]
     fn relative_move() {
-        let mut stage = make_stage();
+        let (mut stage, log) = make_stage();
         stage.initialize().unwrap();
         stage.set_relative_xy_position_um(70.0, 140.0).unwrap();
         let (x, y) = stage.get_xy_position_um().unwrap();
         assert!((x - 70.0).abs() < 0.1);
         assert!((y - 140.0).abs() < 0.1);
+        assert!(log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|cmd| cmd == "mrx 1000\nmry 2000"));
+    }
+
+    #[test]
+    fn set_origin_sends_zero_without_changing_cached_position() {
+        let (mut stage, log) = make_stage();
+        stage.initialize().unwrap();
+        stage.set_relative_xy_position_um(70.0, 140.0).unwrap();
+
+        stage.set_origin().unwrap();
+
+        let (x, y) = stage.get_xy_position_um().unwrap();
+        assert!((x - 70.0).abs() < 0.1);
+        assert!((y - 140.0).abs() < 0.1);
+        assert!(log.lock().unwrap().iter().any(|cmd| cmd == "zero"));
     }
 }

@@ -2,7 +2,7 @@
 ///
 /// Binary protocol:
 /// - Send byte `30` → response "MM-Ard\r\n" + optional extended version byte
-/// - Switch command: `[1, state_lo, state_hi]` → response `[1]`
+/// - Switch command: `[1, state]` → response `[1]`
 /// - DA command:     `[3, channel-1, hi_byte, lo_byte]` → response `[3]`
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -30,6 +30,10 @@ pub struct ArduinoHub {
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
     firmware_version: u8,
+    extended_version: i64,
+    max_num_patterns: u16,
+    num_da_channels: u8,
+    num_digital_pins: u8,
     pub shared: Arc<Mutex<HubState>>,
     inverted_logic: bool,
 }
@@ -37,18 +41,33 @@ pub struct ArduinoHub {
 impl ArduinoHub {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Logic", PropertyValue::String("Inverted".into()), false).unwrap();
-        props.set_allowed_values("Logic", &["Normal", "Inverted"]).unwrap();
-        props.define_property("Version", PropertyValue::Integer(0), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Logic", PropertyValue::String("Normal".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("Logic", &["Normal", "Inverted"])
+            .unwrap();
+        props
+            .define_property("Version", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("ExtendedVersion", PropertyValue::Integer(0), true)
+            .unwrap();
 
         Self {
             props,
             transport: None,
             initialized: false,
             firmware_version: 0,
+            extended_version: 0,
+            max_num_patterns: 12,
+            num_da_channels: 2,
+            num_digital_pins: 6,
             shared: Arc::new(Mutex::new(HubState::default())),
-            inverted_logic: true,
+            inverted_logic: false,
         }
     }
 
@@ -69,30 +88,33 @@ impl ArduinoHub {
 
     /// Send the switch state (16-bit) to the Arduino.
     pub fn write_switch_state(&mut self, state: u16) -> MmResult<()> {
-        let lo = (state & 0xFF) as u8;
-        let hi = ((state >> 8) & 0xFF) as u8;
-        let cmd = format!("\x01{}{}", lo as char, hi as char);
+        let mask = (1u16 << self.num_digital_pins.min(8)) - 1;
+        let mut value = state & mask;
+        if self.inverted_logic {
+            value = !value;
+        }
+        let cmd = [1, value as u8];
         self.call_transport(|t| {
-            t.send(&cmd)?;
-            let resp = t.receive_line()?;
-            if resp.as_bytes().first() != Some(&1) {
+            t.purge()?;
+            t.send_bytes(&cmd)?;
+            let resp = t.receive_bytes(1)?;
+            if resp.first() != Some(&1) {
                 return Err(MmError::SerialInvalidResponse);
             }
             Ok(())
-        })?;
-        self.shared.lock().switch_state = state;
-        Ok(())
+        })
     }
 
     /// Send a DA value (0–4095) to a channel (1-based).
     pub fn write_da(&mut self, channel: u8, value: u16) -> MmResult<()> {
-        let hi = ((value >> 8) & 0x0F) as u8;
+        let hi = ((value >> 8) & 0xFF) as u8;
         let lo = (value & 0xFF) as u8;
-        let cmd = format!("\x03{}{}{}", (channel - 1) as char, hi as char, lo as char);
+        let cmd = [3, channel - 1, hi, lo];
         self.call_transport(|t| {
-            t.send(&cmd)?;
-            let resp = t.receive_line()?;
-            if resp.as_bytes().first() != Some(&3) {
+            t.purge()?;
+            t.send_bytes(&cmd)?;
+            let resp = t.receive_bytes(4)?;
+            if resp.first() != Some(&3) {
                 return Err(MmError::SerialInvalidResponse);
             }
             Ok(())
@@ -101,6 +123,14 @@ impl ArduinoHub {
 
     pub fn firmware_version(&self) -> u8 {
         self.firmware_version
+    }
+
+    pub fn num_da_channels(&self) -> u8 {
+        self.num_da_channels
+    }
+
+    pub fn num_digital_pins(&self) -> u8 {
+        self.num_digital_pins
     }
 }
 
@@ -111,17 +141,23 @@ impl Default for ArduinoHub {
 }
 
 impl Device for ArduinoHub {
-    fn name(&self) -> &str { "Arduino-Hub" }
-    fn description(&self) -> &str { "Arduino Hub (required)" }
+    fn name(&self) -> &str {
+        "Arduino-Hub"
+    }
+    fn description(&self) -> &str {
+        "Arduino Hub (required)"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
 
-        // Send version query byte (30) and read greeting "MM-Ard-N\r\n"
+        // Command 30 only identifies the controller. Command 31 returns the
+        // firmware API version used for compatibility checks.
         let resp = self.call_transport(|t| {
-            t.send("\x1e")?; // 0x1e = 30
+            t.purge()?;
+            t.send_bytes(&[30])?;
             t.receive_line()
         })?;
 
@@ -131,13 +167,18 @@ impl Device for ArduinoHub {
             ));
         }
 
-        // Parse version number from response "MM-Ard\r\n" + possible ext version
-        // Basic parse: last token after '-' is version digit
-        let ver: u8 = resp
-            .split('-')
-            .last()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
+        if resp.len() > 7 {
+            self.extended_version = resp[7..].trim().parse().unwrap_or(0);
+        }
+
+        let version_resp = self.call_transport(|t| {
+            t.send_bytes(&[31])?;
+            t.receive_line()
+        })?;
+        let ver: u8 = version_resp
+            .trim()
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
 
         if ver < FIRMWARE_MIN || ver > FIRMWARE_MAX {
             return Err(MmError::LocallyDefined(format!(
@@ -147,8 +188,43 @@ impl Device for ArduinoHub {
         }
 
         self.firmware_version = ver;
-        self.props.entry_mut("Version")
+        self.props
+            .entry_mut("Version")
             .map(|e| e.value = PropertyValue::Integer(ver as i64));
+        self.props
+            .entry_mut("ExtendedVersion")
+            .map(|e| e.value = PropertyValue::Integer(self.extended_version));
+
+        if ver >= 3 {
+            let answer = self.call_transport(|t| {
+                t.send_bytes(&[32])?;
+                t.receive_bytes(3)
+            })?;
+            if answer.len() != 3 || answer[0] != 32 {
+                return Err(MmError::SerialInvalidResponse);
+            }
+            self.max_num_patterns = ((answer[1] as u16) << 8) | answer[2] as u16;
+        }
+
+        if ver >= 5 {
+            let da_answer = self.call_transport(|t| {
+                t.send_bytes(&[34])?;
+                t.receive_bytes(2)
+            })?;
+            if da_answer.len() != 2 || da_answer[0] != 34 {
+                return Err(MmError::SerialInvalidResponse);
+            }
+            self.num_da_channels = da_answer[1];
+
+            let digital_answer = self.call_transport(|t| {
+                t.send_bytes(&[35])?;
+                t.receive_bytes(2)
+            })?;
+            if digital_answer.len() != 2 || digital_answer[0] != 35 {
+                return Err(MmError::SerialInvalidResponse);
+            }
+            self.num_digital_pins = digital_answer[1].min(8);
+        }
 
         // Check logic setting
         if let Ok(PropertyValue::String(logic)) = self.props.get("Logic").cloned() {
@@ -188,18 +264,24 @@ impl Device for ArduinoHub {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
 
-    fn device_type(&self) -> DeviceType { DeviceType::Hub }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Hub
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Hub for ArduinoHub {
     fn detect_installed_devices(&mut self) -> MmResult<Vec<String>> {
-        Ok(vec![
-            "Arduino-Shutter".to_string(),
-            "Arduino-Switch".to_string(),
-            "Arduino-DAC1".to_string(),
-            "Arduino-DAC2".to_string(),
-        ])
+        let mut devices = vec!["Arduino-Shutter".to_string(), "Arduino-Switch".to_string()];
+        if self.num_da_channels >= 1 {
+            devices.push("Arduino-DAC1".to_string());
+        }
+        if self.num_da_channels >= 2 {
+            devices.push("Arduino-DAC2".to_string());
+        }
+        Ok(devices)
     }
 }
 
@@ -207,10 +289,54 @@ impl Hub for ArduinoHub {
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use crate::transport::Transport;
+    use std::collections::VecDeque;
+
+    struct ByteTransport {
+        responses: VecDeque<Vec<u8>>,
+        sent: Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl ByteTransport {
+        fn new(responses: Vec<Vec<u8>>) -> (Self, Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
+            let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+            (
+                Self {
+                    responses: responses.into(),
+                    sent: sent.clone(),
+                },
+                sent,
+            )
+        }
+    }
+
+    impl Transport for ByteTransport {
+        fn send(&mut self, cmd: &str) -> MmResult<()> {
+            self.sent.lock().unwrap().push(cmd.bytes().collect());
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            Err(MmError::SerialTimeout)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            Ok(())
+        }
+
+        fn send_bytes(&mut self, bytes: &[u8]) -> MmResult<()> {
+            self.sent.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+
+        fn receive_bytes(&mut self, n: usize) -> MmResult<Vec<u8>> {
+            let response = self.responses.pop_front().ok_or(MmError::SerialTimeout)?;
+            Ok(response[..response.len().min(n)].to_vec())
+        }
+    }
 
     fn make_hub() -> ArduinoHub {
-        let transport = MockTransport::new()
-            .any("MM-Ard-2"); // firmware v2 response to byte 30
+        let transport = MockTransport::new().any("MM-Ard").any("2"); // firmware v2 response to byte 31
         ArduinoHub::new().with_transport(Box::new(transport))
     }
 
@@ -222,9 +348,46 @@ mod tests {
     }
 
     #[test]
+    fn initializes_v5_capabilities() {
+        let transport = MockTransport::new()
+            .any("MM-Ard")
+            .any("5")
+            .expect_binary(&[32, 0, 12])
+            .expect_binary(&[34, 2])
+            .expect_binary(&[35, 6]);
+        let mut hub = ArduinoHub::new().with_transport(Box::new(transport));
+        hub.initialize().unwrap();
+        assert_eq!(hub.firmware_version(), 5);
+        assert_eq!(hub.num_da_channels(), 2);
+        assert_eq!(hub.num_digital_pins(), 6);
+    }
+
+    #[test]
     fn bad_firmware_rejected() {
         let transport = MockTransport::new().any("WrongDevice");
         let mut hub = ArduinoHub::new().with_transport(Box::new(transport));
         assert!(hub.initialize().is_err());
+    }
+
+    #[test]
+    fn default_logic_writes_normal_switch_state() {
+        let (transport, sent) = ByteTransport::new(vec![vec![1]]);
+        let mut hub = ArduinoHub::new().with_transport(Box::new(transport));
+
+        hub.write_switch_state(0b0010_1010).unwrap();
+
+        assert_eq!(&*sent.lock().unwrap(), &[vec![1, 0b0010_1010]]);
+    }
+
+    #[test]
+    fn inverted_logic_inverts_masked_switch_state() {
+        let (transport, sent) = ByteTransport::new(vec![vec![1]]);
+        let mut hub = ArduinoHub::new().with_transport(Box::new(transport));
+        hub.set_property("Logic", PropertyValue::String("Inverted".into()))
+            .unwrap();
+
+        hub.write_switch_state(0b0010_1010).unwrap();
+
+        assert_eq!(&*sent.lock().unwrap(), &[vec![1, 0b1101_0101]]);
     }
 }

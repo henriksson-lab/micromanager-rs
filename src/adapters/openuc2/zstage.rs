@@ -18,10 +18,8 @@ pub struct Uc2ZStage {
 
 impl Uc2ZStage {
     pub fn new() -> Self {
-        let mut props = PropertyMap::new();
-        props.define_property("StepSizeUm", PropertyValue::Float(0.1), false).unwrap();
         Self {
-            props,
+            props: PropertyMap::new(),
             initialized: false,
             pos_steps: 0,
             step_size_um: 0.1,
@@ -50,42 +48,70 @@ impl Uc2ZStage {
 }
 
 impl Default for Uc2ZStage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for Uc2ZStage {
-    fn name(&self) -> &str { "UC2ZStage" }
-    fn description(&self) -> &str { "Z Stage for openUC2" }
+    fn name(&self) -> &str {
+        "openUC2-ZStage"
+    }
+    fn description(&self) -> &str {
+        "Z Stage for openUC2"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.writer.is_none() { return Err(MmError::CommHubMissing); }
+        if self.writer.is_none() {
+            return Err(MmError::CommHubMissing);
+        }
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for Uc2ZStage {
     fn set_position_um(&mut self, pos: f64) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
-        let steps = (pos / self.step_size_um).round() as i64;
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
+        let steps = (pos / self.step_size_um) as i64;
         self.move_abs(steps)?;
         self.pos_steps = steps;
         Ok(())
     }
 
     fn get_position_um(&self) -> MmResult<f64> {
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
         Ok(self.pos_steps as f64 * self.step_size_um)
     }
 
@@ -95,19 +121,25 @@ impl Stage for Uc2ZStage {
     }
 
     fn home(&mut self) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
-        self.move_abs(0)?;
         self.pos_steps = 0;
         Ok(())
     }
 
-    fn stop(&mut self) -> MmResult<()> { Ok(()) }
+    fn stop(&mut self) -> MmResult<()> {
+        Ok(())
+    }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((0.0, 25000.0)) }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((0.0, 25000.0))
+    }
 
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
 
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -116,12 +148,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn make_stage() -> Uc2ZStage {
+        make_stage_with_log().0
+    }
+
+    fn make_stage_with_log() -> (Uc2ZStage, Arc<Mutex<Vec<String>>>) {
         let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let log2 = log.clone();
         let writer: JsonWriter = Arc::new(move |cmd| {
-            log.lock().unwrap().push(cmd.to_string());
+            log2.lock().unwrap().push(cmd.to_string());
             Ok("ok".to_string())
         });
-        Uc2ZStage::new().with_writer(writer)
+        (Uc2ZStage::new().with_writer(writer), log)
     }
 
     #[test]
@@ -131,5 +168,33 @@ mod tests {
         stage.set_position_um(500.0).unwrap();
         let pos = stage.get_position_um().unwrap();
         assert!((pos - 500.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn home_only_zeros_cached_position_like_upstream() {
+        let (mut stage, log) = make_stage_with_log();
+        stage.initialize().unwrap();
+        stage.set_position_um(500.0).unwrap();
+        log.lock().unwrap().clear();
+
+        stage.home().unwrap();
+
+        assert_eq!(stage.get_position_um().unwrap(), 0.0);
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_position_requires_initialization_like_upstream() {
+        let stage = make_stage();
+
+        assert_eq!(stage.get_position_um().unwrap_err(), MmError::NotConnected);
+    }
+
+    #[test]
+    fn no_step_size_property_like_upstream() {
+        let stage = Uc2ZStage::new();
+
+        assert!(!stage.has_property("StepSizeUm"));
+        assert_eq!(stage.property_names(), Vec::<String>::new());
     }
 }

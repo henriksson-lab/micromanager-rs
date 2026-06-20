@@ -23,9 +23,15 @@ fn check_tirf_response(resp: &str, cmd: &str) -> MmResult<()> {
     if resp.starts_with(&expected_ok) {
         Ok(())
     } else if resp.starts_with('n') {
-        Err(MmError::LocallyDefined(format!("Nikon TIRF error: '{}'", resp)))
+        Err(MmError::LocallyDefined(format!(
+            "Nikon TIRF error: '{}'",
+            resp
+        )))
     } else {
-        Err(MmError::LocallyDefined(format!("Nikon TIRF unexpected response: '{}'", resp)))
+        Err(MmError::LocallyDefined(format!(
+            "Nikon TIRF unexpected response: '{}'",
+            resp
+        )))
     }
 }
 
@@ -42,9 +48,19 @@ pub struct NikonTiRFShutter {
 impl NikonTiRFShutter {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Channel", PropertyValue::Integer(1), false).unwrap();
-        Self { props, transport: None, initialized: false, open: false, channel: 1 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Channel", PropertyValue::Integer(1), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            open: false,
+            channel: 1,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -53,7 +69,9 @@ impl NikonTiRFShutter {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -66,17 +84,30 @@ impl NikonTiRFShutter {
     }
 }
 
-impl Default for NikonTiRFShutter { fn default() -> Self { Self::new() } }
+impl Default for NikonTiRFShutter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for NikonTiRFShutter {
-    fn name(&self) -> &str { "NikonTiRFShutter" }
-    fn description(&self) -> &str { "Nikon T-LUSU(2) TIRF shutter" }
+    fn name(&self) -> &str {
+        "NikonTiRFShutter"
+    }
+    fn description(&self) -> &str {
+        "Nikon T-LUSU(2) TIRF shutter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let resp = self.cmd("rVER")?;
         if !resp.starts_with("aVER") {
-            return Err(MmError::LocallyDefined(format!("TIRF version query failed: '{}'", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "TIRF version query failed: '{}'",
+                resp
+            )));
         }
         // Close shutter on init
         let resp = self.cmd("cTSC")?;
@@ -85,22 +116,37 @@ impl Device for NikonTiRFShutter {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         if name == "Channel" {
-            if let PropertyValue::Integer(ch) = val { self.channel = ch.clamp(1, 3) as u8; }
+            if let PropertyValue::Integer(ch) = val {
+                self.channel = ch.clamp(1, 3) as u8;
+            }
         }
         self.props.set(name, val)
     }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for NikonTiRFShutter {
@@ -111,13 +157,19 @@ impl Shutter for NikonTiRFShutter {
         } else {
             self.cmd("cTSC")?
         };
-        let cmd_str = if open { format!("TSO{}", self.channel) } else { "TSC".to_string() };
+        let cmd_str = if open {
+            "TSO".to_string()
+        } else {
+            "TSC".to_string()
+        };
         check_tirf_response(&resp, &cmd_str)?;
         self.open = open;
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.open)
+    }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
         Err(MmError::NotSupported)
@@ -139,10 +191,23 @@ pub struct NikonTiTiRFShutter {
 impl NikonTiTiRFShutter {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Channel", PropertyValue::Integer(1), false).unwrap();
-        props.define_property("Mode", PropertyValue::Integer(0), false).unwrap();
-        Self { props, transport: None, initialized: false, open: false, channel: 1, mode: 0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Channel", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("Mode", PropertyValue::Integer(0), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            open: false,
+            channel: 1,
+            mode: 0,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -151,7 +216,9 @@ impl NikonTiTiRFShutter {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -164,17 +231,30 @@ impl NikonTiTiRFShutter {
     }
 }
 
-impl Default for NikonTiTiRFShutter { fn default() -> Self { Self::new() } }
+impl Default for NikonTiTiRFShutter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for NikonTiTiRFShutter {
-    fn name(&self) -> &str { "NikonTiTiRFShutter" }
-    fn description(&self) -> &str { "Nikon Ti-TIRF shutter with multi-channel bitmask mode" }
+    fn name(&self) -> &str {
+        "NikonTiTiRFShutter"
+    }
+    fn description(&self) -> &str {
+        "Nikon Ti-TIRF shutter with multi-channel bitmask mode"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let resp = self.cmd("rVER")?;
         if !resp.starts_with("aVER") {
-            return Err(MmError::LocallyDefined(format!("Ti-TIRF version query failed: '{}'", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Ti-TIRF version query failed: '{}'",
+                resp
+            )));
         }
         let resp = self.cmd("cTSC")?;
         check_tirf_response(&resp, "TSC")?;
@@ -182,24 +262,41 @@ impl Device for NikonTiTiRFShutter {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         if name == "Channel" {
-            if let PropertyValue::Integer(ch) = val { self.channel = ch.clamp(1, 3) as u8; }
+            if let PropertyValue::Integer(ch) = val {
+                self.channel = ch.clamp(1, 3) as u8;
+            }
         } else if name == "Mode" {
-            if let PropertyValue::Integer(m) = val { self.mode = m.clamp(0, 1) as u8; }
+            if let PropertyValue::Integer(m) = val {
+                self.mode = m.clamp(0, 1) as u8;
+            }
         }
         self.props.set(name, val)
     }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for NikonTiTiRFShutter {
@@ -207,10 +304,10 @@ impl Shutter for NikonTiTiRFShutter {
         let (cmd_str, expected) = if open {
             if self.mode == 0 {
                 let ch = self.channel;
-                (format!("cTSO{}", ch), format!("TSO{}", ch))
+                (format!("cTSO{}", ch), "TSO".to_string())
             } else {
                 let bitmask = 1u8 << (self.channel - 1);
-                (format!("cTSD{}", bitmask), format!("TSD{}", bitmask))
+                (format!("cTSD{}", bitmask), "TSD".to_string())
             }
         } else {
             ("cTSC".to_string(), "TSC".to_string())
@@ -221,7 +318,9 @@ impl Shutter for NikonTiTiRFShutter {
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.open)
+    }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
         Err(MmError::NotSupported)
@@ -235,7 +334,11 @@ mod tests {
 
     #[test]
     fn tirf_initialize_and_open() {
-        let t = MockTransport::new().any("aVER1.0").any("oTSC").any("oTSO1").any("oTSC");
+        let t = MockTransport::new()
+            .any("aVER1.0")
+            .any("oTSC")
+            .any("oTSO")
+            .any("oTSC");
         let mut s = NikonTiRFShutter::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!(!s.get_open().unwrap());
@@ -248,10 +351,11 @@ mod tests {
     #[test]
     fn titirf_multi_channel_mode() {
         // Mode 1, channel 2 → bitmask = 2
-        let t = MockTransport::new().any("aVER1.0").any("oTSC").any("oTSD2");
+        let t = MockTransport::new().any("aVER1.0").any("oTSC").any("oTSD");
         let mut s = NikonTiTiRFShutter::new().with_transport(Box::new(t));
         s.set_property("Mode", PropertyValue::Integer(1)).unwrap();
-        s.set_property("Channel", PropertyValue::Integer(2)).unwrap();
+        s.set_property("Channel", PropertyValue::Integer(2))
+            .unwrap();
         s.initialize().unwrap();
         s.set_open(true).unwrap();
         assert!(s.get_open().unwrap());

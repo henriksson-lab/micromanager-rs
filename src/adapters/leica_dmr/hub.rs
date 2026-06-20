@@ -10,13 +10,13 @@
 ///   lamp_          = 10 (halogen lamp)
 ///   zDrive_        = 16 (z drive)
 ///   objNosepiece_  = 20 (objective nosepiece)
-///   rLFA4_         = 8  (4-position RL filter turret)
-///   rLFA8_         = 9  (8-position RL filter turret)
+///   rLFA4_         = 67 (4-position RL filter turret)
+///   rLFA8_         = 12 (8-position RL filter turret)
 ///
 /// Key commands:
-///   Get firmware version:  `"00025\r"` → `"00025<version>\r"`
-///   Get microscope type:   `"00026\r"` → `"00026<type>\r"`
-///   Check presence:        `"<DD>001\r"` → `"<DD>001<1_or_0>\r"`
+///   Get firmware version:  `"00025\r"` -> `"00025<version>\r"`
+///   Get microscope type:   `"00026\r"` -> `"00026<type>\r"`
+///   Check presence:        `"<DD>001\r"` -> `"<DD>001<1_or_0>\r"`
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, Hub};
@@ -34,7 +34,19 @@ pub struct LeicaDMRHub {
 impl LeicaDMRHub {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property(
+                "Firmware version",
+                PropertyValue::String(String::new()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("Microscope", PropertyValue::String(String::new()), true)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -63,7 +75,7 @@ impl LeicaDMRHub {
         self.call_transport(|t| Ok(t.send_recv(cmd)?.trim().to_string()))
     }
 
-    /// Get command: `"<DD><CCC>\r"` → data portion of response.
+    /// Get command: `"<DD><CCC>\r"` -> data portion of response.
     pub fn get_command(&mut self, device_id: u8, command: u16) -> MmResult<String> {
         let cmd = format!("{:02}{:03}\r", device_id, command);
         let resp = self.send_recv(&cmd)?;
@@ -85,17 +97,27 @@ impl LeicaDMRHub {
         Ok(())
     }
 
-    pub fn version(&self) -> &str { &self.version }
-    pub fn microscope_type(&self) -> &str { &self.microscope_type }
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+    pub fn microscope_type(&self) -> &str {
+        &self.microscope_type
+    }
 }
 
 impl Default for LeicaDMRHub {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for LeicaDMRHub {
-    fn name(&self) -> &str { "LeicaDMR-Hub" }
-    fn description(&self) -> &str { "Leica DMR upright microscope hub" }
+    fn name(&self) -> &str {
+        "Leica DM microscope"
+    }
+    fn description(&self) -> &str {
+        "LeicaDMR controller"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -104,9 +126,17 @@ impl Device for LeicaDMRHub {
         // Get firmware version (device 0, command 25)
         let version = self.get_command(0, 25)?;
         self.version = version;
+        self.props
+            .entry_mut("Firmware version")
+            .map(|e| e.value = PropertyValue::String(self.version.clone()));
         // Get microscope type (device 0, command 26)
-        let micro_type = self.get_command(0, 26).unwrap_or_else(|_| "DMRXE".to_string());
+        let micro_type = self
+            .get_command(0, 26)
+            .unwrap_or_else(|_| "DMRXE".to_string());
         self.microscope_type = micro_type.trim().to_string();
+        self.props
+            .entry_mut("Microscope")
+            .map(|e| e.value = PropertyValue::String(self.microscope_type.clone()));
         self.initialized = true;
         Ok(())
     }
@@ -118,8 +148,8 @@ impl Device for LeicaDMRHub {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "FirmwareVersion" => Ok(PropertyValue::String(self.version.clone())),
-            "MicroscopeType"  => Ok(PropertyValue::String(self.microscope_type.clone())),
+            "Firmware version" => Ok(PropertyValue::String(self.version.clone())),
+            "Microscope" => Ok(PropertyValue::String(self.microscope_type.clone())),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -128,13 +158,21 @@ impl Device for LeicaDMRHub {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Hub }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Hub
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Hub for LeicaDMRHub {
@@ -175,7 +213,7 @@ mod tests {
         let t = MockTransport::new()
             .expect("00025\r", "00025v2.0")
             .expect("00026\r", "00026DMRA")
-            .expect("10010\r", "10010 75");  // lamp intensity query
+            .expect("10010\r", "10010 75"); // lamp intensity query
         let mut hub = LeicaDMRHub::new().with_transport(Box::new(t));
         hub.initialize().unwrap();
         let lamp_int = hub.get_command(10, 10).unwrap();

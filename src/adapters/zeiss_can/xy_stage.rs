@@ -12,7 +12,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::types::{DeviceType, PropertyValue};
 
-use super::hub::{ZeissHub, decode_pos, encode_pos};
+use super::hub::{decode_pos, encode_pos, ZeissHub};
 
 const STEPS_PER_UM: f64 = 5.0; // 0.2 µm/step → 5 steps/µm
 
@@ -27,14 +27,30 @@ pub struct ZeissMcu28XYStage {
 impl ZeissMcu28XYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, hub: ZeissHub::new(), initialized: false, x_um: 0.0, y_um: 0.0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        Self {
+            props,
+            hub: ZeissHub::new(),
+            initialized: false,
+            x_um: 0.0,
+            y_um: 0.0,
+        }
     }
 
     pub fn new_with_hub(hub: ZeissHub) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, hub, initialized: false, x_um: 0.0, y_um: 0.0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        Self {
+            props,
+            hub,
+            initialized: false,
+            x_um: 0.0,
+            y_um: 0.0,
+        }
     }
 
     fn send(&mut self, cmd: &str) -> MmResult<String> {
@@ -53,19 +69,32 @@ impl ZeissMcu28XYStage {
         if resp.starts_with("PN") {
             Ok(())
         } else {
-            Err(MmError::LocallyDefined(format!("MCU28 {} set error: '{}'", axis, resp)))
+            Err(MmError::LocallyDefined(format!(
+                "MCU28 {} set error: '{}'",
+                axis, resp
+            )))
         }
     }
 }
 
-impl Default for ZeissMcu28XYStage { fn default() -> Self { Self::new() } }
+impl Default for ZeissMcu28XYStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for ZeissMcu28XYStage {
-    fn name(&self) -> &str { "ZeissMCU28XYStage" }
-    fn description(&self) -> &str { "Zeiss MCU28 XY stage controller" }
+    fn name(&self) -> &str {
+        "ZeissMCU28XYStage"
+    }
+    fn description(&self) -> &str {
+        "Zeiss MCU28 XY stage controller"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if !self.hub.is_connected() { return Err(MmError::NotConnected); }
+        if !self.hub.is_connected() {
+            return Err(MmError::NotConnected);
+        }
         let xs = self.get_axis('X')?;
         let ys = self.get_axis('Y')?;
         self.x_um = xs as f64 / STEPS_PER_UM;
@@ -74,17 +103,32 @@ impl Device for ZeissMcu28XYStage {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for ZeissMcu28XYStage {
@@ -96,23 +140,35 @@ impl XYStage for ZeissMcu28XYStage {
         Ok(())
     }
 
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        Ok((self.x_um, self.y_um))
+    }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         self.set_xy_position_um(self.x_um + dx, self.y_um + dy)
     }
 
     fn set_origin(&mut self) -> MmResult<()> {
+        self.send("NPXP0")?;
+        self.send("NPYP0")?;
         self.x_um = 0.0;
         self.y_um = 0.0;
         Ok(())
     }
 
-    fn home(&mut self) -> MmResult<()> { self.set_xy_position_um(0.0, 0.0) }
-    fn stop(&mut self) -> MmResult<()> { Ok(()) }
-    fn get_step_size_um(&self) -> (f64, f64) { (1.0 / STEPS_PER_UM, 1.0 / STEPS_PER_UM) }
+    fn home(&mut self) -> MmResult<()> {
+        Ok(())
+    }
+    fn stop(&mut self) -> MmResult<()> {
+        self.send("NPXS")?;
+        self.send("NPYS")?;
+        Ok(())
+    }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (1.0 / STEPS_PER_UM, 1.0 / STEPS_PER_UM)
+    }
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Ok((-50_000.0, 50_000.0, -50_000.0, 50_000.0))
+        Err(MmError::NotSupported)
     }
 }
 
@@ -139,12 +195,50 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = MockTransport::new().any("PN000000").any("PN000000").any("PN").any("PN");
+        let t = MockTransport::new()
+            .any("PN000000")
+            .any("PN000000")
+            .any("PN")
+            .any("PN");
         let mut s = stage_with(t);
         s.initialize().unwrap();
         s.set_xy_position_um(100.0, 200.0).unwrap();
         let (x, y) = s.get_xy_position_um().unwrap();
         assert!((x - 100.0).abs() < 1e-6);
         assert!((y - 200.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn stop_sends_both_axes() {
+        let t = MockTransport::new()
+            .any("PN000000")
+            .any("PN000000")
+            .expect("NPXS\r", "PN")
+            .expect("NPYS\r", "PN");
+        let mut s = stage_with(t);
+        s.initialize().unwrap();
+        s.stop().unwrap();
+    }
+
+    #[test]
+    fn set_origin_sends_both_axes() {
+        let t = MockTransport::new()
+            .any("PN000000")
+            .any("PN000000")
+            .expect("NPXP0\r", "PN")
+            .expect("NPYP0\r", "PN");
+        let mut s = stage_with(t);
+        s.initialize().unwrap();
+        s.set_origin().unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (0.0, 0.0));
+    }
+
+    #[test]
+    fn home_is_noop() {
+        let t = MockTransport::new().any("PN000064").any("PN000032");
+        let mut s = stage_with(t);
+        s.initialize().unwrap();
+        s.home().unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (20.0, 10.0));
     }
 }

@@ -11,10 +11,11 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
 
 pub struct PriorShutter {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     id: u8,
     is_open: bool,
@@ -23,38 +24,64 @@ pub struct PriorShutter {
 impl PriorShutter {
     pub fn new(id: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("ShutterId", PropertyValue::Integer(id as i64), false).unwrap();
-        Self { props, transport: None, initialized: false, id, is_open: false }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("ShutterId", PropertyValue::Integer(id as i64), false)
+            .unwrap();
+        Self {
+            props,
+            transport: RefCell::new(None),
+            initialized: false,
+            id,
+            is_open: false,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
-        match self.transport.as_mut() {
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 }
 
-impl Default for PriorShutter { fn default() -> Self { Self::new(1) } }
+impl Default for PriorShutter {
+    fn default() -> Self {
+        Self::new(1)
+    }
+}
 
 impl Device for PriorShutter {
-    fn name(&self) -> &str { "PriorShutter" }
-    fn description(&self) -> &str { "Prior Scientific ProScan shutter" }
+    fn name(&self) -> &str {
+        "PriorShutter"
+    }
+    fn description(&self) -> &str {
+        "Prior Scientific ProScan shutter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.borrow().is_none() {
+            return Err(MmError::NotConnected);
+        }
+        self.cmd("COMP 0")?;
         // Query initial state
         let r = self.cmd(&format!("8,{}", self.id))?;
         self.is_open = r.trim() == "0";
@@ -64,34 +91,55 @@ impl Device for PriorShutter {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.cmd(&format!("8,{},1", self.id)); // close
-            self.is_open = false;
             self.initialized = false;
         }
         Ok(())
     }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for PriorShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         // 0 = open, 1 = closed
         let val = if open { 0 } else { 1 };
-        self.cmd(&format!("8,{},{}", self.id, val))?;
+        let resp = self.cmd(&format!("8,{},{}", self.id, val))?;
+        if !resp.starts_with('R') {
+            return Err(MmError::LocallyDefined(format!(
+                "Prior shutter error: {}",
+                resp
+            )));
+        }
         self.is_open = open;
         Ok(())
     }
-    fn get_open(&self) -> MmResult<bool> { Ok(self.is_open) }
-    fn fire(&mut self, _dt: f64) -> MmResult<()> { self.set_open(true) }
+    fn get_open(&self) -> MmResult<bool> {
+        let r = self.cmd(&format!("8,{}", self.id))?;
+        Ok(r.trim() == "0")
+    }
+    fn fire(&mut self, _dt: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]
@@ -101,7 +149,10 @@ mod tests {
 
     #[test]
     fn initialize_closed() {
-        let t = MockTransport::new().any("1"); // state = closed
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .expect("8,1\r", "1")
+            .expect("8,1\r", "1"); // state = closed
         let mut s = PriorShutter::new(1).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!(!s.get_open().unwrap());
@@ -109,7 +160,10 @@ mod tests {
 
     #[test]
     fn initialize_open() {
-        let t = MockTransport::new().any("0"); // state = open
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .expect("8,1\r", "0")
+            .expect("8,1\r", "0"); // state = open
         let mut s = PriorShutter::new(1).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!(s.get_open().unwrap());
@@ -117,7 +171,13 @@ mod tests {
 
     #[test]
     fn open_close() {
-        let t = MockTransport::new().any("1").any("R").any("R");
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .expect("8,1\r", "1")
+            .expect("8,1,0\r", "R")
+            .expect("8,1\r", "0")
+            .expect("8,1,1\r", "R")
+            .expect("8,1\r", "1");
         let mut s = PriorShutter::new(1).with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
@@ -127,5 +187,13 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(PriorShutter::new(1).initialize().is_err()); }
+    fn fire_unsupported() {
+        let mut s = PriorShutter::new(1);
+        assert_eq!(s.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn no_transport_error() {
+        assert!(PriorShutter::new(1).initialize().is_err());
+    }
 }

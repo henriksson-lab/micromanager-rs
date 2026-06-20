@@ -18,8 +18,8 @@ fn build_andor_sdk3() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let sdk_root = std::env::var("ANDOR_SDK3_ROOT").ok().map(PathBuf::from);
 
-    let ref_include = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("mmCoreAndDevices/DeviceAdapters/AndorSDK3");
+    let ref_include =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("mmCoreAndDevices/DeviceAdapters/AndorSDK3");
 
     let mut build = cc::Build::new();
     build.file("src/adapters/andor_sdk3/shim.c");
@@ -40,7 +40,11 @@ fn build_andor_sdk3() {
             let root = sdk_root.unwrap_or_else(|| PathBuf::from(r"C:\Program Files\Andor SDK3"));
             build.include(root.join("include"));
             let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-            let lib_dir = if arch == "x86_64" { root.join("lib64") } else { root.join("lib32") };
+            let lib_dir = if arch == "x86_64" {
+                root.join("lib64")
+            } else {
+                root.join("lib32")
+            };
             println!("cargo:rustc-link-search={}", lib_dir.display());
             println!("cargo:rustc-link-lib=atcore");
             println!("cargo:rustc-link-lib=atutility");
@@ -86,8 +90,16 @@ fn build_jai() {
     let lib_dir = format!("{}/Libraries", sdk_root);
     println!("cargo:rustc-link-search=native={}", lib_dir);
 
-    for lib in &["PvBase", "PvDevice", "PvBuffer", "PvStream", "PvGenICam",
-                  "EbNetworkLib", "EbUSBLib", "PvTransmitter"] {
+    for lib in &[
+        "PvBase",
+        "PvDevice",
+        "PvBuffer",
+        "PvStream",
+        "PvGenICam",
+        "EbNetworkLib",
+        "EbUSBLib",
+        "PvTransmitter",
+    ] {
         println!("cargo:rustc-link-lib={}", lib);
     }
 
@@ -191,7 +203,10 @@ fn build_spot() {
             if headers.exists() {
                 build.include(&headers);
             }
-            println!("cargo:rustc-link-search=framework={}", framework_base.display());
+            println!(
+                "cargo:rustc-link-search=framework={}",
+                framework_base.display()
+            );
             println!("cargo:rustc-link-lib=framework=SpotCam");
         }
         "windows" => {
@@ -220,17 +235,28 @@ fn build_tsi() {
     let sdk_root = find_tsi_sdk_root();
 
     let mut build = cc::Build::new();
-    for sub in &["include", "includes", "SDK/include",
-                  "Scientific Camera Interfaces/SDK/Native Toolkit/include"] {
+    for sub in &[
+        "include",
+        "includes",
+        "SDK/include",
+        "Scientific Camera Interfaces/SDK/Native Toolkit/include",
+    ] {
         let p = format!("{}/{}", sdk_root, sub);
         if std::path::Path::new(&p).exists() {
             build.include(&p);
         }
     }
-    build.file("src/adapters/tsi/shim.c").warnings(false).compile("tsi_shim");
+    build
+        .file("src/adapters/tsi/shim.c")
+        .warnings(false)
+        .compile("tsi_shim");
 
-    for sub in &["lib", "libs", "SDK/lib",
-                  "Scientific Camera Interfaces/SDK/Native Toolkit/lib"] {
+    for sub in &[
+        "lib",
+        "libs",
+        "SDK/lib",
+        "Scientific Camera Interfaces/SDK/Native Toolkit/lib",
+    ] {
         let p = format!("{}/{}", sdk_root, sub);
         if std::path::Path::new(&p).exists() {
             println!("cargo:rustc-link-search=native={}", p);
@@ -251,8 +277,10 @@ fn find_tsi_sdk_root() -> String {
     }
     #[cfg(target_os = "macos")]
     {
-        for c in &["/Library/Application Support/Thorlabs/Scientific Camera SDK",
-                    "/usr/local/thorlabs/tsi_sdk"] {
+        for c in &[
+            "/Library/Application Support/Thorlabs/Scientific Camera SDK",
+            "/usr/local/thorlabs/tsi_sdk",
+        ] {
             if std::path::Path::new(c).exists() {
                 return c.to_string();
             }

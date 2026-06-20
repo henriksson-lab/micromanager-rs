@@ -1,11 +1,11 @@
 /// Leica DMI filter turret / objective nosepiece (StateDevice).
 ///
 /// Protocol (ASCII, `\r` terminated):
-///   IL Turret (reflector) device address: "51"
+///   IL Turret (reflector) device address: "78"
 ///   Objective Turret device address:      "76"
 ///
-///   Set position:   `"<dev>22 <pos>\r"` → `"<dev>22 <pos>\r"`
-///   Get position:   `"<dev>23\r"`       → `"<dev>23 <pos>\r"`
+///   Set position:   `"<dev>022 <pos>\r"` → `"<dev>022 <pos>\r"`
+///   Get position:   `"<dev>023\r"`       → `"<dev>023 <pos>\r"`
 ///
 /// Positions are 1-based in the Leica protocol; we store 0-based internally.
 use crate::error::{MmError, MmResult};
@@ -16,8 +16,8 @@ use crate::types::{DeviceType, PropertyValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurretType {
-    ILTurret,          // reflector, address "51", 6 positions
-    ObjectiveTurret,   // objectives, address "76", 6 positions
+    ILTurret,        // reflector, address "78", 6 positions
+    ObjectiveTurret, // objectives, address "76", 6 positions
 }
 
 pub struct LeicaDMITurret {
@@ -34,14 +34,23 @@ pub struct LeicaDMITurret {
 impl LeicaDMITurret {
     pub fn new(turret_type: TurretType) -> Self {
         let num_positions = 6u64;
-        let labels: Vec<String> = (0..num_positions).map(|i| format!("Position-{}", i)).collect();
+        let labels: Vec<String> = (0..num_positions)
+            .map(|i| format!("Position-{}", i))
+            .collect();
         let mut props = PropertyMap::new();
-        props.define_property("State", PropertyValue::Integer(0), false).unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String("Position-0".into()), false)
+            .unwrap();
         let type_str = match turret_type {
-            TurretType::ILTurret        => "IL",
+            TurretType::ILTurret => "IL",
             TurretType::ObjectiveTurret => "Objective",
         };
-        props.define_property("TurretType", PropertyValue::String(type_str.into()), true).unwrap();
+        props
+            .define_property("TurretType", PropertyValue::String(type_str.into()), true)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -61,7 +70,7 @@ impl LeicaDMITurret {
 
     fn device_addr(&self) -> &'static str {
         match self.turret_type {
-            TurretType::ILTurret        => "51",
+            TurretType::ILTurret => "78",
             TurretType::ObjectiveTurret => "76",
         }
     }
@@ -80,35 +89,40 @@ impl LeicaDMITurret {
         self.call_transport(|t| Ok(t.send_recv(cmd)?.trim().to_string()))
     }
 
+    fn send_no_response(&mut self, cmd: &str) -> MmResult<()> {
+        self.call_transport(|t| t.send(cmd))
+    }
+
     fn send_position(&mut self, pos: u64) -> MmResult<()> {
         let dev = self.device_addr();
         // Leica positions are 1-based
-        let cmd = format!("{}22 {}\r", dev, pos + 1);
-        let resp = self.send_recv(&cmd)?;
-        let expected_prefix = format!("{}22", dev);
-        if !resp.starts_with(&expected_prefix) {
-            return Err(MmError::SerialInvalidResponse);
-        }
-        Ok(())
+        let cmd = format!("{}022 {}\r", dev, pos + 1);
+        self.send_no_response(&cmd)
     }
 
     fn query_position(&mut self) -> MmResult<u64> {
         let dev = self.device_addr();
-        let cmd = format!("{}23\r", dev);
+        let cmd = format!("{}023\r", dev);
         let resp = self.send_recv(&cmd)?;
-        let prefix = format!("{}23", dev);
+        let prefix = format!("{}023", dev);
         if !resp.starts_with(&prefix) {
             return Err(MmError::SerialInvalidResponse);
         }
         let val_str = resp[prefix.len()..].trim();
-        let pos_1based: u64 = val_str.parse().map_err(|_| MmError::SerialInvalidResponse)?;
+        let pos_1based: u64 = val_str
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
         Ok(pos_1based.saturating_sub(1))
     }
 }
 
 impl Device for LeicaDMITurret {
-    fn name(&self) -> &str { "LeicaDMITurret" }
-    fn description(&self) -> &str { "Leica DMI turret/nosepiece" }
+    fn name(&self) -> &str {
+        "LeicaDMITurret"
+    }
+    fn description(&self) -> &str {
+        "Leica DMI turret/nosepiece"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -128,6 +142,12 @@ impl Device for LeicaDMITurret {
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "State" => Ok(PropertyValue::Integer(self.position as i64)),
+            "Label" => Ok(PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            )),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -138,17 +158,29 @@ impl Device for LeicaDMITurret {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
                 self.set_position(pos)
             }
+            "Label" => {
+                let label = val.as_str().to_string();
+                self.set_position_by_label(&label)
+            }
             _ => self.props.set(name, val),
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for LeicaDMITurret {
@@ -160,25 +192,52 @@ impl StateDevice for LeicaDMITurret {
             self.send_position(pos)?;
         }
         self.position = pos;
+        self.props
+            .set("State", PropertyValue::Integer(self.position as i64))?;
+        self.props.set(
+            "Label",
+            PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )?;
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
-    fn get_number_of_positions(&self) -> u64 { self.num_positions }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned().ok_or(MmError::UnknownPosition)
+        self.labels
+            .get(pos as usize)
+            .cloned()
+            .ok_or(MmError::UnknownPosition)
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
 
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
-        if pos >= self.num_positions { return Err(MmError::UnknownPosition); }
+        if pos >= self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
         self.labels[pos as usize] = label.to_string();
+        if pos == self.position {
+            self.props
+                .set("Label", PropertyValue::String(label.to_string()))?;
+        }
         Ok(())
     }
 
@@ -187,7 +246,9 @@ impl StateDevice for LeicaDMITurret {
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]
@@ -197,11 +258,11 @@ mod tests {
 
     #[test]
     fn il_turret_initialize_and_move() {
-        // Init queries position: "5123\r" → "5123 2" (1-based pos 2 → internal 1)
-        // Move to pos 2: "5122 3\r" (send pos+1=3) → "5122 3"
+        // Init queries position: "78023\r" -> "78023 2" (1-based pos 2 -> internal 1)
+        // Move to pos 2: "78022 3\r" (send pos+1=3) -> "78022 3"
         let t = MockTransport::new()
-            .expect("5123\r", "5123 2")   // query → pos 1 (0-based) from Leica 1-based 2
-            .expect("5122 3\r", "5122 3"); // set to pos 2 (Leica 3)
+            .expect("78023\r", "78023 2") // query -> pos 1 (0-based) from Leica 1-based 2
+            .expect("78022 3\r", ""); // set to pos 2 (Leica 3)
         let mut turret = LeicaDMITurret::new(TurretType::ILTurret).with_transport(Box::new(t));
         turret.initialize().unwrap();
         assert_eq!(turret.get_position().unwrap(), 1);
@@ -211,17 +272,16 @@ mod tests {
 
     #[test]
     fn objective_turret_initialize() {
-        let t = MockTransport::new()
-            .expect("7623\r", "7623 1");  // pos 0 (0-based)
-        let mut turret = LeicaDMITurret::new(TurretType::ObjectiveTurret).with_transport(Box::new(t));
+        let t = MockTransport::new().expect("76023\r", "76023 1"); // pos 0 (0-based)
+        let mut turret =
+            LeicaDMITurret::new(TurretType::ObjectiveTurret).with_transport(Box::new(t));
         turret.initialize().unwrap();
         assert_eq!(turret.get_position().unwrap(), 0);
     }
 
     #[test]
     fn out_of_range_rejected() {
-        let t = MockTransport::new()
-            .expect("5123\r", "5123 1");
+        let t = MockTransport::new().expect("78023\r", "78023 1");
         let mut turret = LeicaDMITurret::new(TurretType::ILTurret).with_transport(Box::new(t));
         turret.initialize().unwrap();
         assert!(turret.set_position(6).is_err());
@@ -230,8 +290,8 @@ mod tests {
     #[test]
     fn label_navigation() {
         let t = MockTransport::new()
-            .expect("5123\r", "5123 1")
-            .expect("5122 4\r", "5122 4");
+            .expect("78023\r", "78023 1")
+            .expect("78022 4\r", "");
         let mut turret = LeicaDMITurret::new(TurretType::ILTurret).with_transport(Box::new(t));
         turret.initialize().unwrap();
         turret.set_position_label(3, "DAPI").unwrap();

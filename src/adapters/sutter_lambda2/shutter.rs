@@ -13,7 +13,10 @@ use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShutterId { A, B }
+pub enum ShutterId {
+    A,
+    B,
+}
 
 pub struct Lambda2Shutter {
     props: PropertyMap,
@@ -26,9 +29,16 @@ pub struct Lambda2Shutter {
 impl Lambda2Shutter {
     pub fn new(shutter: ShutterId) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        let sname = match shutter { ShutterId::A => "A", ShutterId::B => "B" };
-        props.define_property("Shutter", PropertyValue::String(sname.into()), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        let sname = match shutter {
+            ShutterId::A => "A",
+            ShutterId::B => "B",
+        };
+        props
+            .define_property("Shutter", PropertyValue::String(sname.into()), true)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -56,9 +66,9 @@ impl Lambda2Shutter {
     fn send_shutter_cmd(&mut self, open: bool) -> MmResult<()> {
         let shutter = self.shutter;
         let cmd_byte: u8 = match (shutter, open) {
-            (ShutterId::A, true)  => 0xAA,
+            (ShutterId::A, true) => 0xAA,
             (ShutterId::A, false) => 0xAC,
-            (ShutterId::B, true)  => 0xBA,
+            (ShutterId::B, true) => 0xBA,
             (ShutterId::B, false) => 0xBC,
         };
         self.call_transport(|t| {
@@ -74,8 +84,15 @@ impl Lambda2Shutter {
 }
 
 impl Device for Lambda2Shutter {
-    fn name(&self) -> &str { "Lambda2Shutter" }
-    fn description(&self) -> &str { "Sutter Lambda 2 shutter" }
+    fn name(&self) -> &str {
+        match self.shutter {
+            ShutterId::A => "Shutter-A",
+            ShutterId::B => "Shutter-B",
+        }
+    }
+    fn description(&self) -> &str {
+        "Sutter Lambda 2 shutter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -104,13 +121,21 @@ impl Device for Lambda2Shutter {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for Lambda2Shutter {
@@ -120,11 +145,12 @@ impl Shutter for Lambda2Shutter {
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.is_open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.is_open)
+    }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -136,9 +162,9 @@ mod tests {
     #[test]
     fn shutter_a_open_close() {
         let t = MockTransport::new()
-            .expect_binary(&[0xAC, 0x0D])   // init → close
-            .expect_binary(&[0xAA, 0x0D])   // open
-            .expect_binary(&[0xAC, 0x0D]);  // close
+            .expect_binary(&[0xAC, 0x0D]) // init → close
+            .expect_binary(&[0xAA, 0x0D]) // open
+            .expect_binary(&[0xAC, 0x0D]); // close
         let mut s = Lambda2Shutter::new(ShutterId::A).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!(!s.get_open().unwrap());
@@ -160,14 +186,11 @@ mod tests {
     }
 
     #[test]
-    fn fire_opens_then_closes() {
-        let t = MockTransport::new()
-            .expect_binary(&[0xAC, 0x0D])   // init close
-            .expect_binary(&[0xAA, 0x0D])   // fire open
-            .expect_binary(&[0xAC, 0x0D]);  // fire close
+    fn fire_is_unsupported() {
+        let t = MockTransport::new().expect_binary(&[0xAC, 0x0D]); // init close
         let mut s = Lambda2Shutter::new(ShutterId::A).with_transport(Box::new(t));
         s.initialize().unwrap();
-        s.fire(10.0).unwrap();
+        assert_eq!(s.fire(10.0), Err(MmError::UnsupportedCommand));
         assert!(!s.get_open().unwrap());
     }
 

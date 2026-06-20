@@ -30,12 +30,26 @@ pub struct PrecisExcite {
 impl PrecisExcite {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1"]).unwrap();
         for ch in CHANNELS {
             let name = format!("Channel{}_Intensity", ch);
-            props.define_property(&name, PropertyValue::Integer(0), false).unwrap();
+            props
+                .define_property(&name, PropertyValue::Integer(0), false)
+                .unwrap();
         }
-        Self { props, transport: None, initialized: false, is_open: false, intensity: [0; 4] }
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            is_open: false,
+            intensity: [0; 4],
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -44,7 +58,9 @@ impl PrecisExcite {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -53,28 +69,42 @@ impl PrecisExcite {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     fn set_channel_intensity(&mut self, ch_idx: usize, level: u8) -> MmResult<()> {
         let ch = CHANNELS[ch_idx];
-        let level = level.min(100);
         self.cmd(&format!("C{}I{}", ch, level))?;
         self.intensity[ch_idx] = level;
         let name = format!("Channel{}_Intensity", ch);
-        self.props.entry_mut(&name).map(|e| e.value = PropertyValue::Integer(level as i64));
+        self.props
+            .entry_mut(&name)
+            .map(|e| e.value = PropertyValue::Integer(level as i64));
         Ok(())
     }
 }
 
-impl Default for PrecisExcite { fn default() -> Self { Self::new() } }
+impl Default for PrecisExcite {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for PrecisExcite {
-    fn name(&self) -> &str { "PrecisExcite" }
-    fn description(&self) -> &str { "Lumen Dynamics PrecisExcite LED illuminator" }
+    fn name(&self) -> &str {
+        "PrecisExcite"
+    }
+    fn description(&self) -> &str {
+        "PrecisExcite LED Illuminator"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Turn all channels off and set intensity to 0
         for ch in CHANNELS {
             let _ = self.cmd(&format!("C{}F", ch));
@@ -88,23 +118,43 @@ impl Device for PrecisExcite {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            for ch in CHANNELS { let _ = self.cmd(&format!("C{}F", ch)); }
             self.is_open = false;
             self.initialized = false;
         }
         Ok(())
     }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        match name {
+            "State" => Ok(PropertyValue::Integer(if self.is_open { 1 } else { 0 })),
+            _ => self.props.get(name).cloned(),
+        }
+    }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "State" {
+            let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            return match state {
+                0 => self.set_open(false),
+                1 => self.set_open(true),
+                _ => Err(MmError::InvalidPropertyValue),
+            };
+        }
         for (i, ch) in CHANNELS.iter().enumerate() {
             let pname = format!("Channel{}_Intensity", ch);
             if name == pname {
-                let level = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
-                if self.initialized { self.set_channel_intensity(i, level)?; } else {
-                    self.intensity[i] = level.min(100);
-                    self.props.entry_mut(name).map(|e| e.value = val.clone());
+                let level = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0..=100).contains(&level) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let level = level as u8;
+                if self.initialized {
+                    self.set_channel_intensity(i, level)?;
+                } else {
+                    self.intensity[i] = level;
+                    self.props
+                        .entry_mut(name)
+                        .map(|e| e.value = PropertyValue::Integer(level as i64));
                 }
                 return Ok(());
             }
@@ -112,13 +162,21 @@ impl Device for PrecisExcite {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for PrecisExcite {
@@ -126,10 +184,18 @@ impl Shutter for PrecisExcite {
         let cmd = format!("CA{}", if open { 'N' } else { 'F' });
         self.cmd(&cmd)?;
         self.is_open = open;
+        self.props.set(
+            "State",
+            PropertyValue::Integer(if self.is_open { 1 } else { 0 }),
+        )?;
         Ok(())
     }
-    fn get_open(&self) -> MmResult<bool> { Ok(self.is_open) }
-    fn fire(&mut self, _dt: f64) -> MmResult<()> { self.set_open(true) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.is_open)
+    }
+    fn fire(&mut self, _dt: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]
@@ -172,10 +238,37 @@ mod tests {
         let t = make_init_transport().any("OK");
         let mut dev = PrecisExcite::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
-        dev.set_property("ChannelA_Intensity", PropertyValue::Integer(75)).unwrap();
+        dev.set_property("ChannelA_Intensity", PropertyValue::Integer(75))
+            .unwrap();
         assert_eq!(dev.intensity[0], 75);
     }
 
     #[test]
-    fn no_transport_error() { assert!(PrecisExcite::new().initialize().is_err()); }
+    fn rejects_invalid_intensity() {
+        let mut dev = PrecisExcite::new();
+        assert_eq!(
+            dev.set_property("ChannelA_Intensity", PropertyValue::Integer(-1))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            dev.set_property("ChannelA_Intensity", PropertyValue::Integer(101))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(dev.intensity[0], 0);
+    }
+
+    #[test]
+    fn fire_is_unsupported() {
+        let mut dev = PrecisExcite::new().with_transport(Box::new(make_init_transport()));
+        dev.initialize().unwrap();
+        assert!(matches!(dev.fire(1.0), Err(MmError::UnsupportedCommand)));
+        assert!(!dev.get_open().unwrap());
+    }
+
+    #[test]
+    fn no_transport_error() {
+        assert!(PrecisExcite::new().initialize().is_err());
+    }
 }

@@ -97,11 +97,15 @@ impl XCiteLedShutter {
     }
 
     pub fn set_intensity(&mut self, percent: u32) -> MmResult<()> {
-        // Intensity command: "ip=<percent>,N\r" where N = led_number+1 (ASCII)
-        // From C++ source: sCmdSet = {0x69, 0x70, 0x3D, ...} = "ip="
-        // then channel commas and value appended.
-        let channel_char = (b'1' + self.led_number) as char;
-        let cmd = format!("ip={},{}", percent, channel_char);
+        // C++ XLedDev::OnLedIntensity converts percent to tenths and selects
+        // channels by comma-padding before the value: LED0 -> ip=750,
+        // LED1 -> ip=,750, etc.
+        let mut tenths = percent.saturating_mul(10);
+        if tenths > 0 && tenths < 50 {
+            tenths = 50;
+        }
+        tenths = tenths.min(1000);
+        let cmd = format!("ip={}{}", ",".repeat(self.led_number as usize), tenths);
         self.cmd(&cmd)?;
         self.intensity = percent;
         Ok(())
@@ -148,7 +152,18 @@ impl Device for XCiteLedShutter {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Intensity" => {
+                let percent = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if percent < 0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.set_intensity(percent as u32)?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.intensity as i64))
+            }
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -179,8 +194,7 @@ impl Shutter for XCiteLedShutter {
     }
 
     fn fire(&mut self, _dt: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -228,23 +242,30 @@ mod tests {
     }
 
     #[test]
-    fn fire_opens_then_closes() {
+    fn fire_is_unsupported() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(
-            MockTransport::new()
-                .expect("on=1\r", "ok")
-                .expect("of=1\r", "ok"),
-        ));
-        s.fire(1.0).unwrap();
+        assert_eq!(s.fire(1.0), Err(MmError::UnsupportedCommand));
         assert!(!s.get_open().unwrap());
     }
 
     #[test]
     fn set_intensity() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(MockTransport::new().expect("ip=75,1\r", "ok")));
+        s.transport = Some(Box::new(MockTransport::new().expect("ip=750\r", "ok")));
         s.set_intensity(75).unwrap();
         assert_eq!(s.intensity, 75);
+    }
+
+    #[test]
+    fn intensity_property_sends_command() {
+        let mut s = make_initialized();
+        s.transport = Some(Box::new(MockTransport::new().expect("ip=750\r", "ok")));
+        s.set_property("Intensity", PropertyValue::Integer(75))
+            .unwrap();
+        assert_eq!(
+            s.get_property("Intensity").unwrap(),
+            PropertyValue::Integer(75)
+        );
     }
 
     #[test]

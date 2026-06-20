@@ -5,13 +5,16 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Hub};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use parking_lot::Mutex;
 
-use super::{ADDR_ID, ADDR_VERSION, FIRMWARE_VERSION, ID_AU, ID_AUP, ID_CU, ID_MOJO,
-            OFFSET_CAM_SYNC_MODE};
+use super::{
+    read_register, write_register, ADDR_ID, ADDR_VERSION, FIRMWARE_VERSION, ID_AU, ID_AUP, ID_CU,
+    ID_MOJO, OFFSET_CAM_SYNC_MODE,
+};
 
 pub struct MicroFpgaHub {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Mutex<Option<Box<dyn Transport>>>,
     initialized: bool,
     pub version: u32,
     pub id: u32,
@@ -20,23 +23,47 @@ pub struct MicroFpgaHub {
 impl MicroFpgaHub {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Version", PropertyValue::Integer(0), true).unwrap();
-        props.define_property("ID", PropertyValue::String("Unknown".into()), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("MicroFPGA version", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property(
+                "MicroFPGA ID",
+                PropertyValue::String("Unknown".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "Camera trigger",
+                PropertyValue::String("Passive".into()),
+                true,
+            )
+            .unwrap();
 
-        Self { props, transport: None, initialized: false, version: 0, id: 0 }
+        Self {
+            props,
+            transport: Mutex::new(None),
+            initialized: false,
+            version: 0,
+            id: 0,
+        }
     }
 
-    pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+    pub fn with_transport(self, t: Box<dyn Transport>) -> Self {
+        *self.transport.lock() = Some(t);
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        let mut transport = self.transport.lock();
+        match transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
@@ -81,81 +108,129 @@ impl MicroFpgaHub {
 
     /// Convenience: read a register.
     pub fn read_register(&mut self, addr: u32) -> MmResult<u32> {
-        self.send_read_request(addr)?;
-        self.read_answer()
+        self.call_transport(|t| read_register(t, addr))
     }
 
     /// Convenience: write a register (no read-back).
     pub fn write_register(&mut self, addr: u32, value: u32) -> MmResult<()> {
-        self.send_write_request(addr, value)
+        self.call_transport(|t| write_register(t, addr, value))
     }
 }
 
 impl Default for MicroFpgaHub {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for MicroFpgaHub {
-    fn name(&self) -> &str { "MicroFPGA-Hub" }
-    fn description(&self) -> &str { "MicroFPGA Hub (required)" }
+    fn name(&self) -> &str {
+        "MicroFPGA-Hub"
+    }
+    fn description(&self) -> &str {
+        "MicroFPGA Hub (required)"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.lock().is_none() {
+            return Err(MmError::NotConnected);
+        }
 
         // Read version register
         self.version = self.read_register(ADDR_VERSION)?;
         if self.version != FIRMWARE_VERSION {
             return Err(MmError::LocallyDefined(format!(
-                "Firmware version mismatch: expected {}, got {}", FIRMWARE_VERSION, self.version
+                "Firmware version mismatch: expected {}, got {}",
+                FIRMWARE_VERSION, self.version
             )));
         }
 
         // Read ID register
         self.id = self.read_register(ADDR_ID)?;
         let id_str = match self.id {
-            ID_AU   => "Au",
-            ID_AUP  => "Au+",
-            ID_CU   => "Cu",
-            ID_MOJO => "Mojo",
-            _       => return Err(MmError::LocallyDefined(format!("Unknown board ID: {}", self.id))),
+            ID_AU => "Au",
+            ID_AUP => "Au+",
+            ID_CU => "Mojo",
+            ID_MOJO => "Cu",
+            _ => {
+                return Err(MmError::LocallyDefined(format!(
+                    "Unknown board ID: {}",
+                    self.id
+                )));
+            }
         };
 
-        self.props.entry_mut("Version").map(|e| e.value = PropertyValue::Integer(self.version as i64));
-        self.props.entry_mut("ID").map(|e| e.value = PropertyValue::String(id_str.into()));
+        self.props
+            .entry_mut("MicroFPGA version")
+            .map(|e| e.value = PropertyValue::Integer(self.version as i64));
+        self.props
+            .entry_mut("MicroFPGA ID")
+            .map(|e| e.value = PropertyValue::String(id_str.into()));
 
         // Set passive sync mode (camera trigger in passive / listen mode)
         self.write_register(OFFSET_CAM_SYNC_MODE, 0)?;
+        self.props
+            .entry_mut("Camera trigger")
+            .map(|e| e.value = PropertyValue::String("Passive".into()));
 
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if self.initialized && name == "Camera trigger" {
+            let mode = self.call_transport(|t| read_register(t, OFFSET_CAM_SYNC_MODE))?;
+            return Ok(PropertyValue::String(
+                if mode == 1 { "Active" } else { "Passive" }.into(),
+            ));
+        }
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Camera trigger" {
+            let mode = match &val {
+                PropertyValue::String(s) if s == "Active" => 1,
+                PropertyValue::String(s) if s == "Passive" => 0,
+                _ => return Err(MmError::InvalidPropertyValue),
+            };
+            if self.initialized {
+                self.write_register(OFFSET_CAM_SYNC_MODE, mode)?;
+            }
+        }
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Hub }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Hub
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Hub for MicroFpgaHub {
     fn detect_installed_devices(&mut self) -> MmResult<Vec<String>> {
-        let mut devices = vec![
-            "Laser Trigger".to_string(),
-            "Camera Trigger".to_string(),
-            "PWM".to_string(),
-            "TTL".to_string(),
-            "Servos".to_string(),
-        ];
+        let mut devices = vec!["Laser Trigger".to_string(), "Camera Trigger".to_string()];
         // Only Au, Au+, Mojo have ADC
         if matches!(self.id, ID_AU | ID_AUP | ID_MOJO) {
             devices.push("Analog Input".to_string());
         }
+        devices.push("PWM".to_string());
+        devices.push("TTL".to_string());
+        devices.push("Servos".to_string());
         Ok(devices)
     }
 }
@@ -165,7 +240,9 @@ mod tests {
     use super::*;
     use crate::transport::MockTransport;
 
-    fn le4(v: u32) -> Vec<u8> { v.to_le_bytes().to_vec() }
+    fn le4(v: u32) -> Vec<u8> {
+        v.to_le_bytes().to_vec()
+    }
 
     fn make_hub() -> MicroFpgaHub {
         let t = MockTransport::new()
@@ -183,14 +260,84 @@ mod tests {
         hub.initialize().unwrap();
         assert_eq!(hub.version, 3);
         assert_eq!(hub.id, 79);
+        assert_eq!(
+            hub.get_property("MicroFPGA ID").unwrap(),
+            PropertyValue::String("Au".into())
+        );
+    }
+
+    #[test]
+    fn initialize_labels_cu_and_mojo_ids_match_cpp() {
+        let t = MockTransport::new()
+            .expect_binary(&le4(3))
+            .expect_binary(&le4(ID_CU));
+        let mut hub = MicroFpgaHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+        assert_eq!(
+            hub.get_property("MicroFPGA ID").unwrap(),
+            PropertyValue::String("Mojo".into())
+        );
+
+        let t = MockTransport::new()
+            .expect_binary(&le4(3))
+            .expect_binary(&le4(ID_MOJO));
+        let mut hub = MicroFpgaHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+        assert_eq!(
+            hub.get_property("MicroFPGA ID").unwrap(),
+            PropertyValue::String("Cu".into())
+        );
     }
 
     #[test]
     fn wrong_version_rejected() {
         let t = MockTransport::new()
-            .expect_binary(&le4(2))   // wrong version
+            .expect_binary(&le4(2)) // wrong version
             .expect_binary(&le4(79));
         let mut hub = MicroFpgaHub::new().with_transport(Box::new(t));
         assert!(hub.initialize().is_err());
+    }
+
+    #[test]
+    fn id_mapping_matches_cpp() {
+        let t = MockTransport::new()
+            .expect_binary(&le4(3))
+            .expect_binary(&le4(ID_CU));
+        let mut hub = MicroFpgaHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+        assert_eq!(
+            hub.get_property("MicroFPGA ID").unwrap(),
+            PropertyValue::String("Mojo".into())
+        );
+    }
+
+    #[test]
+    fn camera_trigger_property_reads_live_sync_mode() {
+        let t = MockTransport::new()
+            .expect_binary(&le4(3))
+            .expect_binary(&le4(ID_AU))
+            .expect_binary(&le4(1));
+        let mut hub = MicroFpgaHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+
+        assert_eq!(
+            hub.get_property("Camera trigger").unwrap(),
+            PropertyValue::String("Active".into())
+        );
+    }
+
+    #[test]
+    fn camera_trigger_unknown_live_sync_mode_defaults_passive() {
+        let t = MockTransport::new()
+            .expect_binary(&le4(3))
+            .expect_binary(&le4(ID_AU))
+            .expect_binary(&le4(2));
+        let mut hub = MicroFpgaHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+
+        assert_eq!(
+            hub.get_property("Camera trigger").unwrap(),
+            PropertyValue::String("Passive".into())
+        );
     }
 }

@@ -14,9 +14,8 @@
 /// Device responses are single-character echoes of the command prefix.
 /// e.g. "#R\n" → responds "#R"
 ///
-/// The CIA shutter open/close state is held in software only (no physical
-/// shutter command) – the C++ source confirms `SetShutterPosition` just
-/// stores the flag.
+/// The CIA shutter open/close state is held in software only; C++ `SetOpen`
+/// updates the State property, whose action only stores/logs the flag.
 ///
 /// Colour levels correspond to channels [Violet, Blue, Cyan, Teal, Green, Yellow, Red].
 use crate::error::{MmError, MmResult};
@@ -163,8 +162,6 @@ impl Device for CiaShutter {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.send_cmd("#S");
-            self.is_open = false;
             self.initialized = false;
         }
         Ok(())
@@ -194,24 +191,21 @@ impl Device for CiaShutter {
 }
 
 impl Shutter for CiaShutter {
-    /// CIA shutter state is software-only; open = "sequence running".
+    /// CIA shutter state is software-only in the upstream shutter API. Sequence
+    /// run/stop is exposed through separate properties there, not SetOpen.
     fn set_open(&mut self, open: bool) -> MmResult<()> {
-        if open {
-            self.send_cmd("#R")?;
-        } else {
-            self.send_cmd("#S")?;
-        }
         self.is_open = open;
         Ok(())
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        // Upstream GetOpen reads State, stores it, then unconditionally reports
+        // closed.
+        Ok(false)
     }
 
     fn fire(&mut self, _dt: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -222,9 +216,7 @@ mod tests {
 
     fn make_initialized() -> CiaShutter {
         // init: send "#S\n" → "#S", then "#@\n" → "#@"
-        let t = MockTransport::new()
-            .any("#S")
-            .any("#@");
+        let t = MockTransport::new().any("#S").any("#@");
         let mut s = CiaShutter::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s
@@ -240,15 +232,14 @@ mod tests {
     #[test]
     fn set_open_true_sends_run() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(MockTransport::new().expect("#R\n", "#R")));
         s.set_open(true).unwrap();
-        assert!(s.get_open().unwrap());
+        assert!(s.is_open);
+        assert!(!s.get_open().unwrap());
     }
 
     #[test]
     fn set_open_false_sends_stop() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(MockTransport::new().expect("#S\n", "#S")));
         s.set_open(false).unwrap();
         assert!(!s.get_open().unwrap());
     }
@@ -256,13 +247,7 @@ mod tests {
     #[test]
     fn fire_runs_then_stops() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(
-            MockTransport::new()
-                .expect("#R\n", "#R")
-                .expect("#S\n", "#S"),
-        ));
-        s.fire(5.0).unwrap();
-        assert!(!s.get_open().unwrap());
+        assert_eq!(s.fire(5.0), Err(MmError::UnsupportedCommand));
     }
 
     #[test]

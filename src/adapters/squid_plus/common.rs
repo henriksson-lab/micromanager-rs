@@ -81,7 +81,6 @@ pub fn handle_illumination_set(
 }
 
 fn next_id(cmd_id: &mut u8) -> u8 {
-    let id = *cmd_id;
     *cmd_id = cmd_id.wrapping_add(1);
-    id
+    *cmd_id
 }

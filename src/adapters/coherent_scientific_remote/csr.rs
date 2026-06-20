@@ -28,9 +28,15 @@ pub struct CoherentScientificRemote {
 impl CoherentScientificRemote {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Description", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("ShutterLaser", PropertyValue::Integer(1), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Description", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("ShutterLaser", PropertyValue::Integer(1), false)
+            .unwrap();
 
         Self {
             props,
@@ -99,6 +105,18 @@ impl CoherentScientificRemote {
     fn model_token(laser_num: usize) -> String {
         Self::replace_laser_num("SYST{laserNum}:INF:MOD", laser_num)
     }
+
+    fn handshaking_token(laser_num: usize) -> String {
+        Self::replace_laser_num("SYST{laserNum}:COMM:HAND", laser_num)
+    }
+
+    fn prompt_token(laser_num: usize) -> String {
+        Self::replace_laser_num("SYST{laserNum}:COMM:PROM", laser_num)
+    }
+
+    fn clear_error_token(laser_num: usize) -> String {
+        Self::replace_laser_num("SYST{laserNum}:ERR:CLE", laser_num)
+    }
 }
 
 impl Default for CoherentScientificRemote {
@@ -126,7 +144,8 @@ impl Device for CoherentScientificRemote {
         if !idn.to_lowercase().contains("coherent") {
             return Err(MmError::DeviceNotFound("Coherent Scientific Remote".into()));
         }
-        self.props.entry_mut("Description")
+        self.props
+            .entry_mut("Description")
             .map(|e| e.value = PropertyValue::String(idn));
 
         // Probe lasers 1-6
@@ -138,34 +157,32 @@ impl Device for CoherentScientificRemote {
                     found += 1;
                     let model = model.trim().to_string();
 
+                    let _ = self.set_laser_cmd(&Self::handshaking_token(laser_num), "On");
+                    let _ = self.set_laser_cmd(&Self::prompt_token(laser_num), "Off");
+                    let _ = self.query(&Self::clear_error_token(laser_num));
+
                     // Define per-laser properties
                     let state_prop = format!("Laser{}_State", laser_num);
                     let power_sp_prop = format!("Laser{}_PowerSetpoint_pct", laser_num);
                     let power_rb_prop = format!("Laser{}_PowerReadback_mW", laser_num);
 
-                    self.props.define_property(
-                        &state_prop,
-                        PropertyValue::String("Off".into()),
-                        false,
-                    ).ok();
-                    self.props.define_property(
-                        &power_sp_prop,
-                        PropertyValue::Float(0.0),
-                        false,
-                    ).ok();
-                    self.props.set_property_limits(&power_sp_prop, 0.0, 100.0).ok();
-                    self.props.define_property(
-                        &power_rb_prop,
-                        PropertyValue::Float(0.0),
-                        true,
-                    ).ok();
+                    self.props
+                        .define_property(&state_prop, PropertyValue::String("Off".into()), false)
+                        .ok();
+                    self.props
+                        .define_property(&power_sp_prop, PropertyValue::Float(0.0), false)
+                        .ok();
+                    self.props
+                        .set_property_limits(&power_sp_prop, 0.0, 100.0)
+                        .ok();
+                    self.props
+                        .define_property(&power_rb_prop, PropertyValue::Float(0.0), true)
+                        .ok();
 
                     let model_prop = format!("Laser{}_Model", laser_num);
-                    self.props.define_property(
-                        &model_prop,
-                        PropertyValue::String(model),
-                        true,
-                    ).ok();
+                    self.props
+                        .define_property(&model_prop, PropertyValue::String(model), true)
+                        .ok();
 
                     // Read initial state
                     let state_tok = Self::laser_state_token(laser_num);
@@ -175,7 +192,8 @@ impl Device for CoherentScientificRemote {
                         } else {
                             "Off"
                         };
-                        self.props.entry_mut(&state_prop)
+                        self.props
+                            .entry_mut(&state_prop)
                             .map(|e| e.value = PropertyValue::String(s.into()));
                     }
 
@@ -207,8 +225,6 @@ impl Device for CoherentScientificRemote {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let state_tok = Self::laser_state_token(self.trigger_laser);
-            let _ = self.set_laser_cmd(&state_tok, "Off");
             self.is_open = false;
             self.initialized = false;
         }
@@ -222,7 +238,10 @@ impl Device for CoherentScientificRemote {
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         // Handle per-laser state property
         if name.ends_with("_State") && name.starts_with("Laser") {
-            if let Some(num_str) = name.strip_prefix("Laser").and_then(|s| s.strip_suffix("_State")) {
+            if let Some(num_str) = name
+                .strip_prefix("Laser")
+                .and_then(|s| s.strip_suffix("_State"))
+            {
                 if let Ok(laser_num) = num_str.parse::<usize>() {
                     let s = match &val {
                         PropertyValue::String(s) => s.clone(),
@@ -242,17 +261,26 @@ impl Device for CoherentScientificRemote {
 
         // Handle per-laser power setpoint
         if name.ends_with("_PowerSetpoint_pct") && name.starts_with("Laser") {
-            if let Some(num_str) = name.strip_prefix("Laser").and_then(|s| s.strip_suffix("_PowerSetpoint_pct")) {
+            if let Some(num_str) = name
+                .strip_prefix("Laser")
+                .and_then(|s| s.strip_suffix("_PowerSetpoint_pct"))
+            {
                 if let Ok(laser_num) = num_str.parse::<usize>() {
                     let pct = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                     if self.initialized {
                         // Query power limits
                         let max_tok = Self::power_max_token(laser_num);
                         let min_tok = Self::power_min_token(laser_num);
-                        let max_w: f64 = self.query(&max_tok).ok()
-                            .and_then(|s| s.parse().ok()).unwrap_or(1.0);
-                        let min_w: f64 = self.query(&min_tok).ok()
-                            .and_then(|s| s.parse().ok()).unwrap_or(0.0);
+                        let max_w: f64 = self
+                            .query(&max_tok)
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(1.0);
+                        let min_w: f64 = self
+                            .query(&min_tok)
+                            .ok()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0.0);
                         let max_mw = max_w * POWER_CONVERSION;
                         let min_mw = min_w * POWER_CONVERSION;
                         let mw = min_mw + pct / 100.0 * (max_mw - min_mw);
@@ -296,7 +324,8 @@ impl Shutter for CoherentScientificRemote {
         self.set_laser_cmd(&state_tok, val)?;
         self.is_open = open;
         let state_prop = format!("Laser{}_State", self.trigger_laser);
-        self.props.entry_mut(&state_prop)
+        self.props
+            .entry_mut(&state_prop)
             .map(|e| e.value = PropertyValue::String(val.into()));
         Ok(())
     }
@@ -305,8 +334,11 @@ impl Shutter for CoherentScientificRemote {
         Ok(self.is_open)
     }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+    fn fire(&mut self, delta_t: f64) -> MmResult<()> {
         self.set_open(true)?;
+        std::thread::sleep(std::time::Duration::from_millis(
+            delta_t.max(0.0).round() as u64
+        ));
         self.set_open(false)
     }
 }
@@ -321,6 +353,9 @@ mod tests {
             .expect("*IDN?", "Coherent Scientific Remote v1.0")
             // Laser 1 present
             .expect("SYST1:INF:MOD?", "OBIS-488-50")
+            .expect("SYST1:COMM:HAND On", "On")
+            .expect("SYST1:COMM:PROM Off", "Off")
+            .expect("SYST1:ERR:CLE?", "0")
             .expect("SOUR1:AM:STATE?", "Off")
             // Lasers 2-6 not present
             .expect("SYST2:INF:MOD?", "ERR")
@@ -367,5 +402,16 @@ mod tests {
     fn no_transport_error() {
         let mut dev = CoherentScientificRemote::new();
         assert!(dev.initialize().is_err());
+    }
+
+    #[test]
+    fn fire_closes_after_pulse() {
+        let t = make_transport()
+            .expect("SOUR1:AM:STATE On", "On")
+            .expect("SOUR1:AM:STATE Off", "Off");
+        let mut dev = CoherentScientificRemote::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.fire(0.0).unwrap();
+        assert!(!dev.get_open().unwrap());
     }
 }

@@ -1,17 +1,17 @@
 /// Oxxius LaserBoxx (LBX/LCX/LMX) laser controller.
 ///
 /// Protocol (LBX model focus):
-///   `inf?\n`     → model string e.g. "LBX-473-100-CSB"
-///   `hid?\n`     → serial number
-///   `?sv\n`      → software version
-///   `?sta\n`     → status integer (2=standby, 3=emission_on, 4=alarm)
-///   `dl 1\n`     → emission on
-///   `dl 0\n`     → emission off
-///   `p <mW>\n`   → set power setpoint
-///   `?p\n`       → power readback (mW)
-///   `?hh\n`      → usage hours
-///   `?f\n`       → fault code (0 = none)
-///   `?int\n`     → interlock (0=open/unsafe, 1=closed/safe)
+///   `inf?\n`     -> model string e.g. "LBX-473-100-CSB"
+///   `hid?\n`     -> serial number
+///   `?sv\n`      -> software version
+///   `?sta\n`     -> status integer (2=standby, 3=emission_on, 4=alarm)
+///   `dl 1\n`     -> emission on
+///   `dl 0\n`     -> emission off
+///   `p <mW>\n`   -> set power setpoint
+///   `?p\n`       -> power readback (mW)
+///   `?hh\n`      -> usage hours
+///   `?f\n`       -> fault code (0 = none)
+///   `?int\n`     -> interlock (0=open/unsafe, 1=closed/safe)
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
@@ -30,15 +30,37 @@ pub struct OxxiusLaser {
 impl OxxiusLaser {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("PowerSetpoint_mW", PropertyValue::Float(0.0), false).unwrap();
-        props.define_property("PowerReadback_mW", PropertyValue::Float(0.0), true).unwrap();
-        props.define_property("Model", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("SerialNumber", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("SoftwareVersion", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("UsageHours", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("FaultCode", PropertyValue::Integer(0), true).unwrap();
-        props.define_property("Interlock", PropertyValue::String("Unknown".into()), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("PowerSetpoint_mW", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("PowerReadback_mW", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("Model", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("SerialNumber", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property(
+                "SoftwareVersion",
+                PropertyValue::String(String::new()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("UsageHours", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("FaultCode", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Interlock", PropertyValue::String("Unknown".into()), true)
+            .unwrap();
 
         Self {
             props,
@@ -66,7 +88,7 @@ impl OxxiusLaser {
     }
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let cmd = command.to_string();
+        let cmd = format!("{}\n", command);
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
@@ -76,7 +98,8 @@ impl OxxiusLaser {
     /// Parse nominal power from model string e.g. "LBX-473-100-CSB" → 100 mW.
     fn parse_max_power(model: &str) -> f64 {
         // Format: TYPE-WAVELENGTH-POWER-VARIANT
-        model.split('-')
+        model
+            .split('-')
             .nth(2)
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(100.0)
@@ -84,12 +107,18 @@ impl OxxiusLaser {
 }
 
 impl Default for OxxiusLaser {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for OxxiusLaser {
-    fn name(&self) -> &str { "OxxiusLaser" }
-    fn description(&self) -> &str { "Oxxius LaserBoxx laser controller" }
+    fn name(&self) -> &str {
+        "OxxiusLaser"
+    }
+    fn description(&self) -> &str {
+        "Oxxius LaserBoxx laser controller"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -98,27 +127,40 @@ impl Device for OxxiusLaser {
 
         let model = self.cmd("inf?")?;
         self.max_power_mw = Self::parse_max_power(&model);
-        self.props.entry_mut("Model").map(|e| e.value = PropertyValue::String(model));
+        self.props
+            .entry_mut("Model")
+            .map(|e| e.value = PropertyValue::String(model));
 
         if let Ok(sn) = self.cmd("hid?") {
-            self.props.entry_mut("SerialNumber").map(|e| e.value = PropertyValue::String(sn));
+            self.props
+                .entry_mut("SerialNumber")
+                .map(|e| e.value = PropertyValue::String(sn));
         }
         if let Ok(sv) = self.cmd("?sv") {
-            self.props.entry_mut("SoftwareVersion").map(|e| e.value = PropertyValue::String(sv));
+            self.props
+                .entry_mut("SoftwareVersion")
+                .map(|e| e.value = PropertyValue::String(sv));
         }
 
-        self.props.set_property_limits("PowerSetpoint_mW", 0.0, self.max_power_mw)?;
+        self.props
+            .set_property_limits("PowerSetpoint_mW", 0.0, self.max_power_mw)?;
 
         if let Ok(hh) = self.cmd("?hh") {
-            self.props.entry_mut("UsageHours").map(|e| e.value = PropertyValue::String(hh));
+            self.props
+                .entry_mut("UsageHours")
+                .map(|e| e.value = PropertyValue::String(hh));
         }
         if let Ok(f) = self.cmd("?f") {
             let code: i64 = f.parse().unwrap_or(0);
-            self.props.entry_mut("FaultCode").map(|e| e.value = PropertyValue::Integer(code));
+            self.props
+                .entry_mut("FaultCode")
+                .map(|e| e.value = PropertyValue::Integer(code));
         }
         if let Ok(i) = self.cmd("?int") {
             let s = if i.trim() == "1" { "Closed" } else { "Open" };
-            self.props.entry_mut("Interlock").map(|e| e.value = PropertyValue::String(s.into()));
+            self.props
+                .entry_mut("Interlock")
+                .map(|e| e.value = PropertyValue::String(s.into()));
         }
 
         if let Ok(sta) = self.cmd("?sta") {
@@ -152,11 +194,15 @@ impl Device for OxxiusLaser {
         match name {
             "PowerSetpoint_mW" => {
                 let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if mw < 0.0 || mw > self.max_power_mw {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 if self.initialized {
                     self.cmd(&format!("p {:.4}", mw))?;
                 }
                 self.power_setpoint_mw = mw;
-                self.props.entry_mut("PowerSetpoint_mW")
+                self.props
+                    .entry_mut("PowerSetpoint_mW")
                     .map(|e| e.value = PropertyValue::Float(mw));
                 Ok(())
             }
@@ -164,13 +210,21 @@ impl Device for OxxiusLaser {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for OxxiusLaser {
@@ -181,9 +235,13 @@ impl Shutter for OxxiusLaser {
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.is_open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.is_open)
+    }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { self.set_open(true) }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+        self.set_open(true)
+    }
 }
 
 #[cfg(test)]
@@ -193,14 +251,14 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("inf?", "LBX-473-100-CSB")
-            .expect("hid?", "OXX-001")
-            .expect("?sv", "v2.3")
-            .expect("?hh", "500.0")
-            .expect("?f", "0")
-            .expect("?int", "1")
-            .expect("?sta", "2")
-            .expect("?p", "50.0")
+            .expect("inf?\n", "LBX-473-100-CSB")
+            .expect("hid?\n", "OXX-001")
+            .expect("?sv\n", "v2.3")
+            .expect("?hh\n", "500.0")
+            .expect("?f\n", "0")
+            .expect("?int\n", "1")
+            .expect("?sta\n", "2")
+            .expect("?p\n", "50.0")
     }
 
     #[test]
@@ -214,7 +272,9 @@ mod tests {
 
     #[test]
     fn open_close() {
-        let t = make_transport().expect("dl 1", "OK").expect("dl 0", "OK");
+        let t = make_transport()
+            .expect("dl 1\n", "OK")
+            .expect("dl 0\n", "OK");
         let mut dev = OxxiusLaser::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_open(true).unwrap();
@@ -228,8 +288,21 @@ mod tests {
         let t = make_transport().any("OK");
         let mut dev = OxxiusLaser::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
-        dev.set_property("PowerSetpoint_mW", PropertyValue::Float(75.0)).unwrap();
+        dev.set_property("PowerSetpoint_mW", PropertyValue::Float(75.0))
+            .unwrap();
         assert_eq!(dev.power_setpoint_mw, 75.0);
+    }
+
+    #[test]
+    fn set_power_rejects_out_of_range() {
+        let mut dev = OxxiusLaser::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.set_property("PowerSetpoint_mW", PropertyValue::Float(125.0))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(dev.power_setpoint_mw, 50.0);
     }
 
     #[test]

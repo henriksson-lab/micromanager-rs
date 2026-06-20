@@ -59,18 +59,10 @@ impl HydraXYStage {
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
         props
-            .define_property(
-                "Speed [mm/s]",
-                PropertyValue::Float(200.0),
-                false,
-            )
+            .define_property("Speed [mm/s]", PropertyValue::Float(200.0), false)
             .unwrap();
         props
-            .define_property(
-                "Acceleration [mm/s^2]",
-                PropertyValue::Float(1000.0),
-                false,
-            )
+            .define_property("Acceleration [mm/s^2]", PropertyValue::Float(1000.0), false)
             .unwrap();
 
         Self {
@@ -150,11 +142,11 @@ impl Default for HydraXYStage {
 
 impl Device for HydraXYStage {
     fn name(&self) -> &str {
-        "HydraLMT200XYStage"
+        "XY Stage"
     }
 
     fn description(&self) -> &str {
-        "ITK Hydra LMT200 XY stage controller"
+        "Hydra XY stage driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -255,12 +247,7 @@ impl XYStage for HydraXYStage {
     }
 
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Ok((
-            self.x_min_um,
-            self.x_max_um,
-            self.y_min_um,
-            self.y_max_um,
-        ))
+        Ok((self.x_min_um, self.x_max_um, self.y_min_um, self.y_max_um))
     }
 
     fn get_step_size_um(&self) -> (f64, f64) {

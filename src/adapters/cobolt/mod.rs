@@ -7,9 +7,8 @@
 //! | `l?`           | `0` or `1`    | Query laser on/off state     |
 //! | `l1`           | `OK`          | Turn laser on                |
 //! | `l0`           | `OK`          | Turn laser off               |
-//! | `p?`           | `<mW>`        | Query actual output power    |
-//! | `slp <mW>`     | `OK`          | Set laser power setpoint     |
-//! | `glp?`         | `<mW>`        | Get laser power setpoint     |
+//! | `p?`           | `<W>`         | Query power setpoint         |
+//! | `p <W>`        | `OK`          | Set laser power setpoint     |
 //! | `sn?`          | `<number>`    | Query serial number          |
 //! | `hrs?`         | `<hours>`     | Query head usage hours       |
 //! | `ver?`         | `<version>`   | Query firmware version       |
@@ -28,7 +27,7 @@ pub const DEVICE_NAME_COBOLT: &str = "Cobolt";
 
 static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
     name: DEVICE_NAME_COBOLT,
-    description: "Cobolt laser controller (HÜBNER Photonics)",
+    description: "Cobolt Laser Controller",
     device_type: DeviceType::Shutter,
 }];
 

@@ -5,12 +5,11 @@
 /// Answers:  `"<device><command_nr> <result>\r"`
 ///
 /// Master device address: "70" (g_Master = "70")
-/// IL Turret:             "51"
+/// IL Turret:             "78"
 /// Objective Turret:      "76"
-/// TL Shutter:            "78"
-/// IL Shutter:            "79"
+/// Lamp/TL/IL Shutters:   "77"
 ///
-/// Stand info command: `"7000\r"` → `"7000 <version> <available_devices>\r"`
+/// Stand firmware command: `"70002\r"` → `"70002 <version>\r"`
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, Hub};
@@ -27,7 +26,9 @@ pub struct LeicaDMIHub {
 impl LeicaDMIHub {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -55,27 +56,35 @@ impl LeicaDMIHub {
         self.call_transport(|t| Ok(t.send_recv(cmd)?.trim().to_string()))
     }
 
-    /// Get stand info: device "70", command 0.
+    /// Get stand firmware version: device "70", command 002.
     fn get_stand_info(&mut self) -> MmResult<String> {
-        let resp = self.send_recv("7000\r")?;
-        // Response: "7000 <firmware_version>"
-        if !resp.starts_with("7000") {
+        let resp = self.send_recv("70002\r")?;
+        // Response: "70002 <firmware_version>"
+        if !resp.starts_with("70002") {
             return Err(MmError::SerialInvalidResponse);
         }
-        let info = resp[4..].trim().to_string();
+        let info = resp[5..].trim().to_string();
         Ok(info)
     }
 
-    pub fn stand_version(&self) -> &str { &self.stand_version }
+    pub fn stand_version(&self) -> &str {
+        &self.stand_version
+    }
 }
 
 impl Default for LeicaDMIHub {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for LeicaDMIHub {
-    fn name(&self) -> &str { "LeicaDMI-Hub" }
-    fn description(&self) -> &str { "Leica DMI microscope hub" }
+    fn name(&self) -> &str {
+        "LeicaDMI-Hub"
+    }
+    fn description(&self) -> &str {
+        "Leica DMI microscope hub"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -103,13 +112,21 @@ impl Device for LeicaDMIHub {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Hub }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Hub
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Hub for LeicaDMIHub {
@@ -130,8 +147,7 @@ mod tests {
 
     #[test]
     fn hub_initialize() {
-        let t = MockTransport::new()
-            .expect("7000\r", "7000 v3.2.0");
+        let t = MockTransport::new().expect("70002\r", "70002 v3.2.0");
         let mut hub = LeicaDMIHub::new().with_transport(Box::new(t));
         hub.initialize().unwrap();
         assert!(hub.stand_version().contains("v3.2.0"));
@@ -145,8 +161,7 @@ mod tests {
 
     #[test]
     fn detect_installed_devices() {
-        let t = MockTransport::new()
-            .expect("7000\r", "7000 v3.2.0");
+        let t = MockTransport::new().expect("70002\r", "70002 v3.2.0");
         let mut hub = LeicaDMIHub::new().with_transport(Box::new(t));
         hub.initialize().unwrap();
         let devs = hub.detect_installed_devices().unwrap();

@@ -1,9 +1,9 @@
 /// Zeiss CAN-bus shutter (reflected light / fluorescence shutter).
 ///
 /// Protocol (TX `\r`, RX `\r`):
-///   `HPRs0\r`  → `PH\r`  (close shutter)
-///   `HPRs1\r`  → `PH\r`  (open shutter)
-///   `HPRp\r`   → `PH{0|1}\r`  (query shutter state)
+///   `HPCK1,1\r`  (close internal shutter)
+///   `HPCK1,2\r`  (open internal shutter)
+///   `HPCk1,1\r`  → `PH{1|2}\r`  (query shutter state)
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
@@ -44,9 +44,9 @@ impl Device for ZeissShutter {
 
     fn initialize(&mut self) -> MmResult<()> {
         if !self.hub.is_connected() { return Err(MmError::NotConnected); }
-        let resp = self.send("HPRp")?;
+        let resp = self.send("HPCk1,1")?;
         let state = resp.strip_prefix("PH").unwrap_or("0").trim().to_string();
-        self.open = state == "1";
+        self.open = state == "2";
         self.initialized = true;
         Ok(())
     }
@@ -66,7 +66,7 @@ impl Device for ZeissShutter {
 
 impl Shutter for ZeissShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
-        let resp = self.send(if open { "HPRs1" } else { "HPRs0" })?;
+        let resp = self.send(if open { "HPCK1,2" } else { "HPCK1,1" })?;
         if resp.starts_with("PH") {
             self.open = open;
             Ok(())
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn initialize_reads_state() {
-        let t = MockTransport::new().any("PH0");
+        let t = MockTransport::new().expect("HPCk1,1\r", "PH1");
         let mut s = shutter_with(t);
         s.initialize().unwrap();
         assert!(!s.get_open().unwrap());
@@ -102,7 +102,10 @@ mod tests {
 
     #[test]
     fn open_close() {
-        let t = MockTransport::new().any("PH0").any("PH").any("PH");
+        let t = MockTransport::new()
+            .expect("HPCk1,1\r", "PH1")
+            .expect("HPCK1,2\r", "PH")
+            .expect("HPCK1,1\r", "PH");
         let mut s = shutter_with(t);
         s.initialize().unwrap();
         s.set_open(true).unwrap();

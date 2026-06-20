@@ -14,13 +14,28 @@ use crate::types::{DeviceType, ImageRoi, PropertyValue};
 
 // ─── Pixel format helpers ────────────────────────────────────────────────────
 
+const SUPPORTED_PIXEL_FORMATS: &[&str] = &[
+    "Mono8",
+    "Mono10",
+    "Mono12",
+    "Mono14",
+    "Mono16",
+    "BayerRG8",
+    "BayerRG10",
+    "BayerRG12",
+    "BayerRG16",
+    "RGB8",
+    "BGR8",
+];
+
+fn is_supported_pixel_format(fmt: &str) -> bool {
+    SUPPORTED_PIXEL_FORMATS.contains(&fmt)
+}
+
 fn pixel_format_bpp(fmt: &str) -> u32 {
     match fmt {
-        "Mono8" | "BayerRG8" | "BayerBG8" | "BayerGB8" | "BayerGR8" => 1,
-        "Mono10" | "Mono10p" | "Mono12" | "Mono12p" | "Mono14" | "Mono16"
-        | "BayerRG10" | "BayerBG10" | "BayerGB10" | "BayerGR10"
-        | "BayerRG12" | "BayerBG12" | "BayerGB12" | "BayerGR12"
-        | "BayerRG16" | "BayerBG16" | "BayerGB16" | "BayerGR16" => 2,
+        "Mono8" | "BayerRG8" => 1,
+        "Mono10" | "Mono12" | "Mono14" | "Mono16" | "BayerRG10" | "BayerRG12" | "BayerRG16" => 2,
         "RGB8" | "BGR8" => 4, // expanded to RGBA/BGRA
         _ => 1,
     }
@@ -28,10 +43,11 @@ fn pixel_format_bpp(fmt: &str) -> u32 {
 
 fn pixel_format_depth(fmt: &str) -> u32 {
     match fmt {
-        "Mono10" | "Mono10p" | "BayerRG10" | "BayerBG10" | "BayerGB10" | "BayerGR10" => 10,
-        "Mono12" | "Mono12p" | "BayerRG12" | "BayerBG12" | "BayerGB12" | "BayerGR12" => 12,
+        "Mono10" | "BayerRG10" => 10,
+        "Mono12" => 12,
+        "BayerRG12" => 12,
         "Mono14" => 14,
-        "Mono16" | "BayerRG16" | "BayerBG16" | "BayerGB16" | "BayerGR16" => 16,
+        "Mono16" | "BayerRG16" => 16,
         _ => 8,
     }
 }
@@ -75,6 +91,7 @@ pub struct AravisCamera {
     exposure_ms: f64,
     binning: i32,
     pixel_format: String,
+    pixel_format_configured: bool,
     capturing: bool,
     device_id: String,
 }
@@ -92,7 +109,7 @@ impl AravisCamera {
             .define_property("Gain", PropertyValue::Float(0.0), false)
             .unwrap();
         props
-            .define_property("PixelFormat", PropertyValue::String("Mono8".into()), false)
+            .define_property("PixelType", PropertyValue::String("Mono8".into()), false)
             .unwrap();
         props
             .define_property("Binning", PropertyValue::Integer(1), false)
@@ -117,6 +134,7 @@ impl AravisCamera {
             exposure_ms: 10.0,
             binning: 1,
             pixel_format: "Mono8".into(),
+            pixel_format_configured: false,
             capturing: false,
             device_id: String::new(),
         }
@@ -177,6 +195,9 @@ impl AravisCamera {
             self.pixel_format = fmt_str;
         }
         self.props
+            .entry_mut("PixelType")
+            .map(|e| e.value = PropertyValue::String(self.pixel_format.clone()));
+        self.props
             .entry_mut("Width")
             .map(|e| e.value = PropertyValue::Integer(self.width as i64));
         self.props
@@ -191,16 +212,14 @@ impl AravisCamera {
             return Err(MmError::SnapImageFailed);
         }
 
-        let data = buffer
-            .data()
-            .ok_or(MmError::SnapImageFailed)?;
+        let data = buffer.data().ok_or(MmError::SnapImageFailed)?;
         let w = buffer.image_width() as u32;
         let h = buffer.image_height() as u32;
 
         // Check if this is RGB8/BGR8 that needs RGBA expansion
         let fmt = buffer.image_pixel_format();
-        let is_rgb = fmt == aravis::PixelFormat::RGB_8_PACKED
-            || fmt == aravis::PixelFormat::BGR_8_PACKED;
+        let is_rgb =
+            fmt == aravis::PixelFormat::RGB_8_PACKED || fmt == aravis::PixelFormat::BGR_8_PACKED;
 
         if is_rgb {
             self.img_buf = rgb_to_rgba(data, w, h);
@@ -260,8 +279,17 @@ impl Device for AravisCamera {
 
         // Populate allowed pixel formats
         if let Ok(formats) = camera.dup_available_pixel_formats_as_strings() {
-            let refs: Vec<&str> = formats.iter().map(|s| s.as_str()).collect();
-            self.props.set_allowed_values("PixelFormat", &refs).ok();
+            let supported: Vec<&str> = formats
+                .iter()
+                .map(|s| s.as_str())
+                .filter(|fmt| is_supported_pixel_format(fmt))
+                .collect();
+            let refs = if supported.is_empty() {
+                SUPPORTED_PIXEL_FORMATS.to_vec()
+            } else {
+                supported
+            };
+            self.props.set_allowed_values("PixelType", &refs).ok();
         }
 
         self.camera = Some(camera);
@@ -271,8 +299,10 @@ impl Device for AravisCamera {
         Self::write_exposure(cam, self.exposure_ms);
         Self::write_gain(cam, self.gain());
         Self::write_binning(cam, self.binning);
-        let fmt = self.pixel_format.clone();
-        Self::write_pixel_format(cam, &fmt);
+        if self.pixel_format_configured {
+            let fmt = self.pixel_format.clone();
+            Self::write_pixel_format(cam, &fmt);
+        }
 
         // Clear ROI to full sensor
         self.clear_roi().ok();
@@ -301,7 +331,7 @@ impl Device for AravisCamera {
                 }
                 self.props.get(name).cloned()
             }
-            "PixelFormat" => Ok(PropertyValue::String(self.pixel_format.clone())),
+            "PixelType" => Ok(PropertyValue::String(self.pixel_format.clone())),
             "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
             "DeviceId" => Ok(PropertyValue::String(self.device_id.clone())),
             _ => self.props.get(name).cloned(),
@@ -336,8 +366,13 @@ impl Device for AravisCamera {
                 }
                 Ok(())
             }
-            "PixelFormat" => {
-                self.pixel_format = val.as_str().to_string();
+            "PixelType" => {
+                let fmt = val.as_str();
+                if !is_supported_pixel_format(fmt) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.pixel_format = fmt.to_string();
+                self.pixel_format_configured = true;
                 self.props.set(name, val)?;
                 let fmt = self.pixel_format.clone();
                 if let Some(cam) = self.camera.as_ref() {
@@ -368,10 +403,7 @@ impl Device for AravisCamera {
         self.props.has_property(name)
     }
     fn is_property_read_only(&self, name: &str) -> bool {
-        self.props
-            .entry(name)
-            .map(|e| e.read_only)
-            .unwrap_or(false)
+        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
     fn device_type(&self) -> DeviceType {
         DeviceType::Camera
@@ -391,9 +423,7 @@ impl Camera for AravisCamera {
         if self.capturing {
             // During sequence: pop next buffer from stream
             let stream = self.stream.as_ref().ok_or(MmError::SnapImageFailed)?;
-            let buffer = stream
-                .pop_buffer()
-                .ok_or(MmError::SnapImageFailed)?;
+            let buffer = stream.pop_buffer().ok_or(MmError::SnapImageFailed)?;
             let result = self.process_buffer(&buffer);
             // Recycle buffer
             if let Some(stream) = self.stream.as_ref() {
@@ -473,9 +503,17 @@ impl Camera for AravisCamera {
     }
 
     fn set_roi(&mut self, roi: ImageRoi) -> MmResult<()> {
+        if roi.width == 0 && roi.height == 0 {
+            return self.clear_roi();
+        }
         let cam = self.camera.as_ref().ok_or(MmError::NotConnected)?;
-        cam.set_region(roi.x as i32, roi.y as i32, roi.width as i32, roi.height as i32)
-            .map_err(Self::arv_err)?;
+        cam.set_region(
+            roi.x as i32,
+            roi.y as i32,
+            roi.width as i32,
+            roi.height as i32,
+        )
+        .map_err(Self::arv_err)?;
         self.sync_dimensions();
         Ok(())
     }
@@ -563,11 +601,14 @@ mod tests {
         assert_eq!(pixel_format_bpp("Mono16"), 2);
         assert_eq!(pixel_format_bpp("RGB8"), 4);
         assert_eq!(pixel_format_bpp("BayerRG12"), 2);
+        assert_eq!(pixel_format_bpp("Mono12p"), 1);
 
         assert_eq!(pixel_format_depth("Mono8"), 8);
         assert_eq!(pixel_format_depth("Mono12"), 12);
         assert_eq!(pixel_format_depth("Mono16"), 16);
         assert_eq!(pixel_format_depth("BayerRG10"), 10);
+        assert_eq!(pixel_format_depth("BayerRG12"), 12);
+        assert_eq!(pixel_format_depth("BayerBG10"), 8);
 
         assert_eq!(pixel_format_components("Mono8"), 1);
         assert_eq!(pixel_format_components("RGB8"), 4);
@@ -575,10 +616,30 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_pixel_formats_are_rejected() {
+        let mut d = AravisCamera::new();
+        assert!(d
+            .set_property("PixelType", PropertyValue::String("Mono12p".into()))
+            .is_err());
+        assert!(d
+            .set_property("PixelType", PropertyValue::String("BayerBG8".into()))
+            .is_err());
+    }
+
+    #[test]
     fn rgb_to_rgba_conversion() {
         let rgb = vec![255, 0, 0, 0, 255, 0]; // 2 pixels: red, green
         let rgba = rgb_to_rgba(&rgb, 2, 1);
         assert_eq!(rgba, vec![255, 0, 0, 255, 0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn zero_sized_roi_requires_connected_clear_path() {
+        let mut d = AravisCamera::new();
+        assert_eq!(
+            d.set_roi(ImageRoi::new(0, 0, 0, 0)).unwrap_err(),
+            MmError::NotConnected
+        );
     }
 
     #[test]

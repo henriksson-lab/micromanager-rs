@@ -10,7 +10,7 @@
 ///   `zz\r`        → close shutter
 ///   `bb\r`        → turn lamp on
 ///   `ss\r`        → turn lamp off
-///   `[b'i', N]`   → set intensity to level N (0=0%, 1=12%, 2=25%, 3=50%, 4=100%)
+///   `iN\r`        → set intensity to level N (0=0%, 1=12%, 2=25%, 3=50%, 4=100%)
 ///   `ll\r`        → lock front panel
 ///   `nn\r`        → unlock front panel
 ///
@@ -76,7 +76,7 @@ impl XCite120PC {
     }
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let cmd = command.to_string();
+        let cmd = format!("{}\r", command);
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
@@ -112,6 +112,9 @@ impl Device for XCite120PC {
 
         let ver = self.cmd("vv")?;
         self.props.entry_mut("Version").map(|e| e.value = PropertyValue::String(ver));
+
+        let hours = self.cmd("hh")?;
+        self.props.entry_mut("LampHours").map(|e| e.value = PropertyValue::String(hours));
 
         let status = self.cmd("uu")?;
         let (_alarm, lamp, shutter, locked) = self.parse_status(&status);
@@ -152,8 +155,7 @@ impl Device for XCite120PC {
                 let level = INTENSITIES.iter().position(|&s| s == pct_str)
                     .ok_or(MmError::InvalidPropertyValue)? as u8;
                 if self.initialized {
-                    self.call_transport(|t| t.send_bytes(&[b'i', level]))?;
-                    let _ = self.call_transport(|t| t.receive_line());
+                    self.cmd(&format!("i{}", (b'0' + level) as char))?;
                 }
                 self.intensity_level = level;
                 self.props.set(name, PropertyValue::String(pct_str))
@@ -198,7 +200,7 @@ impl Shutter for XCite120PC {
 
     fn get_open(&self) -> MmResult<bool> { Ok(self.shutter_open) }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { self.set_open(true) }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { Err(MmError::UnsupportedCommand) }
 }
 
 #[cfg(test)]
@@ -211,6 +213,7 @@ mod tests {
             .any("OK")          // tt
             .any("OK")          // aa
             .any("v1.23")       // vv
+            .any("123")         // hh
             .any("0")           // uu: all bits clear → shutter closed, lamp off
             .any("4")           // ii: level 4 = 100%
     }
@@ -236,13 +239,18 @@ mod tests {
 
     #[test]
     fn set_intensity() {
-        let t = make_transport()
-            .expect_binary(&[b'i', 2]) // level 2 = 25%
-            .any("OK");                // discard response
+        let t = make_transport().expect("i2\r", "");
         let mut dev = XCite120PC::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_property("Intensity_pct", PropertyValue::String("25".into())).unwrap();
         assert_eq!(dev.intensity_level, 2);
+    }
+
+    #[test]
+    fn fire_is_unsupported() {
+        let mut dev = XCite120PC::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+        assert_eq!(dev.fire(1.0), Err(MmError::UnsupportedCommand));
     }
 
     #[test]

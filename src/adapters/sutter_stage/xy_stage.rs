@@ -26,9 +26,19 @@ pub struct SutterXYStage {
 impl SutterXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Version", PropertyValue::String(String::new()), true).unwrap();
-        Self { props, transport: None, initialized: false, x_um: 0.0, y_um: 0.0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Version", PropertyValue::String(String::new()), true)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            x_um: 0.0,
+            y_um: 0.0,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -37,7 +47,9 @@ impl SutterXYStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -46,20 +58,29 @@ impl SutterXYStage {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     fn check_a(resp: &str) -> MmResult<&str> {
         let s = resp.trim();
-        if let Some(rest) = s.strip_prefix(":A") { Ok(rest.trim()) }
-        else { Err(MmError::LocallyDefined(format!("Sutter error: {}", s))) }
+        if let Some(rest) = s.strip_prefix(":A") {
+            Ok(rest.trim())
+        } else {
+            Err(MmError::LocallyDefined(format!("Sutter error: {}", s)))
+        }
     }
 
     fn parse_xy(resp: &str) -> MmResult<(f64, f64)> {
         let body = Self::check_a(resp)?;
         let parts: Vec<&str> = body.split_whitespace().collect();
         if parts.len() < 2 {
-            return Err(MmError::LocallyDefined(format!("Cannot parse WHERE: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Cannot parse WHERE: {}",
+                resp
+            )));
         }
         let x: i64 = parts[0].parse().unwrap_or(0);
         let y: i64 = parts[1].parse().unwrap_or(0);
@@ -67,17 +88,29 @@ impl SutterXYStage {
     }
 }
 
-impl Default for SutterXYStage { fn default() -> Self { Self::new() } }
+impl Default for SutterXYStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for SutterXYStage {
-    fn name(&self) -> &str { "SutterXYStage" }
-    fn description(&self) -> &str { "Sutter Instruments MPC-200 XY stage" }
+    fn name(&self) -> &str {
+        "XYStage"
+    }
+    fn description(&self) -> &str {
+        "Sutter Instruments MPC-200 XY stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let ver = self.cmd("VER")?;
         let ver_str = Self::check_a(&ver)?.to_string();
-        self.props.entry_mut("Version").map(|e| e.value = PropertyValue::String(ver_str));
+        self.props
+            .entry_mut("Version")
+            .map(|e| e.value = PropertyValue::String(ver_str));
         let pos = self.cmd("WHERE X Y")?;
         let (x, y) = Self::parse_xy(&pos)?;
         self.x_um = x;
@@ -86,17 +119,32 @@ impl Device for SutterXYStage {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for SutterXYStage {
@@ -105,25 +153,43 @@ impl XYStage for SutterXYStage {
         let ys = (y * STEPS_PER_UM).round() as i64;
         let r = self.cmd(&format!("MOVE X={} Y={}", xs, ys))?;
         Self::check_a(&r)?;
-        self.x_um = x; self.y_um = y;
+        self.x_um = x;
+        self.y_um = y;
         Ok(())
     }
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        Ok((self.x_um, self.y_um))
+    }
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
-        self.set_xy_position_um(self.x_um + dx, self.y_um + dy)
+        let xs = (dx * STEPS_PER_UM).round() as i64;
+        let ys = (dy * STEPS_PER_UM).round() as i64;
+        let r = self.cmd(&format!("MOVREL X={} Y={}", xs, ys))?;
+        Self::check_a(&r)?;
+        self.x_um += dx;
+        self.y_um += dy;
+        Ok(())
     }
     fn home(&mut self) -> MmResult<()> {
         let r = self.cmd("HOME X Y")?;
         Self::check_a(&r)?;
-        self.x_um = 0.0; self.y_um = 0.0;
+        self.x_um = 0.0;
+        self.y_um = 0.0;
         Ok(())
     }
-    fn stop(&mut self) -> MmResult<()> { let _ = self.cmd("HALT"); Ok(()) }
-    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> { Ok((-100_000.0, 100_000.0, -100_000.0, 100_000.0)) }
-    fn get_step_size_um(&self) -> (f64, f64) { (0.1, 0.1) }
+    fn stop(&mut self) -> MmResult<()> {
+        let _ = self.cmd("HALT");
+        Ok(())
+    }
+    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
+        Err(MmError::UnsupportedCommand)
+    }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (0.1, 0.1)
+    }
     fn set_origin(&mut self) -> MmResult<()> {
         let _ = self.cmd("HERE X=0 Y=0");
-        self.x_um = 0.0; self.y_um = 0.0;
+        self.x_um = 0.0;
+        self.y_um = 0.0;
         Ok(())
     }
 }
@@ -136,7 +202,7 @@ mod tests {
     fn make_transport() -> MockTransport {
         MockTransport::new()
             .any(":A MPC200 v2.5")
-            .any(":A 500 1000")  // 50 µm, 100 µm
+            .any(":A 500 1000") // 50 µm, 100 µm
     }
 
     #[test]
@@ -158,5 +224,24 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(SutterXYStage::new().initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(SutterXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn limits_are_unsupported() {
+        assert_eq!(
+            SutterXYStage::new().get_limits_um(),
+            Err(MmError::UnsupportedCommand)
+        );
+    }
+
+    #[test]
+    fn relative_move_uses_movrel() {
+        let t = make_transport().expect("MOVREL X=20 Y=-30\r", ":A");
+        let mut s = SutterXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_relative_xy_position_um(2.0, -3.0).unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (52.0, 97.0));
+    }
 }

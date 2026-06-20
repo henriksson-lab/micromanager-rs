@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::error::{MmError, MmResult};
+use std::collections::HashMap;
 
 /// A single configuration setting: (device_label, property_name) → value
 #[derive(Debug, Clone, PartialEq)]
@@ -116,7 +116,9 @@ impl ConfigFile {
                             lineno + 1
                         )));
                     }
-                    let group = config_groups.entry(parts[1].trim().to_string()).or_default();
+                    let group = config_groups
+                        .entry(parts[1].trim().to_string())
+                        .or_default();
                     group.add_setting(
                         parts[2].trim(),
                         parts[3].trim(),
@@ -183,7 +185,7 @@ mod tests {
 
     #[test]
     fn parse_round_trip() {
-        let text = "Device,Camera,demo,DCamera\n\
+        let text = "Device,Camera,demo,DCam\n\
                     Property,Camera,Exposure,10\n\
                     ConfigGroup,Channel,DAPI,Camera,Binning,1\n";
         let cfg = ConfigFile::parse(text).unwrap();

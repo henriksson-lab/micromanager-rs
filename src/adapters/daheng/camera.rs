@@ -51,16 +51,16 @@ fn pixel_format_name(fmt: i64) -> &'static str {
     }
 }
 
-fn pixel_format_from_name(name: &str) -> i64 {
+fn pixel_format_from_name(name: &str) -> Option<i64> {
     match name {
-        "Mono8" => ffi::GX_PIXEL_FORMAT_MONO8,
-        "Mono10" => ffi::GX_PIXEL_FORMAT_MONO10,
-        "Mono12" => ffi::GX_PIXEL_FORMAT_MONO12,
-        "Mono16" => ffi::GX_PIXEL_FORMAT_MONO16,
-        "BayerRG8" => ffi::GX_PIXEL_FORMAT_BAYER_RG8,
-        "BayerRG10" => ffi::GX_PIXEL_FORMAT_BAYER_RG10,
-        "BayerRG12" => ffi::GX_PIXEL_FORMAT_BAYER_RG12,
-        _ => ffi::GX_PIXEL_FORMAT_MONO8,
+        "Mono8" => Some(ffi::GX_PIXEL_FORMAT_MONO8),
+        "Mono10" => Some(ffi::GX_PIXEL_FORMAT_MONO10),
+        "Mono12" => Some(ffi::GX_PIXEL_FORMAT_MONO12),
+        "Mono16" => Some(ffi::GX_PIXEL_FORMAT_MONO16),
+        "BayerRG8" => Some(ffi::GX_PIXEL_FORMAT_BAYER_RG8),
+        "BayerRG10" => Some(ffi::GX_PIXEL_FORMAT_BAYER_RG10),
+        "BayerRG12" => Some(ffi::GX_PIXEL_FORMAT_BAYER_RG12),
+        _ => None,
     }
 }
 
@@ -102,17 +102,13 @@ impl DahengCamera {
             .define_property("SerialNumber", PropertyValue::String("".into()), false)
             .unwrap();
         props
-            .define_property("Exposure", PropertyValue::Float(10.0), false)
+            .define_property("Exposure(us)", PropertyValue::Float(10_000.0), false)
             .unwrap();
         props
             .define_property("Gain", PropertyValue::Float(0.0), false)
             .unwrap();
         props
-            .define_property(
-                "PixelFormat",
-                PropertyValue::String("Mono8".into()),
-                false,
-            )
+            .define_property("PixelType", PropertyValue::String("Mono8".into()), false)
             .unwrap();
         props
             .define_property("Binning", PropertyValue::Integer(1), false)
@@ -207,10 +203,7 @@ impl DahengCamera {
     fn fetch_frame(&mut self) -> MmResult<()> {
         let mut frame = ffi::GxFrameData::default();
         unsafe {
-            gx_check(
-                ffi::GXGetImage(self.handle, &mut frame, 5000),
-                "GXGetImage",
-            )?;
+            gx_check(ffi::GXGetImage(self.handle, &mut frame, 5000), "GXGetImage")?;
         }
         if frame.status != ffi::GX_STATUS_SUCCESS || frame.image_buf.is_null() {
             return Err(MmError::SnapImageFailed);
@@ -219,7 +212,11 @@ impl DahengCamera {
         let size = frame.image_size as usize;
         self.img_buf.resize(size, 0);
         unsafe {
-            ptr::copy_nonoverlapping(frame.image_buf as *const u8, self.img_buf.as_mut_ptr(), size);
+            ptr::copy_nonoverlapping(
+                frame.image_buf as *const u8,
+                self.img_buf.as_mut_ptr(),
+                size,
+            );
         }
 
         self.width = frame.width as u32;
@@ -285,9 +282,7 @@ impl Device for DahengCamera {
             )?;
         }
         if device_num == 0 {
-            return Err(MmError::LocallyDefined(
-                "No Daheng cameras found".into(),
-            ));
+            return Err(MmError::LocallyDefined("No Daheng cameras found".into()));
         }
 
         // Open camera
@@ -370,7 +365,7 @@ impl Device for DahengCamera {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
+            "Exposure(us)" => Ok(PropertyValue::Float(self.exposure_ms * 1000.0)),
             "Gain" => {
                 if !self.handle.is_null() {
                     let mut val: f64 = 0.0;
@@ -384,7 +379,7 @@ impl Device for DahengCamera {
                 }
                 self.props.get(name).cloned()
             }
-            "PixelFormat" => Ok(PropertyValue::String(
+            "PixelType" => Ok(PropertyValue::String(
                 pixel_format_name(self.pixel_format).to_string(),
             )),
             "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
@@ -404,10 +399,10 @@ impl Device for DahengCamera {
                 self.serial_number = val.as_str().to_string();
                 self.props.set(name, val)
             }
-            "Exposure" => {
-                self.exposure_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props
-                    .set(name, PropertyValue::Float(self.exposure_ms))?;
+            "Exposure(us)" => {
+                let exposure_us = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.exposure_ms = exposure_us / 1000.0;
+                self.props.set(name, PropertyValue::Float(exposure_us))?;
                 if !self.handle.is_null() {
                     self.write_exposure(self.exposure_ms);
                 }
@@ -421,9 +416,10 @@ impl Device for DahengCamera {
                 }
                 Ok(())
             }
-            "PixelFormat" => {
+            "PixelType" => {
                 let fmt_name = val.as_str().to_string();
-                self.pixel_format = pixel_format_from_name(&fmt_name);
+                self.pixel_format =
+                    pixel_format_from_name(&fmt_name).ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, val)?;
                 if !self.handle.is_null() {
                     self.write_pixel_format(self.pixel_format);
@@ -453,10 +449,7 @@ impl Device for DahengCamera {
         self.props.has_property(name)
     }
     fn is_property_read_only(&self, name: &str) -> bool {
-        self.props
-            .entry(name)
-            .map(|e| e.read_only)
-            .unwrap_or(false)
+        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
     fn device_type(&self) -> DeviceType {
         DeviceType::Camera
@@ -535,7 +528,7 @@ impl Camera for DahengCamera {
     fn set_exposure(&mut self, exp_ms: f64) {
         self.exposure_ms = exp_ms;
         self.props
-            .set("Exposure", PropertyValue::Float(exp_ms))
+            .set("Exposure(us)", PropertyValue::Float(exp_ms * 1000.0))
             .ok();
         if !self.handle.is_null() {
             self.write_exposure(exp_ms);
@@ -574,6 +567,9 @@ impl Camera for DahengCamera {
 
     fn set_roi(&mut self, roi: ImageRoi) -> MmResult<()> {
         self.check_open()?;
+        if roi.width == 0 && roi.height == 0 {
+            return self.clear_roi();
+        }
         unsafe {
             // Width/Height before OffsetX/Y
             let _ = ffi::GXSetInt(self.handle, ffi::GX_INT_WIDTH, roi.width as i64);
@@ -656,13 +652,20 @@ mod tests {
         assert_eq!(pixel_format_depth(ffi::GX_PIXEL_FORMAT_MONO16), 16);
 
         assert_eq!(pixel_format_name(ffi::GX_PIXEL_FORMAT_MONO8), "Mono8");
-        assert_eq!(pixel_format_name(ffi::GX_PIXEL_FORMAT_BAYER_RG8), "BayerRG8");
+        assert_eq!(
+            pixel_format_name(ffi::GX_PIXEL_FORMAT_BAYER_RG8),
+            "BayerRG8"
+        );
 
-        assert_eq!(pixel_format_from_name("Mono8"), ffi::GX_PIXEL_FORMAT_MONO8);
+        assert_eq!(
+            pixel_format_from_name("Mono8"),
+            Some(ffi::GX_PIXEL_FORMAT_MONO8)
+        );
         assert_eq!(
             pixel_format_from_name("Mono16"),
-            ffi::GX_PIXEL_FORMAT_MONO16
+            Some(ffi::GX_PIXEL_FORMAT_MONO16)
         );
+        assert_eq!(pixel_format_from_name("Bogus"), None);
     }
 
     #[test]
@@ -685,7 +688,7 @@ mod tests {
     #[test]
     fn set_exposure_pre_init() {
         let mut d = DahengCamera::new();
-        d.set_property("Exposure", PropertyValue::Float(25.0))
+        d.set_property("Exposure(us)", PropertyValue::Float(25_000.0))
             .unwrap();
         assert_eq!(d.exposure_ms, 25.0);
     }
@@ -700,5 +703,26 @@ mod tests {
     fn snap_without_init_errors() {
         let mut d = DahengCamera::new();
         assert!(d.snap_image().is_err());
+    }
+
+    #[test]
+    fn invalid_pixel_format_is_rejected() {
+        let mut d = DahengCamera::new();
+        assert!(d
+            .set_property("PixelType", PropertyValue::String("Bogus".into()))
+            .is_err());
+        assert_eq!(
+            d.get_property("PixelType").unwrap(),
+            PropertyValue::String("Mono8".into())
+        );
+    }
+
+    #[test]
+    fn zero_sized_roi_requires_connected_clear_path() {
+        let mut d = DahengCamera::new();
+        assert_eq!(
+            d.set_roi(ImageRoi::new(0, 0, 0, 0)).unwrap_err(),
+            MmError::NotConnected
+        );
     }
 }

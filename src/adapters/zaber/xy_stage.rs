@@ -37,7 +37,9 @@ pub struct ZaberXYStage {
 impl ZaberXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -58,7 +60,9 @@ impl ZaberXYStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -93,14 +97,24 @@ impl ZaberXYStage {
     }
 }
 
-impl Default for ZaberXYStage { fn default() -> Self { Self::new() } }
+impl Default for ZaberXYStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for ZaberXYStage {
-    fn name(&self) -> &str { "ZaberXYStage" }
-    fn description(&self) -> &str { "Zaber XY stage" }
+    fn name(&self) -> &str {
+        "ZaberXYStage"
+    }
+    fn description(&self) -> &str {
+        "Zaber XY stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let res_x = self.get_resolution(self.axis_x)?;
         self.step_size_x_um = DEFAULT_LINEAR_MOTION_MM / DEFAULT_MOTOR_STEPS / res_x * 1000.0;
         let res_y = self.get_resolution(self.axis_y)?;
@@ -115,17 +129,32 @@ impl Device for ZaberXYStage {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for ZaberXYStage {
@@ -141,7 +170,9 @@ impl XYStage for ZaberXYStage {
         Ok(())
     }
 
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        Ok((self.x_um, self.y_um))
+    }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let sx = (dx / self.step_size_x_um).round() as i64;
@@ -167,12 +198,16 @@ impl XYStage for ZaberXYStage {
         Ok(())
     }
 
-    fn set_origin(&mut self) -> MmResult<()> { Ok(()) }
+    fn set_origin(&mut self) -> MmResult<()> {
+        Ok(())
+    }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (self.step_size_x_um, self.step_size_y_um) }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (self.step_size_x_um, self.step_size_y_um)
+    }
 
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Ok((0.0, 0.0, 0.0, 0.0))
+        Err(MmError::NotSupported)
     }
 }
 
@@ -185,8 +220,8 @@ mod tests {
         MockTransport::new()
             .expect("/1 2 get resolution\n", "@01 02 IDLE -- 64")
             .expect("/1 1 get resolution\n", "@01 01 IDLE -- 64")
-            .expect("/1 2 get pos\n",         "@01 02 IDLE -- 0")
-            .expect("/1 1 get pos\n",         "@01 01 IDLE -- 0")
+            .expect("/1 2 get pos\n", "@01 02 IDLE -- 0")
+            .expect("/1 1 get pos\n", "@01 01 IDLE -- 0")
     }
 
     #[test]
@@ -200,7 +235,7 @@ mod tests {
     fn move_absolute() {
         // 100 µm / 0.15625 = 640, 200 µm / 0.15625 = 1280
         let t = make_init_transport()
-            .expect("/1 2 move abs 640\n",  "@01 02 IDLE -- 640")
+            .expect("/1 2 move abs 640\n", "@01 02 IDLE -- 640")
             .expect("/1 1 move abs 1280\n", "@01 01 IDLE -- 1280");
         let mut s = ZaberXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
@@ -214,7 +249,7 @@ mod tests {
     fn move_relative() {
         // 50 µm / 0.15625 = 320, -50 µm / 0.15625 = -320
         let t = make_init_transport()
-            .expect("/1 2 move rel 320\n",  "@01 02 IDLE -- 320")
+            .expect("/1 2 move rel 320\n", "@01 02 IDLE -- 320")
             .expect("/1 1 move rel -320\n", "@01 01 IDLE -- -320");
         let mut s = ZaberXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
@@ -226,8 +261,7 @@ mod tests {
 
     #[test]
     fn home() {
-        let t = make_init_transport()
-            .expect("/1 0 home\n", "@01 00 IDLE -- OK");
+        let t = make_init_transport().expect("/1 0 home\n", "@01 00 IDLE -- OK");
         let mut s = ZaberXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.home().unwrap();
@@ -235,5 +269,13 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(ZaberXYStage::new().initialize().is_err()); }
+    fn limits_unsupported_without_measured_range() {
+        let s = ZaberXYStage::new();
+        assert_eq!(s.get_limits_um().unwrap_err(), MmError::NotSupported);
+    }
+
+    #[test]
+    fn no_transport_error() {
+        assert!(ZaberXYStage::new().initialize().is_err());
+    }
 }

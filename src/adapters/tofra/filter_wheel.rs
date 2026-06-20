@@ -19,6 +19,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
 
 const TURN_MSTEPS: i64 = 3200;
 const DEFAULT_NUM_POS: u64 = 10;
@@ -30,7 +31,7 @@ const DEFAULT_ACC: i64 = 10;
 
 pub struct TofraFilterWheel {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     ctrl: String,
     num_positions: u64,
@@ -42,12 +43,16 @@ pub struct TofraFilterWheel {
 impl TofraFilterWheel {
     pub fn new() -> Self {
         let num_positions = DEFAULT_NUM_POS;
-        let labels = (0..num_positions).map(|i| format!("Filter-{:02}", i + 1)).collect();
+        let labels = (0..num_positions)
+            .map(|i| format!("Filter-{:02}", i + 1))
+            .collect();
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
             ctrl: "1".into(),
             num_positions,
@@ -58,19 +63,21 @@ impl TofraFilterWheel {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
-        match self.transport.as_mut() {
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let full = format!("/{}{}\r", self.ctrl, command);
         self.call_transport(|t| Ok(t.send_recv(&full)?.trim().to_string()))
     }
@@ -83,21 +90,39 @@ impl TofraFilterWheel {
         }
     }
 
+    fn parse_status(resp: &str) -> MmResult<char> {
+        let ind = resp
+            .find("/0")
+            .ok_or_else(|| MmError::LocallyDefined(format!("bad response: {}", resp)))?;
+        resp[ind + 2..]
+            .chars()
+            .next()
+            .ok_or_else(|| MmError::LocallyDefined(format!("bad response: {}", resp)))
+    }
+
     fn msteps_for_pos(num_pos: u64, i: u64) -> i64 {
         (TURN_MSTEPS as f64 / num_pos as f64 * i as f64 + 0.5).floor() as i64
     }
 }
 
 impl Default for TofraFilterWheel {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for TofraFilterWheel {
-    fn name(&self) -> &str { "TofraFilterWheel" }
-    fn description(&self) -> &str { "TOFRA Filter Wheel with Integrated Controller" }
+    fn name(&self) -> &str {
+        "TOFRA Filter Wheel"
+    }
+    fn description(&self) -> &str {
+        "TOFRA Filter Wheel with Integrated Controller 10, 12, 18 or 22 pos."
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.borrow().is_none() {
+            return Err(MmError::NotConnected);
+        }
         let init_cmd = format!(
             "j16h{}m{}V{}v{}L{}f0n0gD10S13G0D1gD1S03G0R",
             DEFAULT_HC, DEFAULT_RC, DEFAULT_SV, DEFAULT_IV, DEFAULT_ACC
@@ -109,13 +134,19 @@ impl Device for TofraFilterWheel {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "State" => Ok(PropertyValue::Integer(self.position as i64)),
             "Label" => Ok(PropertyValue::String(
-                self.labels.get(self.position as usize).cloned().unwrap_or_default()
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
             )),
             _ => self.props.get(name).cloned(),
         }
@@ -135,13 +166,24 @@ impl Device for TofraFilterWheel {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        self.cmd("Q")
+            .and_then(|resp| Self::parse_status(&resp))
+            .map(|status| status == '@')
+            .unwrap_or(false)
+    }
 }
 
 impl StateDevice for TofraFilterWheel {
@@ -153,7 +195,11 @@ impl StateDevice for TofraFilterWheel {
             let cur_steps = Self::msteps_for_pos(self.num_positions, self.position);
             let tgt_steps = Self::msteps_for_pos(self.num_positions, pos);
             let d1 = tgt_steps - cur_steps;
-            let d2 = if d1 > 0 { d1 - TURN_MSTEPS } else { TURN_MSTEPS + d1 };
+            let d2 = if d1 > 0 {
+                d1 - TURN_MSTEPS
+            } else {
+                TURN_MSTEPS + d1
+            };
             let d = if d1.abs() > d2.abs() { d2 } else { d1 };
             let move_cmd = if d > 0 {
                 format!("P{}R", d)
@@ -167,27 +213,44 @@ impl StateDevice for TofraFilterWheel {
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
-    fn get_number_of_positions(&self) -> u64 { self.num_positions }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned().ok_or(MmError::UnknownPosition)
+        self.labels
+            .get(pos as usize)
+            .cloned()
+            .ok_or(MmError::UnknownPosition)
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
 
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
-        if pos >= self.num_positions { return Err(MmError::UnknownPosition); }
+        if pos >= self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
         self.labels[pos as usize] = label.to_string();
         Ok(())
     }
 
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.gate_open = open; Ok(()) }
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.gate_open = open;
+        Ok(())
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]
@@ -256,5 +319,13 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(TofraFilterWheel::new().initialize().is_err());
+    }
+
+    #[test]
+    fn busy_polls_controller_status() {
+        let t = make_init_transport().expect("/1Q\r", "/0@");
+        let mut fw = TofraFilterWheel::new().with_transport(Box::new(t));
+        fw.initialize().unwrap();
+        assert!(fw.busy());
     }
 }

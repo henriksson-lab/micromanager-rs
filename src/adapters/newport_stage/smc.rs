@@ -28,9 +28,20 @@ pub struct NewportSmc {
 impl NewportSmc {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Identity", PropertyValue::String(String::new()), true).unwrap();
-        Self { props, transport: None, initialized: false, pos_um: 0.0, min_um: -25_000.0, max_um: 25_000.0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Identity", PropertyValue::String(String::new()), true)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            pos_um: 0.0,
+            min_um: -25_000.0,
+            max_um: 25_000.0,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -39,7 +50,9 @@ impl NewportSmc {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -48,14 +61,18 @@ impl NewportSmc {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let c = format!("{}\r\n", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     /// Parse "1TP<value>" → µm
     fn parse_position(resp: &str) -> MmResult<f64> {
         let s = resp.trim();
         let val_str = if s.starts_with("1TP") { &s[3..] } else { s };
-        val_str.parse::<f64>()
+        val_str
+            .parse::<f64>()
             .map(|mm| mm * 1000.0)
             .map_err(|_| MmError::LocallyDefined(format!("Cannot parse position: {}", s)))
     }
@@ -75,16 +92,28 @@ impl NewportSmc {
     }
 }
 
-impl Default for NewportSmc { fn default() -> Self { Self::new() } }
+impl Default for NewportSmc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for NewportSmc {
-    fn name(&self) -> &str { "NewportSMC100" }
-    fn description(&self) -> &str { "Newport SMC100 single-axis controller" }
+    fn name(&self) -> &str {
+        "NewportZStage"
+    }
+    fn description(&self) -> &str {
+        "Newport SMC100CC controller"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let id = self.cmd("1ID")?;
-        self.props.entry_mut("Identity").map(|e| e.value = PropertyValue::String(id));
+        self.props
+            .entry_mut("Identity")
+            .map(|e| e.value = PropertyValue::String(id));
         if let Ok(r) = self.cmd("1ZT") {
             if let Some((min, max)) = Self::parse_limits(&r) {
                 self.min_um = min;
@@ -97,17 +126,32 @@ impl Device for NewportSmc {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for NewportSmc {
@@ -116,7 +160,9 @@ impl Stage for NewportSmc {
         self.pos_um = z;
         Ok(())
     }
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.pos_um) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.pos_um)
+    }
     fn set_relative_position_um(&mut self, dz: f64) -> MmResult<()> {
         self.cmd(&format!("1PR{:+.6}", dz / 1000.0))?;
         self.pos_um += dz;
@@ -127,10 +173,19 @@ impl Stage for NewportSmc {
         self.pos_um = 0.0;
         Ok(())
     }
-    fn stop(&mut self) -> MmResult<()> { let _ = self.cmd("1ST"); Ok(()) }
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((self.min_um, self.max_um)) }
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn stop(&mut self) -> MmResult<()> {
+        let _ = self.cmd("1ST");
+        Ok(())
+    }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((self.min_um, self.max_um))
+    }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -172,5 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(NewportSmc::new().initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(NewportSmc::new().initialize().is_err());
+    }
 }

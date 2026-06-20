@@ -31,7 +31,9 @@ pub struct LStepOldXYStage {
 impl LStepOldXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -64,31 +66,42 @@ impl LStepOldXYStage {
 
     fn send_only(&mut self, command: &str) -> MmResult<()> {
         let cmd = command.to_string();
-        self.call_transport(|t| { t.send(&cmd)?; Ok(()) })
+        self.call_transport(|t| {
+            t.send(&cmd)?;
+            Ok(())
+        })
     }
 
     /// Query X position (returns integer steps/µm)
     fn get_x(&mut self) -> MmResult<f64> {
         let resp = self.cmd("UI_GET_X")?;
-        resp.trim().parse::<f64>()
+        resp.trim()
+            .parse::<f64>()
             .map_err(|_| MmError::LocallyDefined(format!("Bad X pos: {}", resp)))
     }
 
     /// Query Y position
     fn get_y(&mut self) -> MmResult<f64> {
         let resp = self.cmd("UI_GET_Y")?;
-        resp.trim().parse::<f64>()
+        resp.trim()
+            .parse::<f64>()
             .map_err(|_| MmError::LocallyDefined(format!("Bad Y pos: {}", resp)))
     }
 }
 
 impl Default for LStepOldXYStage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for LStepOldXYStage {
-    fn name(&self) -> &str { "LStepOldXYStage" }
-    fn description(&self) -> &str { "Marzhauser LStep Old (v1.2) XY stage" }
+    fn name(&self) -> &str {
+        "XYStage"
+    }
+    fn description(&self) -> &str {
+        "LStepOld XY Stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -131,13 +144,21 @@ impl Device for LStepOldXYStage {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for LStepOldXYStage {
@@ -154,7 +175,9 @@ impl XYStage for LStepOldXYStage {
         Ok(())
     }
 
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        Ok((self.x_um, self.y_um))
+    }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let new_x = self.x_um + dx;
@@ -174,11 +197,12 @@ impl XYStage for LStepOldXYStage {
     }
 
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        // C++ returns DEVICE_UNSUPPORTED_COMMAND; we return a wide range
-        Ok((-100_000.0, 100_000.0, -100_000.0, 100_000.0))
+        Err(MmError::UnsupportedCommand)
     }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (1.0, 1.0) }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (1.0, 1.0)
+    }
 
     fn set_origin(&mut self) -> MmResult<()> {
         self.x_um = 0.0;
@@ -194,7 +218,7 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("UI",       "050")   // motor speed = 50 * 0.1 = 5.0 Hz
+            .expect("UI", "050") // motor speed = 50 * 0.1 = 5.0 Hz
             .expect("UI_GET_X", "100")
             .expect("UI_GET_Y", "200")
     }
@@ -210,8 +234,7 @@ mod tests {
     fn move_absolute() {
         // GOTO_ABS, SET_X, SET_Y are send_only — no script entries.
         // START is cmd() (send_recv) — one script entry.
-        let t = make_transport()
-            .expect("START", "OK");
+        let t = make_transport().expect("START", "OK");
         let mut stage = LStepOldXYStage::new().with_transport(Box::new(t));
         stage.initialize().unwrap();
         stage.set_xy_position_um(300.0, 400.0).unwrap();
@@ -221,8 +244,7 @@ mod tests {
     #[test]
     fn move_relative() {
         // Same: send_only calls don't consume script entries.
-        let t = make_transport()
-            .expect("START", "OK");
+        let t = make_transport().expect("START", "OK");
         let mut stage = LStepOldXYStage::new().with_transport(Box::new(t));
         stage.initialize().unwrap();
         stage.set_relative_xy_position_um(50.0, 75.0).unwrap();

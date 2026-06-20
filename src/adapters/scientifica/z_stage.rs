@@ -25,8 +25,15 @@ pub struct ScientificaZStage {
 impl ScientificaZStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, transport: None, initialized: false, pos_um: 0.0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            pos_um: 0.0,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -35,7 +42,9 @@ impl ScientificaZStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -44,23 +53,42 @@ impl ScientificaZStage {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     fn check_ok(resp: &str) -> MmResult<()> {
-        if resp.starts_with('A') { Ok(()) }
-        else { Err(MmError::LocallyDefined(format!("Scientifica error: {}", resp))) }
+        if resp.starts_with('A') {
+            Ok(())
+        } else {
+            Err(MmError::LocallyDefined(format!(
+                "Scientifica error: {}",
+                resp
+            )))
+        }
     }
 }
 
-impl Default for ScientificaZStage { fn default() -> Self { Self::new() } }
+impl Default for ScientificaZStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for ScientificaZStage {
-    fn name(&self) -> &str { "ScientificaZStage" }
-    fn description(&self) -> &str { "Scientifica Z stage" }
+    fn name(&self) -> &str {
+        "ScientificaZStage"
+    }
+    fn description(&self) -> &str {
+        "Scientifica Z stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let r = self.cmd("PZ")?;
         let steps: i64 = r.trim().parse().unwrap_or(0);
         self.pos_um = steps as f64 / STEPS_PER_UM;
@@ -68,17 +96,32 @@ impl Device for ScientificaZStage {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for ScientificaZStage {
@@ -89,21 +132,33 @@ impl Stage for ScientificaZStage {
         self.pos_um = z;
         Ok(())
     }
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.pos_um) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.pos_um)
+    }
     fn set_relative_position_um(&mut self, dz: f64) -> MmResult<()> {
         let new_z = self.pos_um + dz;
         self.set_position_um(new_z)
     }
     fn home(&mut self) -> MmResult<()> {
-        let r = self.cmd("home")?;
-        Self::check_ok(&r)?;
-        self.pos_um = 0.0;
-        Ok(())
+        Err(MmError::LocallyDefined(
+            "Scientifica Z home not supported".into(),
+        ))
     }
-    fn stop(&mut self) -> MmResult<()> { let _ = self.cmd("stop"); Ok(()) }
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((-10_000.0, 10_000.0)) }
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn stop(&mut self) -> MmResult<()> {
+        let r = self.cmd("STOP")?;
+        Self::check_ok(&r)
+    }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Err(MmError::LocallyDefined(
+            "Scientifica Z limits not supported".into(),
+        ))
+    }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -146,5 +201,16 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(ScientificaZStage::new().initialize().is_err()); }
+    fn unsupported_home_and_limits() {
+        let t = MockTransport::new().any("0");
+        let mut s = ScientificaZStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.home().is_err());
+        assert!(s.get_limits().is_err());
+    }
+
+    #[test]
+    fn no_transport_error() {
+        assert!(ScientificaZStage::new().initialize().is_err());
+    }
 }

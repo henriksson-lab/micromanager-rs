@@ -23,11 +23,27 @@ unsafe impl Send for BaslerCamera {}
 
 // ─── Pixel format helpers ────────────────────────────────────────────────────
 
+const UPSTREAM_PIXEL_TYPES: &[&str] = &[
+    "Mono10", "Mono12", "Mono16", "Mono8", "BGR8", "RGB8", "BayerRG8", "BayerBG8", "BayerGR8",
+];
+
+fn upstream_supported_pixel_types<'a>(available: &'a [String]) -> Vec<&'a str> {
+    UPSTREAM_PIXEL_TYPES
+        .iter()
+        .filter_map(|candidate| {
+            available
+                .iter()
+                .find(|value| value.as_str() == *candidate)
+                .map(|value| value.as_str())
+        })
+        .collect()
+}
+
 fn pixel_format_bpp(fmt: &str) -> u32 {
     match fmt {
         "Mono8" | "BayerRG8" | "BayerBG8" | "BayerGB8" | "BayerGR8" => 1,
         "Mono10" | "Mono10p" | "Mono12" | "Mono12p" | "Mono16" => 2,
-        "RGB8" | "BGR8" => 3,
+        "RGB8" | "BGR8" => 4,
         "RGB16" | "BGR16" => 6,
         _ => 1,
     }
@@ -44,9 +60,29 @@ fn pixel_format_depth(fmt: &str) -> u32 {
 
 fn pixel_format_components(fmt: &str) -> u32 {
     match fmt {
-        "RGB8" | "BGR8" | "RGB16" | "BGR16" => 3,
+        "RGB8" | "BGR8" => 4,
+        "RGB16" | "BGR16" => 3,
         _ => 1,
     }
+}
+
+fn packed_rgb_to_rgba(src: &[u8], width: u32, height: u32, bgr: bool) -> Vec<u8> {
+    let npix = (width as usize).saturating_mul(height as usize);
+    let mut dst = vec![0u8; npix * 4];
+    for (i, px) in src.chunks_exact(3).take(npix).enumerate() {
+        let out = &mut dst[i * 4..i * 4 + 4];
+        if bgr {
+            out[0] = px[2];
+            out[1] = px[1];
+            out[2] = px[0];
+        } else {
+            out[0] = px[0];
+            out[1] = px[1];
+            out[2] = px[2];
+        }
+        out[3] = 255;
+    }
+    dst
 }
 
 // ─── Camera struct ───────────────────────────────────────────────────────────
@@ -68,20 +104,42 @@ pub struct BaslerCamera {
     exposure_ms: f64,
     gain: f64,
     pixel_format: String,
+    pixel_format_configured: bool,
+    pixel_format_selected: bool,
     binning: i32,
 }
 
 impl BaslerCamera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("SerialNumber", PropertyValue::String("".into()), false).unwrap();
-        props.define_property("Exposure",     PropertyValue::Float(10.0), false).unwrap();
-        props.define_property("Gain",         PropertyValue::Float(0.0),  false).unwrap();
-        props.define_property("PixelFormat",  PropertyValue::String("Mono8".into()), false).unwrap();
-        props.define_property("Binning",      PropertyValue::Integer(1),  false).unwrap();
-        props.define_property("Width",        PropertyValue::Integer(0),  true).unwrap();
-        props.define_property("Height",       PropertyValue::Integer(0),  true).unwrap();
-        props.define_property("Temperature",  PropertyValue::Float(0.0),  true).unwrap();
+        props
+            .define_property(
+                "SerialNumber",
+                PropertyValue::String("Undefined".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("Exposure", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props
+            .define_property("Gain", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("PixelType", PropertyValue::String("Mono8".into()), false)
+            .unwrap();
+        props
+            .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("Width", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Height", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Temperature", PropertyValue::String("N/A".into()), true)
+            .unwrap();
 
         Self {
             props,
@@ -94,16 +152,22 @@ impl BaslerCamera {
             bit_depth: 8,
             num_components: 1,
             capturing: false,
-            serial_number: String::new(),
+            serial_number: "Undefined".into(),
             exposure_ms: 10.0,
             gain: 0.0,
             pixel_format: "Mono8".into(),
+            pixel_format_configured: false,
+            pixel_format_selected: false,
             binning: 1,
         }
     }
 
     fn check_open(&self) -> MmResult<()> {
-        if self.camera.is_none() { Err(MmError::NotConnected) } else { Ok(()) }
+        if self.camera.is_none() {
+            Err(MmError::NotConnected)
+        } else {
+            Ok(())
+        }
     }
 
     fn pylon_err(e: pylon_cxx::PylonError) -> MmError {
@@ -135,8 +199,12 @@ impl BaslerCamera {
 
     fn write_binning(camera: &InstantCamera<'_>, bin: i32) {
         if let Ok(nm) = camera.node_map() {
-            if let Ok(mut p) = nm.integer_node("BinningHorizontal") { let _ = p.set_value(bin as i64); }
-            if let Ok(mut p) = nm.integer_node("BinningVertical")   { let _ = p.set_value(bin as i64); }
+            if let Ok(mut p) = nm.integer_node("BinningHorizontal") {
+                let _ = p.set_value(bin as i64);
+            }
+            if let Ok(mut p) = nm.integer_node("BinningVertical") {
+                let _ = p.set_value(bin as i64);
+            }
         }
     }
 
@@ -150,42 +218,73 @@ impl BaslerCamera {
 
     /// Pull Width/Height/PixelFormat from the camera and update internal state.
     fn sync_dimensions(&mut self) {
-        let Some(camera) = self.camera.as_ref() else { return };
+        let Some(camera) = self.camera.as_ref() else {
+            return;
+        };
         let Ok(nm) = camera.node_map() else { return };
 
-        if let Ok(p) = nm.integer_node("Width")  { if let Ok(v) = p.value() { self.width  = v as u32; } }
-        if let Ok(p) = nm.integer_node("Height") { if let Ok(v) = p.value() { self.height = v as u32; } }
+        if let Ok(p) = nm.integer_node("Width") {
+            if let Ok(v) = p.value() {
+                self.width = v as u32;
+            }
+        }
+        if let Ok(p) = nm.integer_node("Height") {
+            if let Ok(v) = p.value() {
+                self.height = v as u32;
+            }
+        }
         if let Ok(p) = nm.enum_node("PixelFormat") {
             if let Ok(fmt) = p.value() {
                 self.bytes_per_pixel = pixel_format_bpp(&fmt);
-                self.bit_depth       = pixel_format_depth(&fmt);
-                self.num_components  = pixel_format_components(&fmt);
-                self.pixel_format    = fmt;
+                self.bit_depth = pixel_format_depth(&fmt);
+                self.num_components = pixel_format_components(&fmt);
+                self.pixel_format = fmt;
             }
         }
-        self.props.entry_mut("Width") .map(|e| e.value = PropertyValue::Integer(self.width  as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.height as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.height as i64));
     }
 
     /// Retrieve one grabbed frame and copy into `self.image_buf`.
     fn fetch_frame(&mut self) -> MmResult<()> {
         let camera = self.camera.as_ref().ok_or(MmError::NotConnected)?;
         let mut result = GrabResult::new().map_err(Self::pylon_err)?;
-        camera.retrieve_result(5000, &mut result, pylon_cxx::TimeoutHandling::ThrowException)
+        camera
+            .retrieve_result(
+                5000,
+                &mut result,
+                pylon_cxx::TimeoutHandling::ThrowException,
+            )
             .map_err(Self::pylon_err)?;
         if !result.grab_succeeded().map_err(Self::pylon_err)? {
             return Err(MmError::SnapImageFailed);
         }
         let buf = result.buffer().map_err(Self::pylon_err)?;
-        self.image_buf = buf.to_vec();
-        if let Ok(w) = result.width()  { self.width  = w; }
-        if let Ok(h) = result.height() { self.height = h; }
+        if let Ok(w) = result.width() {
+            self.width = w;
+        }
+        if let Ok(h) = result.height() {
+            self.height = h;
+        }
+        if self.pixel_format == "RGB8" {
+            self.image_buf = packed_rgb_to_rgba(buf, self.width, self.height, false);
+        } else if self.pixel_format == "BGR8" {
+            self.image_buf = packed_rgb_to_rgba(buf, self.width, self.height, true);
+        } else {
+            self.image_buf = buf.to_vec();
+        }
         Ok(())
     }
 }
 
 impl Default for BaslerCamera {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for BaslerCamera {
@@ -202,11 +301,21 @@ impl Drop for BaslerCamera {
 // ─── Device trait ────────────────────────────────────────────────────────────
 
 impl Device for BaslerCamera {
-    fn name(&self) -> &str { "BaslerCamera" }
-    fn description(&self) -> &str { "Basler camera (Pylon SDK)" }
+    fn name(&self) -> &str {
+        "BaslerCamera"
+    }
+    fn description(&self) -> &str {
+        "Basler camera (Pylon SDK)"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.camera.is_some() { return Ok(()); }
+        if self.camera.is_some() {
+            return Ok(());
+        }
+
+        if self.serial_number.is_empty() || self.serial_number == "Undefined" {
+            return Err(MmError::LocallyDefined("Serial number is required".into()));
+        }
 
         // Box the Pylon runtime so its address is stable.
         let pylon = Box::new(Pylon::new());
@@ -215,34 +324,37 @@ impl Device for BaslerCamera {
         let pylon_ref: &'static Pylon = unsafe { &*(pylon.as_ref() as *const Pylon) };
         let tl_factory = TlFactory::instance(pylon_ref);
 
-        let camera: InstantCamera<'static> = if self.serial_number.is_empty() {
-            let dev = tl_factory.create_first_device().map_err(Self::pylon_err)?;
-            InstantCamera::new(dev).map_err(Self::pylon_err)?
-        } else {
-            let devices = tl_factory.enumerate_devices().map_err(Self::pylon_err)?;
-            let sn = &self.serial_number;
-            let info = devices.iter().find(|d| {
-                d.property_value("SerialNumber").ok().as_deref() == Some(sn)
-            }).ok_or_else(|| {
-                MmError::LocallyDefined(format!("Basler camera '{}' not found", sn))
-            })?;
-            let dev = tl_factory.create_device(info).map_err(Self::pylon_err)?;
-            InstantCamera::new(dev).map_err(Self::pylon_err)?
-        };
+        let devices = tl_factory.enumerate_devices().map_err(Self::pylon_err)?;
+        let sn = &self.serial_number;
+        let info = devices
+            .iter()
+            .find(|d| d.property_value("SerialNumber").ok().as_deref() == Some(sn))
+            .ok_or_else(|| MmError::LocallyDefined(format!("Basler camera '{}' not found", sn)))?;
+        let dev = tl_factory.create_device(info).map_err(Self::pylon_err)?;
+        let camera: InstantCamera<'static> = InstantCamera::new(dev).map_err(Self::pylon_err)?;
 
         camera.open().map_err(Self::pylon_err)?;
 
-        // Populate allowed PixelFormat values from the camera.
+        // Upstream exposes a fixed preferred subset of the PixelFormat node as PixelType.
         if let Ok(nm) = camera.node_map() {
             if let Ok(p) = nm.enum_node("PixelFormat") {
                 if let Ok(vals) = p.settable_values() {
-                    let refs: Vec<&str> = vals.iter().map(|s| s.as_str()).collect();
-                    self.props.set_allowed_values("PixelFormat", &refs).ok();
+                    let refs = upstream_supported_pixel_types(&vals);
+                    self.props.set_allowed_values("PixelType", &refs).ok();
+                    if !self.pixel_format_configured {
+                        if let Some(default_fmt) = refs.last() {
+                            self.pixel_format = (*default_fmt).to_string();
+                            self.pixel_format_selected = true;
+                            self.props.entry_mut("PixelType").map(|e| {
+                                e.value = PropertyValue::String(self.pixel_format.clone())
+                            });
+                        }
+                    }
                 }
             }
         }
 
-        self.pylon  = Some(pylon);
+        self.pylon = Some(pylon);
         self.camera = Some(camera);
 
         // Apply pre-init settings to hardware.
@@ -250,15 +362,19 @@ impl Device for BaslerCamera {
         Self::write_exposure(cam, self.exposure_ms);
         Self::write_gain(cam, self.gain);
         Self::write_binning(cam, self.binning);
-        let fmt = self.pixel_format.clone();
-        Self::write_pixel_format(cam, &fmt);
+        if self.pixel_format_selected {
+            let fmt = self.pixel_format.clone();
+            Self::write_pixel_format(cam, &fmt);
+        }
         self.sync_dimensions();
 
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.capturing { self.stop_sequence_acquisition()?; }
+        if self.capturing {
+            self.stop_sequence_acquisition()?;
+        }
         // Drop impl handles camera → pylon order.
         if let Some(cam) = self.camera.take() {
             let _ = cam.close();
@@ -269,17 +385,17 @@ impl Device for BaslerCamera {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "Exposure"     => Ok(PropertyValue::Float(self.exposure_ms)),
-            "Gain"         => Ok(PropertyValue::Float(self.gain)),
-            "PixelFormat"  => Ok(PropertyValue::String(self.pixel_format.clone())),
-            "Binning"      => Ok(PropertyValue::Integer(self.binning as i64)),
+            "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
+            "Gain" => Ok(PropertyValue::Float(self.gain)),
+            "PixelType" => Ok(PropertyValue::String(self.pixel_format.clone())),
+            "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
             "SerialNumber" => Ok(PropertyValue::String(self.serial_number.clone())),
-            "Temperature"  => {
+            "Temperature" => {
                 if let Some(cam) = self.camera.as_ref() {
                     if let Ok(nm) = cam.node_map() {
                         if let Ok(p) = nm.float_node("DeviceTemperature") {
                             if let Ok(t) = p.value() {
-                                return Ok(PropertyValue::Float(t));
+                                return Ok(PropertyValue::String(t.to_string()));
                             }
                         }
                     }
@@ -303,28 +419,40 @@ impl Device for BaslerCamera {
             }
             "Exposure" => {
                 self.exposure_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Float(self.exposure_ms))?;
-                if let Some(cam) = self.camera.as_ref() { Self::write_exposure(cam, self.exposure_ms); }
+                self.props
+                    .set(name, PropertyValue::Float(self.exposure_ms))?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_exposure(cam, self.exposure_ms);
+                }
                 Ok(())
             }
             "Gain" => {
                 self.gain = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, PropertyValue::Float(self.gain))?;
-                if let Some(cam) = self.camera.as_ref() { Self::write_gain(cam, self.gain); }
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_gain(cam, self.gain);
+                }
                 Ok(())
             }
-            "PixelFormat" => {
+            "PixelType" => {
                 self.pixel_format = val.as_str().to_string();
+                self.pixel_format_configured = true;
+                self.pixel_format_selected = true;
                 self.props.set(name, val)?;
                 let fmt = self.pixel_format.clone();
-                if let Some(cam) = self.camera.as_ref() { Self::write_pixel_format(cam, &fmt); }
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_pixel_format(cam, &fmt);
+                }
                 self.sync_dimensions();
                 Ok(())
             }
             "Binning" => {
                 self.binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
-                self.props.set(name, PropertyValue::Integer(self.binning as i64))?;
-                if let Some(cam) = self.camera.as_ref() { Self::write_binning(cam, self.binning); }
+                self.props
+                    .set(name, PropertyValue::Integer(self.binning as i64))?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_binning(cam, self.binning);
+                }
                 self.sync_dimensions();
                 Ok(())
             }
@@ -332,13 +460,21 @@ impl Device for BaslerCamera {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Camera }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Camera
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 // ─── Camera trait ────────────────────────────────────────────────────────────
@@ -350,9 +486,12 @@ impl Camera for BaslerCamera {
             return self.fetch_frame();
         }
         let cam = self.camera.as_ref().unwrap();
-        cam.start_grabbing(&GrabOptions::default().count(1)).map_err(Self::pylon_err)?;
+        cam.start_grabbing(&GrabOptions::default().count(1))
+            .map_err(Self::pylon_err)?;
         let result = self.fetch_frame();
-        if let Some(cam) = self.camera.as_ref() { let _ = cam.stop_grabbing(); }
+        if let Some(cam) = self.camera.as_ref() {
+            let _ = cam.stop_grabbing();
+        }
         result
     }
 
@@ -364,26 +503,49 @@ impl Camera for BaslerCamera {
         }
     }
 
-    fn get_image_width(&self) -> u32 { self.width }
-    fn get_image_height(&self) -> u32 { self.height }
-    fn get_image_bytes_per_pixel(&self) -> u32 { self.bytes_per_pixel }
-    fn get_bit_depth(&self) -> u32 { self.bit_depth }
-    fn get_number_of_components(&self) -> u32 { self.num_components }
-    fn get_number_of_channels(&self) -> u32 { 1 }
-    fn get_exposure(&self) -> f64 { self.exposure_ms }
+    fn get_image_width(&self) -> u32 {
+        self.width
+    }
+    fn get_image_height(&self) -> u32 {
+        self.height
+    }
+    fn get_image_bytes_per_pixel(&self) -> u32 {
+        self.bytes_per_pixel
+    }
+    fn get_bit_depth(&self) -> u32 {
+        self.bit_depth
+    }
+    fn get_number_of_components(&self) -> u32 {
+        self.num_components
+    }
+    fn get_number_of_channels(&self) -> u32 {
+        1
+    }
+    fn get_exposure(&self) -> f64 {
+        self.exposure_ms
+    }
 
     fn set_exposure(&mut self, exp_ms: f64) {
         self.exposure_ms = exp_ms;
-        self.props.set("Exposure", PropertyValue::Float(exp_ms)).ok();
-        if let Some(cam) = self.camera.as_ref() { Self::write_exposure(cam, exp_ms); }
+        self.props
+            .set("Exposure", PropertyValue::Float(exp_ms))
+            .ok();
+        if let Some(cam) = self.camera.as_ref() {
+            Self::write_exposure(cam, exp_ms);
+        }
     }
 
-    fn get_binning(&self) -> i32 { self.binning }
+    fn get_binning(&self) -> i32 {
+        self.binning
+    }
 
     fn set_binning(&mut self, bin: i32) -> MmResult<()> {
         self.binning = bin;
-        self.props.set("Binning", PropertyValue::Integer(bin as i64))?;
-        if let Some(cam) = self.camera.as_ref() { Self::write_binning(cam, bin); }
+        self.props
+            .set("Binning", PropertyValue::Integer(bin as i64))?;
+        if let Some(cam) = self.camera.as_ref() {
+            Self::write_binning(cam, bin);
+        }
         self.sync_dimensions();
         Ok(())
     }
@@ -396,10 +558,18 @@ impl Camera for BaslerCamera {
         let cam = self.camera.as_ref().ok_or(MmError::NotConnected)?;
         let nm = cam.node_map().map_err(Self::pylon_err)?;
         // Width/Height before OffsetX/Y (Basler requirement).
-        if let Ok(mut p) = nm.integer_node("Width")   { let _ = p.set_value(roi.width  as i64); }
-        if let Ok(mut p) = nm.integer_node("Height")  { let _ = p.set_value(roi.height as i64); }
-        if let Ok(mut p) = nm.integer_node("OffsetX") { let _ = p.set_value(roi.x      as i64); }
-        if let Ok(mut p) = nm.integer_node("OffsetY") { let _ = p.set_value(roi.y      as i64); }
+        if let Ok(mut p) = nm.integer_node("Width") {
+            let _ = p.set_value(roi.width as i64);
+        }
+        if let Ok(mut p) = nm.integer_node("Height") {
+            let _ = p.set_value(roi.height as i64);
+        }
+        if let Ok(mut p) = nm.integer_node("OffsetX") {
+            let _ = p.set_value(roi.x as i64);
+        }
+        if let Ok(mut p) = nm.integer_node("OffsetY") {
+            let _ = p.set_value(roi.y as i64);
+        }
         self.sync_dimensions();
         Ok(())
     }
@@ -408,12 +578,16 @@ impl Camera for BaslerCamera {
         let cam = self.camera.as_ref().ok_or(MmError::NotConnected)?;
         let nm = cam.node_map().map_err(Self::pylon_err)?;
         for name in &["OffsetX", "OffsetY"] {
-            if let Ok(mut p) = nm.integer_node(name) { let _ = p.set_value(0); }
+            if let Ok(mut p) = nm.integer_node(name) {
+                let _ = p.set_value(0);
+            }
         }
         for name in &["Width", "Height"] {
             if let Ok(p) = nm.integer_node(name) {
                 if let Ok(max) = p.max() {
-                    if let Ok(mut q) = nm.integer_node(name) { let _ = q.set_value(max); }
+                    if let Ok(mut q) = nm.integer_node(name) {
+                        let _ = q.set_value(max);
+                    }
                 }
             }
         }
@@ -423,21 +597,30 @@ impl Camera for BaslerCamera {
 
     fn start_sequence_acquisition(&mut self, _count: i64, _interval_ms: f64) -> MmResult<()> {
         self.check_open()?;
-        if self.capturing { return Ok(()); }
+        if self.capturing {
+            return Ok(());
+        }
         let cam = self.camera.as_ref().unwrap();
-        cam.start_grabbing(&GrabOptions::default()).map_err(Self::pylon_err)?;
+        cam.start_grabbing(&GrabOptions::default())
+            .map_err(Self::pylon_err)?;
         self.capturing = true;
         Ok(())
     }
 
     fn stop_sequence_acquisition(&mut self) -> MmResult<()> {
-        if !self.capturing { return Ok(()); }
-        if let Some(cam) = self.camera.as_ref() { let _ = cam.stop_grabbing(); }
+        if !self.capturing {
+            return Ok(());
+        }
+        if let Some(cam) = self.camera.as_ref() {
+            let _ = cam.stop_grabbing();
+        }
         self.capturing = false;
         Ok(())
     }
 
-    fn is_capturing(&self) -> bool { self.capturing }
+    fn is_capturing(&self) -> bool {
+        self.capturing
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -458,14 +641,26 @@ mod tests {
     #[test]
     fn set_serial_number_pre_init() {
         let mut d = BaslerCamera::new();
-        d.set_property("SerialNumber", PropertyValue::String("12345678".into())).unwrap();
+        d.set_property("SerialNumber", PropertyValue::String("12345678".into()))
+            .unwrap();
         assert_eq!(d.serial_number, "12345678");
+    }
+
+    #[test]
+    fn initialize_without_serial_number_fails_before_enumeration() {
+        let mut d = BaslerCamera::new();
+        let err = d.initialize().unwrap_err();
+        assert_eq!(
+            err,
+            MmError::LocallyDefined("Serial number is required".into())
+        );
     }
 
     #[test]
     fn set_exposure_pre_init() {
         let mut d = BaslerCamera::new();
-        d.set_property("Exposure", PropertyValue::Float(25.0)).unwrap();
+        d.set_property("Exposure", PropertyValue::Float(25.0))
+            .unwrap();
         assert_eq!(d.exposure_ms, 25.0);
     }
 
@@ -491,6 +686,41 @@ mod tests {
     #[test]
     fn initialize_no_camera_fails_gracefully() {
         let mut d = BaslerCamera::new();
+        d.set_property("SerialNumber", PropertyValue::String("12345678".into()))
+            .unwrap();
         assert!(d.initialize().is_err());
+    }
+
+    #[test]
+    fn upstream_pixel_type_subset_preserves_preference_order() {
+        let available = vec![
+            "Mono8".to_string(),
+            "Coord3D_ABC32f".to_string(),
+            "BayerGR8".to_string(),
+            "Mono12".to_string(),
+            "RGB8".to_string(),
+        ];
+        let supported = upstream_supported_pixel_types(&available);
+        assert_eq!(supported, vec!["Mono12", "Mono8", "RGB8", "BayerGR8"]);
+        assert_eq!(supported.last().copied(), Some("BayerGR8"));
+    }
+
+    #[test]
+    fn rgb_and_bgr_pixel_types_report_rgba_buffers() {
+        assert_eq!(pixel_format_bpp("RGB8"), 4);
+        assert_eq!(pixel_format_bpp("BGR8"), 4);
+        assert_eq!(pixel_format_components("RGB8"), 4);
+        assert_eq!(pixel_format_components("BGR8"), 4);
+        assert_eq!(pixel_format_bpp("BayerRG8"), 1);
+        assert_eq!(pixel_format_components("BayerRG8"), 1);
+
+        assert_eq!(
+            packed_rgb_to_rgba(&[1, 2, 3], 1, 1, false),
+            vec![1, 2, 3, 255]
+        );
+        assert_eq!(
+            packed_rgb_to_rgba(&[1, 2, 3], 1, 1, true),
+            vec![3, 2, 1, 255]
+        );
     }
 }

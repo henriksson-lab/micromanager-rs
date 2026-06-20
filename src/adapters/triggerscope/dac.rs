@@ -1,10 +1,10 @@
 /// TriggerScope DAC channel — analog output.
 ///
 /// ASCII serial protocol, `\n` terminated.
-///   Set DAC voltage: `"DAC<ch> <value>\n"` → `"DAC<ch> OK\n"`
+///   Set DAC voltage: `"DAC<ch>,<value>\n"` → controller response
 ///   Get DAC voltage: `"DAC<ch>?\n"`         → `"DAC<ch> <value>\n"`
 ///
-/// Voltage range: 0.0 – 5.0 V (12-bit or 16-bit DAC).
+/// Voltage range: 0.0-10.0 V (12-bit or 16-bit DAC).
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, SignalIO};
@@ -23,9 +23,13 @@ pub struct TriggerScopeDAC {
 impl TriggerScopeDAC {
     pub fn new(channel: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Channel", PropertyValue::Integer(channel as i64), true).unwrap();
-        props.define_property("Voltage", PropertyValue::Float(0.0), false).unwrap();
-        props.set_property_limits("Voltage", 0.0, 5.0).unwrap();
+        props
+            .define_property("Channel", PropertyValue::Integer(channel as i64), true)
+            .unwrap();
+        props
+            .define_property("Volts", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("Volts", 0.0, 10.0).unwrap();
         Self {
             props,
             transport: None,
@@ -55,16 +59,13 @@ impl TriggerScopeDAC {
         self.call_transport(|t| Ok(t.send_recv(cmd)?.trim().to_string()))
     }
 
-    fn send_voltage(&mut self, volts: f64) -> MmResult<()> {
+    fn send_voltage(&mut self, volts: f64) -> MmResult<f64> {
         let ch = self.channel;
-        // Convert voltage to 12-bit count (0-4095 for 0-5V)
-        let counts = ((volts / 5.0) * 4095.0).round() as u32;
-        let cmd = format!("DAC{:02} {}\n", ch, counts);
-        let resp = self.send_recv(&cmd)?;
-        if !resp.contains("OK") {
-            return Err(MmError::SerialInvalidResponse);
-        }
-        Ok(())
+        let volts = volts.clamp(0.0, 10.0);
+        let counts = ((volts / 10.0) * 4095.0) as u32;
+        let cmd = format!("DAC{},{}\n", ch, counts);
+        let _ = self.send_recv(&cmd)?;
+        Ok(volts)
     }
 
     #[allow(dead_code)]
@@ -77,44 +78,44 @@ impl TriggerScopeDAC {
         if parts.len() < 2 {
             return Err(MmError::SerialInvalidResponse);
         }
-        let counts: f64 = parts[1].parse().map_err(|_| MmError::SerialInvalidResponse)?;
-        Ok((counts / 4095.0) * 5.0)
+        let counts: f64 = parts[1]
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        Ok((counts / 4095.0) * 10.0)
     }
 }
 
 impl Device for TriggerScopeDAC {
-    fn name(&self) -> &str { "TriggerScopeDAC" }
-    fn description(&self) -> &str { "ARC TriggerScope DAC channel" }
+    fn name(&self) -> &str {
+        "TriggerScopeDAC"
+    }
+    fn description(&self) -> &str {
+        "ARC TriggerScope DAC channel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        // Set voltage to 0 on init
-        self.send_voltage(0.0)?;
-        self.voltage = 0.0;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.send_voltage(0.0);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "Voltage" => Ok(PropertyValue::Float(self.voltage)),
+            "Volts" => Ok(PropertyValue::Float(self.voltage)),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "Voltage" => {
+            "Volts" => {
                 let v = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.set_signal(v)
             }
@@ -122,13 +123,21 @@ impl Device for TriggerScopeDAC {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::SignalIO }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::SignalIO
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl SignalIO for TriggerScopeDAC {
@@ -137,20 +146,23 @@ impl SignalIO for TriggerScopeDAC {
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 
     fn set_signal(&mut self, volts: f64) -> MmResult<()> {
-        if volts < 0.0 || volts > 5.0 {
-            return Err(MmError::InvalidPropertyValue);
-        }
-        self.send_voltage(volts)?;
+        let volts = self.send_voltage(volts)?;
         self.voltage = volts;
         Ok(())
     }
 
-    fn get_signal(&self) -> MmResult<f64> { Ok(self.voltage) }
+    fn get_signal(&self) -> MmResult<f64> {
+        Ok(self.voltage)
+    }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((0.0, 5.0)) }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((0.0, 10.0))
+    }
 }
 
 #[cfg(test)]
@@ -160,8 +172,7 @@ mod tests {
 
     #[test]
     fn dac_initialize_zeroes_output() {
-        let t = MockTransport::new()
-            .expect("DAC01 0\n", "DAC01 OK");
+        let t = MockTransport::new();
         let mut dac = TriggerScopeDAC::new(1).with_transport(Box::new(t));
         dac.initialize().unwrap();
         assert!((dac.get_signal().unwrap() - 0.0).abs() < 1e-6);
@@ -169,9 +180,7 @@ mod tests {
 
     #[test]
     fn set_signal_mid_range() {
-        let t = MockTransport::new()
-            .expect("DAC02 0\n", "DAC02 OK")    // init
-            .expect("DAC02 2048\n", "DAC02 OK"); // set ~2.5V
+        let t = MockTransport::new().expect("DAC2,1023\n", "DAC2 OK"); // set ~2.5V
         let mut dac = TriggerScopeDAC::new(2).with_transport(Box::new(t));
         dac.initialize().unwrap();
         dac.set_signal(2.5).unwrap();
@@ -179,12 +188,24 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_rejected() {
+    fn out_of_range_clamped() {
         let t = MockTransport::new()
-            .expect("DAC01 0\n", "DAC01 OK");
+            .expect("DAC1,4095\n", "DAC1 OK")
+            .expect("DAC1,0\n", "DAC1 OK");
         let mut dac = TriggerScopeDAC::new(1).with_transport(Box::new(t));
         dac.initialize().unwrap();
-        assert!(dac.set_signal(6.0).is_err());
-        assert!(dac.set_signal(-1.0).is_err());
+        dac.set_signal(11.0).unwrap();
+        assert_eq!(dac.get_signal().unwrap(), 10.0);
+        dac.set_signal(-1.0).unwrap();
+        assert_eq!(dac.get_signal().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn set_signal_accepts_non_ok_echo_response() {
+        let t = MockTransport::new().expect("DAC1,2047\n", "DAC1,2047");
+        let mut dac = TriggerScopeDAC::new(1).with_transport(Box::new(t));
+        dac.initialize().unwrap();
+        dac.set_signal(5.0).unwrap();
+        assert!((dac.get_signal().unwrap() - 5.0).abs() < 0.01);
     }
 }

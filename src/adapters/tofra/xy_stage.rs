@@ -12,6 +12,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
 
 const DEFAULT_LEAD_UM: f64 = 1000.0;
 const DEFAULT_STEP_DIVIDE: f64 = 256.0;
@@ -25,7 +26,7 @@ const DEFAULT_LIMIT_POL: i64 = 0;
 
 pub struct TofraXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     ctrl_x: String,
     ctrl_y: String,
@@ -37,10 +38,12 @@ pub struct TofraXYStage {
 impl TofraXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
             ctrl_x: "3".into(),
             ctrl_y: "4".into(),
@@ -51,27 +54,42 @@ impl TofraXYStage {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
-        match self.transport.as_mut() {
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, ctrl: &str, command: &str) -> MmResult<String> {
+    fn cmd(&self, ctrl: &str, command: &str) -> MmResult<String> {
         let full = format!("/{}{}\r", ctrl, command);
         self.call_transport(|t| Ok(t.send_recv(&full)?.trim().to_string()))
     }
 
     fn parse_pos(resp: &str) -> MmResult<i64> {
-        let ind = resp.find("/0").ok_or_else(|| MmError::LocallyDefined(format!("bad response: {}", resp)))?;
+        let ind = resp
+            .find("/0")
+            .ok_or_else(|| MmError::LocallyDefined(format!("bad response: {}", resp)))?;
         let data = resp.get(ind + 3..).unwrap_or("").trim();
-        data.parse::<i64>().map_err(|_| MmError::LocallyDefined(format!("bad data: {}", resp)))
+        data.parse::<i64>()
+            .map_err(|_| MmError::LocallyDefined(format!("bad data: {}", resp)))
+    }
+
+    fn parse_status(resp: &str) -> MmResult<char> {
+        let ind = resp
+            .find("/0")
+            .ok_or_else(|| MmError::LocallyDefined(format!("bad response: {}", resp)))?;
+        resp[ind + 2..]
+            .chars()
+            .next()
+            .ok_or_else(|| MmError::LocallyDefined(format!("bad response: {}", resp)))
     }
 
     fn check_response(resp: &str) -> MmResult<()> {
@@ -82,29 +100,46 @@ impl TofraXYStage {
         }
     }
 
+    fn um_to_cpp_steps(value_um: f64, step_size_um: f64) -> i64 {
+        (value_um / step_size_um + 0.5).trunc() as i64
+    }
+
     fn axis_init_cmd() -> String {
         let ss = DEFAULT_LEAD_UM / (DEFAULT_STEP_DIVIDE * DEFAULT_MOTOR_STEPS);
-        let slvel = (DEFAULT_SLEW_VEL_UM / ss).round() as i64;
-        let invel = (DEFAULT_INIT_VEL_UM / ss).round() as i64;
-        let accel = (DEFAULT_ACCEL_UM / ss).round() as i64;
+        let slvel = Self::um_to_cpp_steps(DEFAULT_SLEW_VEL_UM, ss);
+        let invel = Self::um_to_cpp_steps(DEFAULT_INIT_VEL_UM, ss);
+        let accel = Self::um_to_cpp_steps(DEFAULT_ACCEL_UM, ss);
         format!(
             "j{}h{}m{}V{}v{}L{}n2f{}R",
-            DEFAULT_STEP_DIVIDE as i64, DEFAULT_HC, DEFAULT_RC,
-            slvel, invel, accel, DEFAULT_LIMIT_POL
+            DEFAULT_STEP_DIVIDE as i64,
+            DEFAULT_HC,
+            DEFAULT_RC,
+            slvel,
+            invel,
+            accel,
+            DEFAULT_LIMIT_POL
         )
     }
 }
 
 impl Default for TofraXYStage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for TofraXYStage {
-    fn name(&self) -> &str { "TofraXYStage" }
-    fn description(&self) -> &str { "TOFRA XYStage with Integrated Controller" }
+    fn name(&self) -> &str {
+        "TOFRA XYStage"
+    }
+    fn description(&self) -> &str {
+        "TOFRA XYStage with Integrated Controller"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.borrow().is_none() {
+            return Err(MmError::NotConnected);
+        }
         let ss = DEFAULT_LEAD_UM / (DEFAULT_STEP_DIVIDE * DEFAULT_MOTOR_STEPS);
         self.step_size_um = ss;
         let init = Self::axis_init_cmd();
@@ -124,23 +159,48 @@ impl Device for TofraXYStage {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        let x_busy = self
+            .cmd(&self.ctrl_x, "Q")
+            .and_then(|resp| Self::parse_status(&resp))
+            .map(|status| status == '@')
+            .unwrap_or(false);
+        let y_busy = self
+            .cmd(&self.ctrl_y, "Q")
+            .and_then(|resp| Self::parse_status(&resp))
+            .map(|status| status == '@')
+            .unwrap_or(false);
+        x_busy || y_busy
+    }
 }
 
 impl XYStage for TofraXYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
-        let sx = (x / self.step_size_um).round() as i64;
-        let sy = (y / self.step_size_um).round() as i64;
+        let sx = Self::um_to_cpp_steps(x, self.step_size_um);
+        let sy = Self::um_to_cpp_steps(y, self.step_size_um);
         let cx = self.ctrl_x.clone();
         let cy = self.ctrl_y.clone();
         let rx = self.cmd(&cx, &format!("A{}R", sx))?;
@@ -152,22 +212,41 @@ impl XYStage for TofraXYStage {
         Ok(())
     }
 
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        let px_resp = self.cmd(&self.ctrl_x, "?0")?;
+        let py_resp = self.cmd(&self.ctrl_y, "?0")?;
+        Ok((
+            Self::parse_pos(&px_resp)? as f64 * self.step_size_um,
+            Self::parse_pos(&py_resp)? as f64 * self.step_size_um,
+        ))
+    }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let cx = self.ctrl_x.clone();
         let cy = self.ctrl_y.clone();
         if dx != 0.0 {
-            let steps = (dx / self.step_size_um).round() as i64;
-            let cmd = if steps > 0 { format!("P{}R", steps) } else { format!("D{}R", -steps) };
-            let r = self.cmd(&cx, &cmd)?;
-            Self::check_response(&r)?;
+            let steps = Self::um_to_cpp_steps(dx, self.step_size_um);
+            if steps != 0 {
+                let cmd = if steps > 0 {
+                    format!("P{}R", steps)
+                } else {
+                    format!("D{}R", -steps)
+                };
+                let r = self.cmd(&cx, &cmd)?;
+                Self::check_response(&r)?;
+            }
         }
         if dy != 0.0 {
-            let steps = (dy / self.step_size_um).round() as i64;
-            let cmd = if steps > 0 { format!("P{}R", steps) } else { format!("D{}R", -steps) };
-            let r = self.cmd(&cy, &cmd)?;
-            Self::check_response(&r)?;
+            let steps = Self::um_to_cpp_steps(dy, self.step_size_um);
+            if steps != 0 {
+                let cmd = if steps > 0 {
+                    format!("P{}R", steps)
+                } else {
+                    format!("D{}R", -steps)
+                };
+                let r = self.cmd(&cy, &cmd)?;
+                Self::check_response(&r)?;
+            }
         }
         self.x_um += dx;
         self.y_um += dy;
@@ -208,9 +287,13 @@ impl XYStage for TofraXYStage {
         Ok(())
     }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (self.step_size_um, self.step_size_um) }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (self.step_size_um, self.step_size_um)
+    }
 
-    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> { Ok((0.0, 0.0, 0.0, 0.0)) }
+    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]
@@ -223,7 +306,10 @@ mod tests {
         // slvel = round(1000/0.01953125) = 51200
         // invel = round(100/0.01953125) = 5120
         // accel = round(10/0.01953125) = 512
-        format!("/{}j256h{}m{}V51200v5120L512n2f{}R\r", ctrl, DEFAULT_HC, DEFAULT_RC, DEFAULT_LIMIT_POL)
+        format!(
+            "/{}j256h{}m{}V51200v5120L512n2f{}R\r",
+            ctrl, DEFAULT_HC, DEFAULT_RC, DEFAULT_LIMIT_POL
+        )
     }
 
     fn make_init_transport() -> MockTransport {
@@ -236,7 +322,10 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let mut s = TofraXYStage::new().with_transport(Box::new(make_init_transport()));
+        let t = make_init_transport()
+            .expect("/3?0\r", "/000")
+            .expect("/4?0\r", "/000");
+        let mut s = TofraXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert_eq!(s.get_xy_position_um().unwrap(), (0.0, 0.0));
     }
@@ -246,7 +335,9 @@ mod tests {
         // 10 µm / 0.01953125 = 512 steps
         let t = make_init_transport()
             .expect("/3A512R\r", "/00")
-            .expect("/4A512R\r", "/00");
+            .expect("/4A512R\r", "/00")
+            .expect("/3?0\r", "/00512")
+            .expect("/4?0\r", "/00512");
         let mut s = TofraXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_xy_position_um(10.0, 10.0).unwrap();
@@ -257,10 +348,12 @@ mod tests {
 
     #[test]
     fn move_relative() {
-        // 5 µm / 0.01953125 = 256 steps, -5 µm → D256R
+        // Upstream casts (d / step + 0.5) to long, so negative values truncate toward zero.
         let t = make_init_transport()
             .expect("/3P256R\r", "/00")
-            .expect("/4D256R\r", "/00");
+            .expect("/4D255R\r", "/00")
+            .expect("/3?0\r", "/00256")
+            .expect("/4?0\r", "/00-256");
         let mut s = TofraXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_xy_position_um(5.0, -5.0).unwrap();
@@ -270,10 +363,31 @@ mod tests {
     }
 
     #[test]
+    fn move_absolute_negative_uses_cpp_cast() {
+        let t = make_init_transport()
+            .expect("/3A-255R\r", "/00")
+            .expect("/4A-255R\r", "/00")
+            .expect("/3?0\r", "/00-256")
+            .expect("/4?0\r", "/00-256");
+        let mut s = TofraXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_xy_position_um(-5.0, -5.0).unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (-5.0, -5.0));
+    }
+
+    #[test]
+    fn limits_are_unsupported() {
+        let s = TofraXYStage::new();
+        assert_eq!(s.get_limits_um(), Err(MmError::UnsupportedCommand));
+    }
+
+    #[test]
     fn home() {
         let t = make_init_transport()
             .expect("/3z0R\r", "/00")
-            .expect("/4z0R\r", "/00");
+            .expect("/4z0R\r", "/00")
+            .expect("/3?0\r", "/000")
+            .expect("/4?0\r", "/000");
         let mut s = TofraXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.home().unwrap();
@@ -293,5 +407,15 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(TofraXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn busy_polls_both_controllers() {
+        let t = make_init_transport()
+            .expect("/3Q\r", "/00")
+            .expect("/4Q\r", "/0@");
+        let mut s = TofraXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
     }
 }

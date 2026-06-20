@@ -30,17 +30,39 @@ pub struct NijiController {
 impl NijiController {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("FirmwareVersion", PropertyValue::String(String::new()), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property(
+                "FirmwareVersion",
+                PropertyValue::String(String::new()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1"]).unwrap();
         for (i, &nm) in WAVELENGTHS.iter().enumerate() {
             let ch = i + 1;
-            props.define_property(
-                &format!("Channel{}_{}nm_Enable", ch, nm),
-                PropertyValue::String("0".into()), false).unwrap();
-            props.set_allowed_values(&format!("Channel{}_{}nm_Enable", ch, nm), &["0", "1"]).unwrap();
-            props.define_property(
-                &format!("Channel{}_{}nm_Intensity", ch, nm),
-                PropertyValue::Integer(100), false).unwrap();
+            props
+                .define_property(
+                    &format!("Channel{}_{}nm_Enable", ch, nm),
+                    PropertyValue::String("0".into()),
+                    false,
+                )
+                .unwrap();
+            props
+                .set_allowed_values(&format!("Channel{}_{}nm_Enable", ch, nm), &["0", "1"])
+                .unwrap();
+            props
+                .define_property(
+                    &format!("Channel{}_{}nm_Intensity", ch, nm),
+                    PropertyValue::Integer(100),
+                    false,
+                )
+                .unwrap();
         }
         Self {
             props,
@@ -58,7 +80,9 @@ impl NijiController {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -94,27 +118,43 @@ impl NijiController {
             self.cmd(&cmd)?;
         }
         self.open = open;
+        self.props
+            .set("State", PropertyValue::Integer(if open { 1 } else { 0 }))?;
         Ok(())
     }
 }
 
-impl Default for NijiController { fn default() -> Self { Self::new() } }
+impl Default for NijiController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for NijiController {
-    fn name(&self) -> &str { "NijiController" }
-    fn description(&self) -> &str { "BlueboxOptics niji LED Illuminator" }
+    fn name(&self) -> &str {
+        "niji"
+    }
+    fn description(&self) -> &str {
+        "niji LED Illuminator"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Binary synchronization sequence
-        let sync: [u8; 12] = [0x4f, 0xff, 0x50, 0x4f, 0xff, 0x50, 0x4f, 0xff, 0x50, 0x4f, 0xff, 0x50];
+        let sync: [u8; 12] = [
+            0x4f, 0xff, 0x50, 0x4f, 0xff, 0x50, 0x4f, 0xff, 0x50, 0x4f, 0xff, 0x50,
+        ];
         self.call_transport(|t| t.send_bytes(&sync))?;
         // Query status to get firmware version
         let status = self.cmd("?")?;
         for line in status.lines() {
             if let Some(ver) = line.strip_prefix("Firmware,") {
                 let ver = ver.trim_end_matches(',').to_string();
-                self.props.entry_mut("FirmwareVersion").map(|e| e.value = PropertyValue::String(ver));
+                self.props
+                    .entry_mut("FirmwareVersion")
+                    .map(|e| e.value = PropertyValue::String(ver));
                 break;
             }
         }
@@ -129,17 +169,32 @@ impl Device for NijiController {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.illuminate(false);
+            for ch in 0..NUM_CHANNELS {
+                let _ = self.set_channel(ch, false);
+                let _ = self.set_channel_intensity(ch, 0);
+            }
+            self.open = false;
             self.initialized = false;
         }
         Ok(())
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "State" => Ok(PropertyValue::Integer(if self.open { 1 } else { 0 })),
+            _ => self.props.get(name).cloned(),
+        }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "State" {
+            let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            return match state {
+                0 => self.set_open(false),
+                1 => self.set_open(true),
+                _ => Err(MmError::InvalidPropertyValue),
+            };
+        }
         // Handle channel enable/intensity properties
         for (i, &nm) in WAVELENGTHS.iter().enumerate() {
             let ch = i + 1;
@@ -152,7 +207,9 @@ impl Device for NijiController {
                 } else {
                     self.channel_enabled[i] = v;
                 }
-                self.props.entry_mut(name).map(|e| e.value = PropertyValue::String(if v { "1" } else { "0" }.into()));
+                self.props
+                    .entry_mut(name)
+                    .map(|e| e.value = PropertyValue::String(if v { "1" } else { "0" }.into()));
                 return Ok(());
             }
             if name == intensity_key {
@@ -162,20 +219,30 @@ impl Device for NijiController {
                 } else {
                     self.channel_intensity[i] = pct;
                 }
-                self.props.entry_mut(name).map(|e| e.value = PropertyValue::Integer(pct as i64));
+                self.props
+                    .entry_mut(name)
+                    .map(|e| e.value = PropertyValue::Integer(pct as i64));
                 return Ok(());
             }
         }
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for NijiController {
@@ -183,9 +250,13 @@ impl Shutter for NijiController {
         self.illuminate(open)
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.open)
+    }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { Ok(()) }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]
@@ -194,7 +265,7 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
-        let mut t = MockTransport::new()
+        MockTransport::new()
             .expect_binary(b"") // binary sync (any)
             .expect("?\r\n", "Firmware,1.0.3,\nStatus,0,")
             // 7 × D,ch,0
@@ -204,8 +275,7 @@ mod tests {
             .expect("D,4,0\r\n", "D,4,0,")
             .expect("D,5,0\r\n", "D,5,0,")
             .expect("D,6,0\r\n", "D,6,0,")
-            .expect("D,7,0\r\n", "D,7,0,");
-        t
+            .expect("D,7,0\r\n", "D,7,0,")
     }
 
     #[test]
@@ -244,5 +314,14 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(NijiController::new().initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(NijiController::new().initialize().is_err());
+    }
+
+    #[test]
+    fn fire_is_unsupported_like_upstream() {
+        let mut dev = NijiController::new().with_transport(Box::new(make_init_transport()));
+        dev.initialize().unwrap();
+        assert_eq!(dev.fire(1.0), Err(MmError::UnsupportedCommand));
+    }
 }

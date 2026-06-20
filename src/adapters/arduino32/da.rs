@@ -10,6 +10,7 @@ pub type DaWriter = std::sync::Arc<dyn Fn(u8, u16) -> MmResult<()> + Send + Sync
 pub struct Arduino32Da {
     props: PropertyMap,
     initialized: bool,
+    name: String,
     channel: u8,
     volts: f64,
     gate_open: bool,
@@ -22,19 +23,23 @@ pub struct Arduino32Da {
 impl Arduino32Da {
     pub fn new(channel: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Volts", PropertyValue::Float(0.0), false).unwrap();
-        props.define_property("MaxVolts", PropertyValue::Float(5.0), false).unwrap();
-        props.define_property("Channel", PropertyValue::Integer(channel as i64), true).unwrap();
+        props
+            .define_property("Volts", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("Power %", PropertyValue::Float(100.0), false)
+            .unwrap();
 
         Self {
             props,
             initialized: false,
+            name: format!("Arduino32-DAC/PWM-{}", channel),
             channel,
             volts: 0.0,
             gate_open: true,
             gated_volts: 0.0,
             min_volts: 0.0,
-            max_volts: 5.0,
+            max_volts: 100.0,
             writer: None,
         }
     }
@@ -47,7 +52,7 @@ impl Arduino32Da {
     fn volts_to_counts(&self, volts: f64) -> u16 {
         let clamped = volts.clamp(self.min_volts, self.max_volts);
         let frac = (clamped - self.min_volts) / (self.max_volts - self.min_volts);
-        (frac * 4095.0).round() as u16
+        (frac * 4095.0) as u16
     }
 
     fn write_volts(&self, volts: f64) -> MmResult<()> {
@@ -57,29 +62,33 @@ impl Arduino32Da {
 }
 
 impl Device for Arduino32Da {
-    fn name(&self) -> &str { "Arduino32-DA" }
-    fn description(&self) -> &str { "Arduino32 DAC/PWM channel" }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        "Arduino32 DAC/PWM channel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.writer.is_none() { return Err(MmError::CommHubMissing); }
-        if let Ok(PropertyValue::Float(mv)) = self.props.get("MaxVolts").cloned() {
+        if self.writer.is_none() {
+            return Err(MmError::CommHubMissing);
+        }
+        if let Ok(PropertyValue::Float(mv)) = self.props.get("Power %").cloned() {
             self.max_volts = mv;
         }
-        self.write_volts(0.0)?;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.write_volts(0.0);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        if name == "Volts" { return Ok(PropertyValue::Float(self.volts)); }
+        if name == "Volts" {
+            return Ok(PropertyValue::Float(self.volts));
+        }
         self.props.get(name).cloned()
     }
 
@@ -87,13 +96,17 @@ impl Device for Arduino32Da {
         match name {
             "Volts" => {
                 let v = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                if self.initialized && self.gate_open { self.write_volts(v)?; }
+                if self.initialized && self.gate_open {
+                    self.write_volts(v)?;
+                }
                 self.volts = v;
                 self.gated_volts = v;
-                self.props.entry_mut("Volts").map(|e| e.value = PropertyValue::Float(v));
+                self.props
+                    .entry_mut("Volts")
+                    .map(|e| e.value = PropertyValue::Float(v));
                 Ok(())
             }
-            "MaxVolts" => {
+            "Power %" => {
                 let v = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.max_volts = v;
                 self.props.set(name, PropertyValue::Float(v))
@@ -102,34 +115,54 @@ impl Device for Arduino32Da {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::SignalIO }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::SignalIO
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl SignalIO for Arduino32Da {
     fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
         self.gate_open = open;
-        if open { self.write_volts(self.gated_volts)?; } else { self.write_volts(0.0)?; }
+        if open {
+            self.write_volts(self.gated_volts)?;
+        } else {
+            self.write_volts(0.0)?;
+        }
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 
     fn set_signal(&mut self, volts: f64) -> MmResult<()> {
-        if self.gate_open && self.initialized { self.write_volts(volts)?; }
+        if self.gate_open && self.initialized {
+            self.write_volts(volts)?;
+        }
         self.volts = volts;
         self.gated_volts = volts;
         Ok(())
     }
 
-    fn get_signal(&self) -> MmResult<f64> { Ok(self.volts) }
+    fn get_signal(&self) -> MmResult<f64> {
+        Err(MmError::UnsupportedCommand)
+    }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((self.min_volts, self.max_volts)) }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((self.min_volts, self.max_volts))
+    }
 }
 
 #[cfg(test)]
@@ -148,17 +181,46 @@ mod tests {
     }
 
     #[test]
-    fn initialize_writes_zero() {
+    fn initialize_does_not_write() {
         let (mut da, log) = make_da();
         da.initialize().unwrap();
-        assert_eq!(log.lock().unwrap().last().unwrap(), &(1, 0));
+        assert!(log.lock().unwrap().is_empty());
     }
 
     #[test]
     fn full_scale() {
         let (mut da, log) = make_da();
         da.initialize().unwrap();
-        da.set_signal(5.0).unwrap();
+        da.set_signal(100.0).unwrap();
         assert_eq!(log.lock().unwrap().last().unwrap(), &(1, 4095));
+    }
+
+    #[test]
+    fn exposes_upstream_power_property_and_channel_name() {
+        let da = Arduino32Da::new(3);
+        assert_eq!(da.name(), "Arduino32-DAC/PWM-3");
+        assert!(da.has_property("Power %"));
+        assert!(!da.has_property("MaxVolts"));
+        assert!(!da.has_property("Channel"));
+        assert_eq!(
+            da.get_property("Power %").unwrap(),
+            PropertyValue::Float(100.0)
+        );
+    }
+
+    #[test]
+    fn conversion_truncates_like_upstream() {
+        let (mut da, log) = make_da();
+        da.initialize().unwrap();
+        da.set_signal(50.0).unwrap();
+        assert_eq!(log.lock().unwrap().last().unwrap(), &(1, 2047));
+    }
+
+    #[test]
+    fn get_signal_is_unsupported_like_upstream() {
+        let (mut da, _) = make_da();
+        da.initialize().unwrap();
+        da.set_signal(50.0).unwrap();
+        assert_eq!(da.get_signal().unwrap_err(), MmError::UnsupportedCommand);
     }
 }

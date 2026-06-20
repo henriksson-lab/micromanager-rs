@@ -1,10 +1,11 @@
 # micromanager-rs
 
-A pure-Rust port of [MicroManager](https://micro-manager.org/) (`mmCoreAndDevices`). No C FFI, no Java bindings — Rust API only.
+A pure-Rust translation of [MicroManager](https://micro-manager.org/) (`mmCoreAndDevices`).
 
 The port is based on https://github.com/micro-manager/mmCoreAndDevices, hash 67fe60267bc8d95554369d7fa42912775588e538
 
-The license follows from the original code.
+* 2026-06-20: Work on bringing full parity in progress
+
 
 ## This is an LLM-mediated faithful (hopefully) translation, not the original code!
 

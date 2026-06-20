@@ -1,11 +1,11 @@
 /// Leica DMR reflected light shutter.
 ///
 /// Protocol:
-///   Set shutter open:  device=rLFA(8 or 9), command=12, data=1  → `"<DD>0121\r"`
-///   Set shutter close: device=rLFA(8 or 9), command=12, data=0  → `"<DD>0120\r"`
-///   Get shutter state: device=rLFA, command=13                  → `"<DD>013<0|1>\r"`
+///   Set shutter open:  device=rLFA(67 or 12), command=12, data=1 -> `"<DD>0121\r"`
+///   Set shutter close: device=rLFA(67 or 12), command=12, data=0 -> `"<DD>0120\r"`
+///   Get shutter state: device=rLFA, command=13                  -> `"<DD>013<0|1>\r"`
 ///
-/// The rLFA device id defaults to 8 (4-position turret).
+/// The rLFA device id is rLFA4=67 or rLFA8=12 upstream.
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
@@ -21,11 +21,19 @@ pub struct LeicaDMRShutter {
 }
 
 impl LeicaDMRShutter {
-    /// `device_id`: rLFA4 = 8, rLFA8 = 9
+    /// `device_id`: rLFA4 = 67, rLFA8 = 12
     pub fn new(device_id: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("DeviceID", PropertyValue::Integer(device_id as i64), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("DeviceID", PropertyValue::Integer(device_id as i64), true)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1"]).unwrap();
         Self {
             props,
             transport: None,
@@ -68,56 +76,81 @@ impl LeicaDMRShutter {
 }
 
 impl Device for LeicaDMRShutter {
-    fn name(&self) -> &str { "LeicaDMRShutter" }
-    fn description(&self) -> &str { "Leica DMR reflected light shutter" }
+    fn name(&self) -> &str {
+        "Shutter"
+    }
+    fn description(&self) -> &str {
+        "LeicaDMR Reflected Light Shutter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        self.send_open_cmd(false)?;
-        self.is_open = false;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.send_open_cmd(false);
             self.initialized = false;
         }
         Ok(())
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "State" => Ok(PropertyValue::Integer(if self.is_open { 1 } else { 0 })),
+            _ => self.props.get(name).cloned(),
+        }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "State" => {
+                let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                match state {
+                    0 => self.set_open(false),
+                    1 => self.set_open(true),
+                    _ => Err(MmError::InvalidPropertyValue),
+                }
+            }
+            _ => self.props.set(name, val),
+        }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for LeicaDMRShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         self.send_open_cmd(open)?;
         self.is_open = open;
+        self.props
+            .set("State", PropertyValue::Integer(if open { 1 } else { 0 }))?;
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.is_open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.is_open)
+    }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -128,12 +161,11 @@ mod tests {
 
     #[test]
     fn shutter_open_close() {
-        // device_id=8 (rLFA4), command=12
+        // device_id=67 (rLFA4), command=12
         let t = MockTransport::new()
-            .expect("080120\r", "080120")   // init: close
-            .expect("080121\r", "080121")   // open
-            .expect("080120\r", "080120");  // close
-        let mut s = LeicaDMRShutter::new(8).with_transport(Box::new(t));
+            .expect("670121\r", "670121") // open
+            .expect("670120\r", "670120"); // close
+        let mut s = LeicaDMRShutter::new(67).with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
         assert!(s.get_open().unwrap());
@@ -142,14 +174,11 @@ mod tests {
     }
 
     #[test]
-    fn fire_opens_then_closes() {
-        let t = MockTransport::new()
-            .expect("080120\r", "080120")
-            .expect("080121\r", "080121")
-            .expect("080120\r", "080120");
-        let mut s = LeicaDMRShutter::new(8).with_transport(Box::new(t));
+    fn fire_is_unsupported() {
+        let t = MockTransport::new();
+        let mut s = LeicaDMRShutter::new(67).with_transport(Box::new(t));
         s.initialize().unwrap();
-        s.fire(5.0).unwrap();
+        assert_eq!(s.fire(5.0), Err(MmError::UnsupportedCommand));
         assert!(!s.get_open().unwrap());
     }
 }

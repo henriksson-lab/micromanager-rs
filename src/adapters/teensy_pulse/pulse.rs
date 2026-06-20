@@ -12,11 +12,11 @@ use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
 const CMD_VERSION: u8 = 0x00;
-const CMD_START:   u8 = 0x01;
-const CMD_STOP:    u8 = 0x02;
+const CMD_START: u8 = 0x01;
+const CMD_STOP: u8 = 0x02;
 const CMD_INTERVAL: u8 = 0x03;
 const CMD_PULSE_DUR: u8 = 0x04;
-const CMD_TRIGGER:   u8 = 0x05;
+const CMD_TRIGGER: u8 = 0x05;
 const CMD_NR_PULSES: u8 = 0x06;
 const ENQUIRE: u8 = 0xFF;
 
@@ -30,24 +30,56 @@ pub struct TeensyPulseGenerator {
     trigger_mode: bool,
     run_until_stopped: bool,
     nr_pulses: u32,
+    nr_pulses_counted: u32,
     running: bool,
 }
 
 impl TeensyPulseGenerator {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("FirmwareVersion", PropertyValue::Integer(0), true).unwrap();
-        props.define_property("IntervalMs", PropertyValue::Float(100.0), false).unwrap();
-        props.define_property("PulseDurationMs", PropertyValue::Float(10.0), false).unwrap();
-        props.define_property("TriggerMode", PropertyValue::String("Off".into()), false).unwrap();
-        props.set_allowed_values("TriggerMode", &["Off", "On"]).unwrap();
-        props.define_property("RunUntilStopped", PropertyValue::String("On".into()), false).unwrap();
-        props.set_allowed_values("RunUntilStopped", &["Off", "On"]).unwrap();
-        props.define_property("NumberOfPulses", PropertyValue::Integer(1), false).unwrap();
-        props.define_property("State", PropertyValue::String("Stop".into()), false).unwrap();
-        props.set_allowed_values("State", &["Stop", "Start"]).unwrap();
-        props.define_property("Status", PropertyValue::String("Idle".into()), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Firmware-version", PropertyValue::String("0".into()), true)
+            .unwrap();
+        props
+            .define_property("Interval-ms", PropertyValue::Float(100.0), false)
+            .unwrap();
+        props
+            .define_property("PulseDuration-ms", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props
+            .define_property("TriggerMode", PropertyValue::String("Off".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("TriggerMode", &["Off", "On"])
+            .unwrap();
+        props
+            .define_property(
+                "Run_Until_Stopped",
+                PropertyValue::String("On".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("Run_Until_Stopped", &["Off", "On"])
+            .unwrap();
+        props
+            .define_property("Number_of_Pulses", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("Number_of_Actual_Pulses", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::String("Stop".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("State", &["Stop", "Start"])
+            .unwrap();
+        props
+            .define_property("Status", PropertyValue::String("Idle".into()), true)
+            .unwrap();
 
         Self {
             props,
@@ -59,6 +91,7 @@ impl TeensyPulseGenerator {
             trigger_mode: false,
             run_until_stopped: true,
             nr_pulses: 1,
+            nr_pulses_counted: 0,
             running: false,
         }
     }
@@ -118,21 +151,30 @@ impl TeensyPulseGenerator {
 }
 
 impl Default for TeensyPulseGenerator {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for TeensyPulseGenerator {
-    fn name(&self) -> &str { "TeensyPulseGenerator" }
-    fn description(&self) -> &str { "Teensy-based pulse generator" }
+    fn name(&self) -> &str {
+        "TeensyPulseGenerator"
+    }
+    fn description(&self) -> &str {
+        "Teensy-based pulse generator"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
 
         // Get firmware version
         self.send_command(CMD_VERSION, 0)?;
         self.version = self.get_response(0)?;
-        self.props.entry_mut("FirmwareVersion")
-            .map(|e| e.value = PropertyValue::Integer(self.version as i64));
+        self.props
+            .entry_mut("Firmware-version")
+            .map(|e| e.value = PropertyValue::String(self.version.to_string()));
 
         // Read current settings from firmware
         let interval_us = self.get_param(CMD_INTERVAL)?;
@@ -162,32 +204,45 @@ impl Device for TeensyPulseGenerator {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "IntervalMs"       => Ok(PropertyValue::Float(self.interval_ms)),
-            "PulseDurationMs"  => Ok(PropertyValue::Float(self.pulse_dur_ms)),
-            "TriggerMode"      => Ok(PropertyValue::String(if self.trigger_mode { "On" } else { "Off" }.into())),
-            "RunUntilStopped"  => Ok(PropertyValue::String(if self.run_until_stopped { "On" } else { "Off" }.into())),
-            "NumberOfPulses"   => Ok(PropertyValue::Integer(self.nr_pulses as i64)),
-            "State"            => Ok(PropertyValue::String(if self.running { "Start" } else { "Stop" }.into())),
-            "Status"           => Ok(PropertyValue::String(if self.running { "Active" } else { "Idle" }.into())),
+            "Interval-ms" => Ok(PropertyValue::Float(self.interval_ms)),
+            "PulseDuration-ms" => Ok(PropertyValue::Float(self.pulse_dur_ms)),
+            "TriggerMode" => Ok(PropertyValue::String(
+                if self.trigger_mode { "On" } else { "Off" }.into(),
+            )),
+            "Run_Until_Stopped" => Ok(PropertyValue::String(
+                if self.run_until_stopped { "On" } else { "Off" }.into(),
+            )),
+            "Number_of_Pulses" => Ok(PropertyValue::Integer(self.nr_pulses as i64)),
+            "Number_of_Actual_Pulses" => Ok(PropertyValue::Integer(self.nr_pulses_counted as i64)),
+            "State" => Ok(PropertyValue::String(
+                if self.running { "Start" } else { "Stop" }.into(),
+            )),
+            "Status" => Ok(PropertyValue::String(
+                if self.running { "Active" } else { "Idle" }.into(),
+            )),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "IntervalMs" if self.initialized => {
+            "Interval-ms" if self.initialized => {
                 let ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 let us = (ms * 1000.0) as u32;
                 let resp = self.set_param(CMD_INTERVAL, us)?;
-                if resp != us { return Err(MmError::SerialInvalidResponse); }
+                if resp != us {
+                    return Err(MmError::SerialInvalidResponse);
+                }
                 self.interval_ms = ms;
                 Ok(())
             }
-            "PulseDurationMs" if self.initialized => {
+            "PulseDuration-ms" if self.initialized => {
                 let ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 let us = (ms * 1000.0) as u32;
                 let resp = self.set_param(CMD_PULSE_DUR, us)?;
-                if resp != us { return Err(MmError::SerialInvalidResponse); }
+                if resp != us {
+                    return Err(MmError::SerialInvalidResponse);
+                }
                 self.pulse_dur_ms = ms;
                 Ok(())
             }
@@ -195,23 +250,29 @@ impl Device for TeensyPulseGenerator {
                 let on = val.as_str() == "On";
                 let param = if on { 1u32 } else { 0 };
                 let resp = self.set_param(CMD_TRIGGER, param)?;
-                if resp != param { return Err(MmError::SerialInvalidResponse); }
+                if resp != param {
+                    return Err(MmError::SerialInvalidResponse);
+                }
                 self.trigger_mode = on;
                 Ok(())
             }
-            "RunUntilStopped" if self.initialized => {
+            "Run_Until_Stopped" if self.initialized => {
                 let on = val.as_str() == "On";
                 let param = if on { 0u32 } else { self.nr_pulses };
                 let resp = self.set_param(CMD_NR_PULSES, param)?;
-                if resp != param { return Err(MmError::SerialInvalidResponse); }
+                if resp != param {
+                    return Err(MmError::SerialInvalidResponse);
+                }
                 self.run_until_stopped = on;
                 Ok(())
             }
-            "NumberOfPulses" if self.initialized => {
+            "Number_of_Pulses" if self.initialized => {
                 let n = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u32;
                 if !self.run_until_stopped {
                     let resp = self.set_param(CMD_NR_PULSES, n)?;
-                    if resp != n { return Err(MmError::SerialInvalidResponse); }
+                    if resp != n {
+                        return Err(MmError::SerialInvalidResponse);
+                    }
                 }
                 self.nr_pulses = n;
                 Ok(())
@@ -219,11 +280,13 @@ impl Device for TeensyPulseGenerator {
             "State" if self.initialized => {
                 if val.as_str() == "Start" && !self.running {
                     let resp = self.set_param(CMD_START, 0)?;
-                    if resp != 1 { return Err(MmError::SerialInvalidResponse); }
+                    if resp != 1 {
+                        return Err(MmError::SerialInvalidResponse);
+                    }
                     self.running = true;
                 } else if val.as_str() == "Stop" && self.running {
                     self.send_command(CMD_STOP, 0)?;
-                    let _ = self.get_response(CMD_STOP);
+                    self.nr_pulses_counted = self.get_response(CMD_STOP)?;
                     self.running = false;
                 }
                 Ok(())
@@ -232,13 +295,21 @@ impl Device for TeensyPulseGenerator {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Generic }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Generic
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Generic for TeensyPulseGenerator {}

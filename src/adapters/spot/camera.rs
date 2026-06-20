@@ -24,18 +24,20 @@ fn read_str_idx<F: FnOnce(i32, *mut i8, i32) -> i32>(idx: i32, f: F) -> Option<S
 
 pub struct SpotCamera {
     props: PropertyMap,
-    ctx:   *mut ffi::SpotCtx,
+    ctx: *mut ffi::SpotCtx,
 
     // Pre-init
-    device_index: i32,   // 0-based; -1 = first found
-    exposure_ms:  f64,
-    gain_index:   i32,
-    binning:      i32,
+    device_index: i32, // 0-based; -1 = first found
+    exposure_ms: f64,
+    gain_index: i32,
+    binning: i32,
+    auto_exposure: bool,
+    auto_exp_image_type: String,
 
     // Post-init read-only
-    img_width:  u32,
+    img_width: u32,
     img_height: u32,
-    bit_depth:  u32,
+    bit_depth: u32,
 
     capturing: bool,
 }
@@ -43,41 +45,95 @@ pub struct SpotCamera {
 impl SpotCamera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("CameraIndex",  PropertyValue::Integer(-1),        false).unwrap();
-        props.define_property("Exposure",     PropertyValue::Float(10.0),        false).unwrap();
-        props.define_property("GainIndex",    PropertyValue::Integer(1),         false).unwrap();
-        props.define_property("Binning",      PropertyValue::Integer(1),         false).unwrap();
-        props.define_property("Width",        PropertyValue::Integer(0),         true).unwrap();
-        props.define_property("Height",       PropertyValue::Integer(0),         true).unwrap();
-        props.define_property("BitDepth",     PropertyValue::Integer(16),        true).unwrap();
-        props.define_property("Temperature",  PropertyValue::Float(0.0),         true).unwrap();
-        props.define_property("SerialNumber", PropertyValue::String("".into()),  true).unwrap();
-        props.define_property("ModelName",    PropertyValue::String("".into()),  true).unwrap();
+        props
+            .define_property("CameraIndex", PropertyValue::Integer(-1), false)
+            .unwrap();
+        props
+            .define_property("Exposure", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props
+            .define_property("Gain", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("PixelSize", PropertyValue::String("0x0 nm".into()), true)
+            .unwrap();
+        props
+            .define_property("ActualGain", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("AutoExposure", PropertyValue::String("OFF".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("AutoExposure", &["OFF", "ON"])
+            .unwrap();
+        props
+            .define_property(
+                "AutoExpImageType",
+                PropertyValue::String("BRIGHTFIELD".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("AutoExpImageType", &["BRIGHTFIELD", "DARKFIELD"])
+            .unwrap();
+        props
+            .define_property("Width", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Height", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("BitDepth", PropertyValue::Integer(16), true)
+            .unwrap();
+        props
+            .define_property("Temperature", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("SerialNumber", PropertyValue::String("".into()), true)
+            .unwrap();
+        props
+            .define_property("ModelName", PropertyValue::String("".into()), true)
+            .unwrap();
 
         Self {
             props,
             ctx: std::ptr::null_mut(),
             device_index: -1,
-            exposure_ms:  10.0,
-            gain_index:   1,
-            binning:      1,
-            img_width:    0,
-            img_height:   0,
-            bit_depth:    16,
-            capturing:    false,
+            exposure_ms: 10.0,
+            gain_index: 1,
+            binning: 1,
+            auto_exposure: false,
+            auto_exp_image_type: "BRIGHTFIELD".into(),
+            img_width: 0,
+            img_height: 0,
+            bit_depth: 16,
+            capturing: false,
         }
     }
 
     fn check_open(&self) -> MmResult<()> {
-        if self.ctx.is_null() { Err(MmError::NotConnected) } else { Ok(()) }
+        if self.ctx.is_null() {
+            Err(MmError::NotConnected)
+        } else {
+            Ok(())
+        }
     }
 
     fn sync_dims(&mut self) {
-        if self.ctx.is_null() { return; }
-        self.img_width  = unsafe { ffi::spot_get_image_width(self.ctx)  } as u32;
+        if self.ctx.is_null() {
+            return;
+        }
+        self.img_width = unsafe { ffi::spot_get_image_width(self.ctx) } as u32;
         self.img_height = unsafe { ffi::spot_get_image_height(self.ctx) } as u32;
-        self.props.entry_mut("Width") .map(|e| e.value = PropertyValue::Integer(self.img_width  as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.img_width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
     }
 
     fn snap_timeout_ms(&self) -> i32 {
@@ -86,7 +142,9 @@ impl SpotCamera {
 }
 
 impl Default for SpotCamera {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for SpotCamera {
@@ -101,23 +159,35 @@ impl Drop for SpotCamera {
 // ── Device trait ───────────────────────────────────────────────────────────────
 
 impl Device for SpotCamera {
-    fn name(&self) -> &str { "SpotCamera" }
-    fn description(&self) -> &str { "Diagnostic Instruments Spot camera (SpotCam SDK)" }
+    fn name(&self) -> &str {
+        "SpotCamera"
+    }
+    fn description(&self) -> &str {
+        "Diagnostic Instruments Spot camera (SpotCam SDK)"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if !self.ctx.is_null() { return Ok(()); }
+        if !self.ctx.is_null() {
+            return Ok(());
+        }
 
         // Discover cameras.
         let count = unsafe { ffi::spot_find_devices() };
         if count < 0 {
-            return Err(MmError::LocallyDefined("SpotCam: device discovery failed".into()));
+            return Err(MmError::LocallyDefined(
+                "SpotCam: device discovery failed".into(),
+            ));
         }
         if count == 0 {
             return Err(MmError::LocallyDefined("SpotCam: no cameras found".into()));
         }
 
         // Select camera by index (default: 0).
-        let idx = if self.device_index < 0 { 0 } else { self.device_index };
+        let idx = if self.device_index < 0 {
+            0
+        } else {
+            self.device_index
+        };
         if idx >= count {
             return Err(MmError::LocallyDefined(format!(
                 "SpotCam: device index {} out of range (found {})",
@@ -127,26 +197,34 @@ impl Device for SpotCamera {
 
         let ctx = unsafe { ffi::spot_open(idx) };
         if ctx.is_null() {
-            return Err(MmError::LocallyDefined(
-                format!("SpotCam: failed to open device {}", idx),
-            ));
+            return Err(MmError::LocallyDefined(format!(
+                "SpotCam: failed to open device {}",
+                idx
+            )));
         }
         self.ctx = ctx;
         self.device_index = idx;
-        self.props.entry_mut("CameraIndex")
+        self.props
+            .entry_mut("CameraIndex")
             .map(|e| e.value = PropertyValue::Integer(idx as i64));
 
         // Read static properties.
         self.bit_depth = unsafe { ffi::spot_get_bit_depth(ctx) }.max(1) as u32;
-        self.props.entry_mut("BitDepth")
+        self.props
+            .entry_mut("BitDepth")
             .map(|e| e.value = PropertyValue::Integer(self.bit_depth as i64));
 
-        if let Some(sn) = read_str_idx(idx, |i, b, l| unsafe { ffi::spot_get_serial_number(i, b, l) }) {
-            self.props.entry_mut("SerialNumber")
+        if let Some(sn) = read_str_idx(idx, |i, b, l| unsafe {
+            ffi::spot_get_serial_number(i, b, l)
+        }) {
+            self.props
+                .entry_mut("SerialNumber")
                 .map(|e| e.value = PropertyValue::String(sn));
         }
-        if let Some(mn) = read_str_idx(idx, |i, b, l| unsafe { ffi::spot_get_device_name(i, b, l) }) {
-            self.props.entry_mut("ModelName")
+        if let Some(mn) = read_str_idx(idx, |i, b, l| unsafe { ffi::spot_get_device_name(i, b, l) })
+        {
+            self.props
+                .entry_mut("ModelName")
                 .map(|e| e.value = PropertyValue::String(mn));
         }
 
@@ -154,7 +232,7 @@ impl Device for SpotCamera {
         let gain_max = unsafe { ffi::spot_get_gain_max(ctx) }.max(1);
         let allowed: Vec<String> = (1..=gain_max).map(|g| g.to_string()).collect();
         let refs: Vec<&str> = allowed.iter().map(|s| s.as_str()).collect();
-        self.props.set_allowed_values("GainIndex", &refs).ok();
+        self.props.set_allowed_values("Gain", &refs).ok();
 
         // Apply pre-init settings.
         unsafe { ffi::spot_set_exposure_ms(ctx, self.exposure_ms) };
@@ -176,14 +254,18 @@ impl Device for SpotCamera {
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "CameraIndex" => Ok(PropertyValue::Integer(self.device_index as i64)),
-            "Exposure"    => Ok(PropertyValue::Float(self.exposure_ms)),
-            "GainIndex"   => Ok(PropertyValue::Integer(self.gain_index as i64)),
-            "Binning"     => Ok(PropertyValue::Integer(self.binning as i64)),
+            "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
+            "Gain" => Ok(PropertyValue::Integer(self.gain_index as i64)),
+            "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
+            "AutoExposure" => Ok(PropertyValue::String(
+                if self.auto_exposure { "ON" } else { "OFF" }.into(),
+            )),
+            "AutoExpImageType" => Ok(PropertyValue::String(self.auto_exp_image_type.clone())),
             "Temperature" => {
                 let t = if self.ctx.is_null() {
                     0.0f64
                 } else {
-                    unsafe { ffi::spot_get_temperature_c(self.ctx) } as f64
+                    (unsafe { ffi::spot_get_temperature_c(self.ctx) }) as f64
                 };
                 Ok(PropertyValue::Float(t))
             }
@@ -204,15 +286,17 @@ impl Device for SpotCamera {
             }
             "Exposure" => {
                 self.exposure_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Float(self.exposure_ms))?;
+                self.props
+                    .set(name, PropertyValue::Float(self.exposure_ms))?;
                 if !self.ctx.is_null() {
                     unsafe { ffi::spot_set_exposure_ms(self.ctx, self.exposure_ms) };
                 }
                 Ok(())
             }
-            "GainIndex" => {
+            "Gain" => {
                 self.gain_index = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
-                self.props.set(name, PropertyValue::Integer(self.gain_index as i64))?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.gain_index as i64))?;
                 if !self.ctx.is_null() {
                     unsafe { ffi::spot_set_gain(self.ctx, self.gain_index) };
                 }
@@ -220,24 +304,47 @@ impl Device for SpotCamera {
             }
             "Binning" => {
                 self.binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
-                self.props.set(name, PropertyValue::Integer(self.binning as i64))?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.binning as i64))?;
                 if !self.ctx.is_null() {
                     unsafe { ffi::spot_set_binning(self.ctx, self.binning) };
                     self.sync_dims();
                 }
                 Ok(())
             }
+            "AutoExposure" => {
+                let mode = val.as_str();
+                self.props
+                    .set(name, PropertyValue::String(mode.to_string()))?;
+                self.auto_exposure = mode == "ON";
+                Ok(())
+            }
+            "AutoExpImageType" => {
+                let image_type = val.as_str().to_string();
+                self.props
+                    .set(name, PropertyValue::String(image_type.clone()))?;
+                self.auto_exp_image_type = image_type;
+                Ok(())
+            }
             _ => self.props.set(name, val),
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Camera }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Camera
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 // ── Camera trait ───────────────────────────────────────────────────────────────
@@ -253,7 +360,9 @@ impl Camera for SpotCamera {
     }
 
     fn get_image_buffer(&self) -> MmResult<&[u8]> {
-        if self.ctx.is_null() { return Err(MmError::NotConnected); }
+        if self.ctx.is_null() {
+            return Err(MmError::NotConnected);
+        }
         let ptr = unsafe { ffi::spot_get_frame_ptr(self.ctx) };
         if ptr.is_null() {
             return Err(MmError::LocallyDefined("No image captured yet".into()));
@@ -266,29 +375,50 @@ impl Camera for SpotCamera {
         Ok(unsafe { std::slice::from_raw_parts(ptr, bytes) })
     }
 
-    fn get_image_width(&self) -> u32  { self.img_width }
-    fn get_image_height(&self) -> u32 { self.img_height }
-    fn get_image_bytes_per_pixel(&self) -> u32 {
-        if self.bit_depth > 8 { 2 } else { 1 }
+    fn get_image_width(&self) -> u32 {
+        self.img_width
     }
-    fn get_bit_depth(&self) -> u32 { self.bit_depth }
-    fn get_number_of_components(&self) -> u32 { 1 }
-    fn get_number_of_channels(&self) -> u32 { 1 }
-    fn get_exposure(&self) -> f64 { self.exposure_ms }
+    fn get_image_height(&self) -> u32 {
+        self.img_height
+    }
+    fn get_image_bytes_per_pixel(&self) -> u32 {
+        if self.bit_depth > 8 {
+            2
+        } else {
+            1
+        }
+    }
+    fn get_bit_depth(&self) -> u32 {
+        self.bit_depth
+    }
+    fn get_number_of_components(&self) -> u32 {
+        1
+    }
+    fn get_number_of_channels(&self) -> u32 {
+        1
+    }
+    fn get_exposure(&self) -> f64 {
+        self.exposure_ms
+    }
 
     fn set_exposure(&mut self, exp_ms: f64) {
         self.exposure_ms = exp_ms;
-        self.props.set("Exposure", PropertyValue::Float(exp_ms)).ok();
+        self.props
+            .set("Exposure", PropertyValue::Float(exp_ms))
+            .ok();
         if !self.ctx.is_null() {
             unsafe { ffi::spot_set_exposure_ms(self.ctx, exp_ms) };
         }
     }
 
-    fn get_binning(&self) -> i32 { self.binning }
+    fn get_binning(&self) -> i32 {
+        self.binning
+    }
 
     fn set_binning(&mut self, bin: i32) -> MmResult<()> {
         self.binning = bin;
-        self.props.set("Binning", PropertyValue::Integer(bin as i64))?;
+        self.props
+            .set("Binning", PropertyValue::Integer(bin as i64))?;
         if !self.ctx.is_null() {
             unsafe { ffi::spot_set_binning(self.ctx, bin) };
             self.sync_dims();
@@ -305,15 +435,23 @@ impl Camera for SpotCamera {
         let rc = unsafe {
             ffi::spot_set_roi(
                 self.ctx,
-                roi.x as i32, roi.y as i32,
-                roi.width as i32, roi.height as i32,
+                roi.x as i32,
+                roi.y as i32,
+                roi.width as i32,
+                roi.height as i32,
             )
         };
-        if rc != 0 { return Err(MmError::Err); }
-        self.img_width  = roi.width;
+        if rc != 0 {
+            return Err(MmError::Err);
+        }
+        self.img_width = roi.width;
         self.img_height = roi.height;
-        self.props.entry_mut("Width") .map(|e| e.value = PropertyValue::Integer(roi.width  as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(roi.height as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(roi.width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(roi.height as i64));
         Ok(())
     }
 
@@ -337,14 +475,18 @@ impl Camera for SpotCamera {
         Ok(())
     }
 
-    fn is_capturing(&self) -> bool { self.capturing }
+    fn is_capturing(&self) -> bool {
+        self.capturing
+    }
 }
 
 impl SpotCamera {
     fn snap_image_single(&mut self) -> MmResult<()> {
         let timeout = self.snap_timeout_ms();
         let rc = unsafe { ffi::spot_snap(self.ctx, timeout) };
-        if rc != 0 { return Err(MmError::SnapImageFailed); }
+        if rc != 0 {
+            return Err(MmError::SnapImageFailed);
+        }
         self.sync_dims();
         Ok(())
     }
@@ -369,14 +511,16 @@ mod tests {
     #[test]
     fn set_camera_index_pre_init() {
         let mut d = SpotCamera::new();
-        d.set_property("CameraIndex", PropertyValue::Integer(1)).unwrap();
+        d.set_property("CameraIndex", PropertyValue::Integer(1))
+            .unwrap();
         assert_eq!(d.device_index, 1);
     }
 
     #[test]
     fn set_exposure_pre_init() {
         let mut d = SpotCamera::new();
-        d.set_property("Exposure", PropertyValue::Float(25.0)).unwrap();
+        d.set_property("Exposure", PropertyValue::Float(25.0))
+            .unwrap();
         assert_eq!(d.exposure_ms, 25.0);
         assert_eq!(d.get_exposure(), 25.0);
     }
@@ -384,14 +528,15 @@ mod tests {
     #[test]
     fn set_gain_pre_init() {
         let mut d = SpotCamera::new();
-        d.set_property("GainIndex", PropertyValue::Integer(3)).unwrap();
+        d.set_property("Gain", PropertyValue::Integer(3)).unwrap();
         assert_eq!(d.gain_index, 3);
     }
 
     #[test]
     fn set_binning_pre_init() {
         let mut d = SpotCamera::new();
-        d.set_property("Binning", PropertyValue::Integer(2)).unwrap();
+        d.set_property("Binning", PropertyValue::Integer(2))
+            .unwrap();
         assert_eq!(d.binning, 2);
         assert_eq!(d.get_binning(), 2);
     }
@@ -421,12 +566,16 @@ mod tests {
         assert!(d.is_property_read_only("Width"));
         assert!(d.is_property_read_only("Height"));
         assert!(d.is_property_read_only("BitDepth"));
+        assert!(d.is_property_read_only("PixelSize"));
+        assert!(d.is_property_read_only("ActualGain"));
         assert!(d.is_property_read_only("Temperature"));
         assert!(d.is_property_read_only("SerialNumber"));
         assert!(d.is_property_read_only("ModelName"));
         assert!(!d.is_property_read_only("Exposure"));
-        assert!(!d.is_property_read_only("GainIndex"));
+        assert!(!d.is_property_read_only("Gain"));
         assert!(!d.is_property_read_only("Binning"));
+        assert!(!d.is_property_read_only("AutoExposure"));
+        assert!(!d.is_property_read_only("AutoExpImageType"));
     }
 
     #[test]
@@ -446,5 +595,54 @@ mod tests {
         assert_eq!(d.get_image_bytes_per_pixel(), 2);
         d.bit_depth = 8;
         assert_eq!(d.get_image_bytes_per_pixel(), 1);
+    }
+
+    #[test]
+    fn upstream_auto_exposure_surface() {
+        let mut d = SpotCamera::new();
+        assert_eq!(
+            d.get_property("AutoExposure").unwrap(),
+            PropertyValue::String("OFF".into())
+        );
+        assert_eq!(
+            d.get_property("AutoExpImageType").unwrap(),
+            PropertyValue::String("BRIGHTFIELD".into())
+        );
+
+        d.set_property("AutoExposure", PropertyValue::String("ON".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("AutoExposure").unwrap(),
+            PropertyValue::String("ON".into())
+        );
+        assert!(d
+            .set_property("AutoExposure", PropertyValue::String("AUTO".into()))
+            .is_err());
+
+        d.set_property(
+            "AutoExpImageType",
+            PropertyValue::String("DARKFIELD".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            d.get_property("AutoExpImageType").unwrap(),
+            PropertyValue::String("DARKFIELD".into())
+        );
+        assert!(d
+            .set_property("AutoExpImageType", PropertyValue::String("FLAT".into()))
+            .is_err());
+    }
+
+    #[test]
+    fn upstream_readonly_info_surface() {
+        let d = SpotCamera::new();
+        assert_eq!(
+            d.get_property("PixelSize").unwrap(),
+            PropertyValue::String("0x0 nm".into())
+        );
+        assert_eq!(
+            d.get_property("ActualGain").unwrap(),
+            PropertyValue::Float(0.0)
+        );
     }
 }

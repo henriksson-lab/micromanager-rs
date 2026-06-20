@@ -56,8 +56,38 @@ impl ThorlabsSC10 {
         let cmd = command.to_string();
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
-            Ok(resp.trim().to_string())
+            Self::strip_echo(&cmd, &resp)
         })
+    }
+
+    fn strip_echo(command: &str, response: &str) -> MmResult<String> {
+        let mut answer = response.trim().trim_end_matches('>').trim().to_string();
+        if let Some(rest) = answer.strip_prefix(command) {
+            answer = rest
+                .trim_start_matches(['\r', '\n', ' '])
+                .trim()
+                .to_string();
+        } else if answer.starts_with(' ') {
+            let trimmed = answer.trim_start();
+            if let Some(rest) = trimmed.strip_prefix(command) {
+                answer = rest
+                    .trim_start_matches(['\r', '\n', ' '])
+                    .trim()
+                    .to_string();
+            } else {
+                return Err(MmError::SerialCommandFailed);
+            }
+        } else {
+            return Err(MmError::SerialCommandFailed);
+        }
+        Ok(answer)
+    }
+
+    fn query_open(&mut self) -> MmResult<bool> {
+        let answer = self.cmd("ens?")?;
+        let open = answer.trim().parse::<i64>().unwrap_or(0) != 0;
+        self.is_open = open;
+        Ok(open)
     }
 }
 
@@ -69,11 +99,11 @@ impl Default for ThorlabsSC10 {
 
 impl Device for ThorlabsSC10 {
     fn name(&self) -> &str {
-        "ThorlabsSC10"
+        "SC10"
     }
 
     fn description(&self) -> &str {
-        "Thorlabs SC10 shutter controller"
+        "SC10 D1 controller adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -81,9 +111,20 @@ impl Device for ThorlabsSC10 {
             return Err(MmError::NotConnected);
         }
         // Query device identity (retry once if the first attempt fails, per C++ original)
-        let _idn = self.cmd("*idn?").or_else(|_| self.cmd("*idn?"))?;
+        let idn = self.cmd("*idn?").or_else(|_| self.cmd("*idn?"))?;
+        if !self.props.has_property("Device Info") {
+            self.props
+                .define_property("Device Info", PropertyValue::String(idn), true)?;
+        }
         // Set manual mode — required for normal shutter operation
         let _ = self.cmd("mode=1")?;
+        if !self.props.has_property("SC10 Command:") {
+            self.props.define_property(
+                "SC10 Command:",
+                PropertyValue::String(String::new()),
+                false,
+            )?;
+        }
         self.initialized = true;
         Ok(())
     }
@@ -98,7 +139,15 @@ impl Device for ThorlabsSC10 {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidProperty),
+            "SC10 Command:" => {
+                let command = val.as_str();
+                let answer = self.cmd(&command)?;
+                self.props.set(name, PropertyValue::String(answer))
+            }
+            _ => self.props.set(name, val),
+        }
     }
 
     fn property_names(&self) -> Vec<String> {
@@ -124,8 +173,9 @@ impl Device for ThorlabsSC10 {
 
 impl Shutter for ThorlabsSC10 {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
-        // Only toggle if state differs
-        let current = self.get_open()?;
+        // Only toggle if state differs. The C++ adapter queries the controller
+        // each time rather than relying on a cached state.
+        let current = self.query_open()?;
         if current != open {
             let _ = self.cmd("ens")?;
         }
@@ -140,8 +190,7 @@ impl Shutter for ThorlabsSC10 {
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -153,8 +202,8 @@ mod tests {
     fn make_device() -> ThorlabsSC10 {
         // init: *idn? → "SC10 ver1.0", mode=1 → "1"
         let t = MockTransport::new()
-            .expect("*idn?", "SC10 ver1.0")
-            .expect("mode=1", "1");
+            .expect("*idn?", "*idn?\rSC10 ver1.0")
+            .expect("mode=1", "mode=1\r1");
         ThorlabsSC10::new().with_transport(Box::new(t))
     }
 
@@ -163,6 +212,13 @@ mod tests {
         let mut d = make_device();
         d.initialize().unwrap();
         assert!(d.initialized);
+        assert_eq!(d.name(), "SC10");
+        assert_eq!(d.description(), "SC10 D1 controller adapter");
+        assert_eq!(
+            d.get_property("Device Info").unwrap(),
+            PropertyValue::String("SC10 ver1.0".into())
+        );
+        assert!(d.has_property("SC10 Command:"));
     }
 
     #[test]
@@ -173,9 +229,10 @@ mod tests {
     #[test]
     fn set_open_toggles_once() {
         let t = MockTransport::new()
-            .expect("*idn?", "SC10 ver1.0")
-            .expect("mode=1", "1")
-            .expect("ens", "1"); // one toggle to open
+            .expect("*idn?", "*idn?\rSC10 ver1.0")
+            .expect("mode=1", "mode=1\r1")
+            .expect("ens?", "ens?\r0")
+            .expect("ens", "ens\r1"); // one toggle to open
         let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         // Initially closed; opening sends "ens"
@@ -187,8 +244,9 @@ mod tests {
     fn set_open_no_toggle_if_same_state() {
         // No "ens" command expected beyond init
         let t = MockTransport::new()
-            .expect("*idn?", "SC10 ver1.0")
-            .expect("mode=1", "1");
+            .expect("*idn?", "*idn?\rSC10 ver1.0")
+            .expect("mode=1", "mode=1\r1")
+            .expect("ens?", "ens?\r0");
         let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         // Already closed; closing again should not send "ens"
@@ -197,16 +255,72 @@ mod tests {
     }
 
     #[test]
-    fn fire_opens_then_closes() {
+    fn fire_is_unsupported_like_upstream() {
         let t = MockTransport::new()
-            .expect("*idn?", "SC10 ver1.0")
-            .expect("mode=1", "1")
-            .expect("ens", "1") // open
-            .expect("ens", "0"); // close
+            .expect("*idn?", "*idn?\rSC10 ver1.0")
+            .expect("mode=1", "mode=1\r1");
         let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
         d.initialize().unwrap();
-        d.fire(10.0).unwrap();
+        assert_eq!(d.fire(10.0).unwrap_err(), MmError::UnsupportedCommand);
         assert!(!d.get_open().unwrap());
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected() {
+        let mut d = make_device();
+        d.initialize().unwrap();
+        assert_eq!(
+            d.set_property("Port", PropertyValue::String("COM2".into()))
+                .unwrap_err(),
+            MmError::InvalidProperty
+        );
+    }
+
+    #[test]
+    fn command_property_stores_answer() {
+        let t = MockTransport::new()
+            .expect("*idn?", "*idn?\rSC10 ver1.0")
+            .expect("mode=1", "mode=1\r1")
+            .expect("ens?", "ens?\r0");
+        let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        d.set_property("SC10 Command:", PropertyValue::String("ens?".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("SC10 Command:").unwrap(),
+            PropertyValue::String("0".into())
+        );
+    }
+
+    #[test]
+    fn command_property_strips_echo_and_prompt() {
+        let t = MockTransport::new()
+            .expect("*idn?", "*idn?\rSC10 ver1.0>")
+            .expect("mode=1", "mode=1\r1>")
+            .expect("ens?", " ens?\r0>");
+        let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        d.set_property("SC10 Command:", PropertyValue::String("ens?".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("SC10 Command:").unwrap(),
+            PropertyValue::String("0".into())
+        );
+    }
+
+    #[test]
+    fn command_property_rejects_missing_echo() {
+        let t = MockTransport::new()
+            .expect("*idn?", "*idn?\rSC10 ver1.0")
+            .expect("mode=1", "mode=1\r1")
+            .expect("ens?", "0");
+        let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(
+            d.set_property("SC10 Command:", PropertyValue::String("ens?".into()))
+                .unwrap_err(),
+            MmError::SerialCommandFailed
+        );
     }
 
     #[test]

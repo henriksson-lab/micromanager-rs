@@ -9,7 +9,7 @@
 /// the X axis is used.
 ///
 /// NOTE: The Python squid-control reference implementation uses `findIndex`
-/// (X:SRCH) for homing rather than the approach used in the original C++
+/// (X:INDX) for homing rather than the approach used in the original C++
 /// MicroManager Xeryon adapter.
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
@@ -49,7 +49,7 @@ impl SquidPlusObjectiveTurret {
         props
             .define_property(
                 "EncoderResolution",
-                PropertyValue::String("XLS1=1250".into()),
+                PropertyValue::String("XLS3=1251".into()),
                 false,
             )
             .unwrap();
@@ -123,7 +123,7 @@ impl SquidPlusObjectiveTurret {
         if let Some(val_str) = cmd.split('=').nth(1) {
             match val_str.trim() {
                 "312" => 312.5,
-                "1250" => 1250.0,
+                "1250" | "1251" => 1250.0,
                 "78" => 78.125,
                 "5" => 5.0,
                 "1" => 1.0,
@@ -173,10 +173,10 @@ impl Device for SquidPlusObjectiveTurret {
         let speed_raw = (speed * SPEED_MULTIPLIER as f64) as i64;
         self.axis_send("SSPD", speed_raw)?;
 
-        // Home via findIndex (X:SRCH=0).
+        // Home via findIndex (X:INDX=0).
         // NOTE: The Python squid-control implementation uses findIndex for homing,
         // which deviates from the C++ MicroManager Xeryon adapter reference.
-        self.axis_cmd("SRCH", 0)?;
+        self.axis_cmd("INDX", 0)?;
 
         // Read current encoder position and snap to nearest discrete position
         let resp = self.axis_cmd("EPOS", 0)?;
@@ -240,10 +240,7 @@ impl Device for SquidPlusObjectiveTurret {
     }
 
     fn is_property_read_only(&self, name: &str) -> bool {
-        self.props
-            .entry(name)
-            .map(|e| e.read_only)
-            .unwrap_or(false)
+        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
 
     fn device_type(&self) -> DeviceType {
@@ -313,16 +310,17 @@ mod tests {
 
     /// Build a MockTransport that scripts the full initialization sequence.
     fn make_init_transport() -> MockTransport {
-        // axis_cmd("SRCH", 0) → send_recv
+        // axis_cmd("INDX", 0) → send_recv
         // axis_cmd("EPOS", 0) → send_recv
         MockTransport::new()
-            .expect("X:SRCH=0\n", "X:SRCH=OK")
+            .expect("X:INDX=0\n", "X:INDX=OK")
             .expect("X:EPOS=0\n", "X:EPOS=0")
     }
 
     #[test]
     fn initialize() {
-        let mut dev = SquidPlusObjectiveTurret::new().with_transport(Box::new(make_init_transport()));
+        let mut dev =
+            SquidPlusObjectiveTurret::new().with_transport(Box::new(make_init_transport()));
         dev.initialize().unwrap();
         assert!(dev.initialized);
         // At EPOS=0 (home), closest position is 0 (−19mm is 19mm away, +19mm is 19mm away),
@@ -352,7 +350,8 @@ mod tests {
 
     #[test]
     fn out_of_range() {
-        let mut dev = SquidPlusObjectiveTurret::new().with_transport(Box::new(make_init_transport()));
+        let mut dev =
+            SquidPlusObjectiveTurret::new().with_transport(Box::new(make_init_transport()));
         dev.initialize().unwrap();
         assert!(dev.set_position(2).is_err());
         assert!(dev.set_position(99).is_err());
@@ -360,7 +359,8 @@ mod tests {
 
     #[test]
     fn labels() {
-        let mut dev = SquidPlusObjectiveTurret::new().with_transport(Box::new(make_init_transport()));
+        let mut dev =
+            SquidPlusObjectiveTurret::new().with_transport(Box::new(make_init_transport()));
         dev.initialize().unwrap();
 
         assert_eq!(dev.get_position_label(0).unwrap(), "Pos-1");
@@ -382,5 +382,10 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(SquidPlusObjectiveTurret::new().initialize().is_err());
+    }
+
+    #[test]
+    fn encoder_resolution_parsing_accepts_validated_3n_command() {
+        assert!((SquidPlusObjectiveTurret::resolution_from_cmd("XLS3=1251") - 1250.0).abs() < 0.01);
     }
 }

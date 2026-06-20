@@ -76,16 +76,12 @@ impl SquidPlusFilterWheel {
     }
 
     fn next_cmd_id(&mut self) -> u8 {
-        let id = self.cmd_id;
         self.cmd_id = self.cmd_id.wrapping_add(1);
-        id
+        self.cmd_id
     }
 
     fn send_and_wait(&mut self, pkt: &[u8]) -> MmResult<()> {
-        let t = self
-            .transport
-            .as_mut()
-            .ok_or(MmError::NotConnected)?;
+        let t = self.transport.as_mut().ok_or(MmError::NotConnected)?;
         t.send_bytes(pkt)?;
         let resp = t.receive_bytes(protocol::MSG_LENGTH)?;
         match protocol::parse_response(&resp) {
@@ -194,10 +190,7 @@ impl Device for SquidPlusFilterWheel {
     }
 
     fn is_property_read_only(&self, name: &str) -> bool {
-        self.props
-            .entry(name)
-            .map(|e| e.read_only)
-            .unwrap_or(false)
+        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
 
     fn device_type(&self) -> DeviceType {
@@ -281,28 +274,24 @@ mod tests {
     /// Mock transport that answers the init sequence (home + offset move).
     fn make_init_transport() -> MockTransport {
         MockTransport::new()
-            .expect_binary(&ok_response(0)) // home response
-            .expect_binary(&ok_response(1)) // offset move response
+            .expect_binary(&ok_response(1)) // home response
+            .expect_binary(&ok_response(2)) // offset move response
     }
 
     #[test]
     fn initialize() {
-        let mut dev =
-            SquidPlusFilterWheel::new().with_transport(Box::new(make_init_transport()));
+        let mut dev = SquidPlusFilterWheel::new().with_transport(Box::new(make_init_transport()));
         dev.initialize().unwrap();
         assert!(dev.initialized);
         assert_eq!(dev.get_position().unwrap(), 0);
 
-        // Verify home packet was sent
-        let sent = &dev.transport.as_ref().unwrap();
-        // Transport is inside the struct — we verified by the fact that init succeeded
-        // (MockTransport would have returned wrong CRC otherwise)
+        // Transport is inside the struct; init success verifies the scripted responses matched.
     }
 
     #[test]
     fn set_position_forward() {
         // Move from 0 → 3: delta = 3, usteps = 3 * 1600 = 4800
-        let t = make_init_transport().expect_binary(&ok_response(2));
+        let t = make_init_transport().expect_binary(&ok_response(3));
         let mut dev = SquidPlusFilterWheel::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_position(3).unwrap();
@@ -313,8 +302,8 @@ mod tests {
     fn set_position_backward() {
         // Move 0→5, then 5→2: delta = -3, usteps = -4800
         let t = make_init_transport()
-            .expect_binary(&ok_response(2)) // 0→5
-            .expect_binary(&ok_response(3)); // 5→2
+            .expect_binary(&ok_response(3)) // 0→5
+            .expect_binary(&ok_response(4)); // 5→2
         let mut dev = SquidPlusFilterWheel::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_position(5).unwrap();
@@ -324,8 +313,7 @@ mod tests {
 
     #[test]
     fn set_position_same_is_noop() {
-        let mut dev =
-            SquidPlusFilterWheel::new().with_transport(Box::new(make_init_transport()));
+        let mut dev = SquidPlusFilterWheel::new().with_transport(Box::new(make_init_transport()));
         dev.initialize().unwrap();
         // No extra binary response needed — same position is a no-op
         dev.set_position(0).unwrap();
@@ -333,8 +321,7 @@ mod tests {
 
     #[test]
     fn out_of_range() {
-        let mut dev =
-            SquidPlusFilterWheel::new().with_transport(Box::new(make_init_transport()));
+        let mut dev = SquidPlusFilterWheel::new().with_transport(Box::new(make_init_transport()));
         dev.initialize().unwrap();
         assert!(dev.set_position(8).is_err());
         assert!(dev.set_position(100).is_err());
@@ -342,8 +329,7 @@ mod tests {
 
     #[test]
     fn labels() {
-        let mut dev =
-            SquidPlusFilterWheel::new().with_transport(Box::new(make_init_transport()));
+        let mut dev = SquidPlusFilterWheel::new().with_transport(Box::new(make_init_transport()));
         dev.initialize().unwrap();
 
         assert_eq!(dev.get_position_label(0).unwrap(), "Filter-0");
@@ -354,7 +340,7 @@ mod tests {
         assert_eq!(dev.get_position_label(0).unwrap(), "DAPI");
 
         // Navigate by label
-        let t = make_init_transport().expect_binary(&ok_response(2));
+        let t = make_init_transport().expect_binary(&ok_response(3));
         let mut dev2 = SquidPlusFilterWheel::new().with_transport(Box::new(t));
         dev2.initialize().unwrap();
         dev2.set_position_label(3, "GFP").unwrap();

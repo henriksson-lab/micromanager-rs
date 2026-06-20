@@ -13,87 +13,138 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
 
 pub struct AsiFW1000 {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     position: u64,
     num_positions: u64,
     labels: Vec<String>,
     gate_open: bool,
+    speed_setting: i64,
+    manual_serial_answer: String,
+    closed_position: String,
 }
 
 impl AsiFW1000 {
     pub fn new() -> Self {
-        let num_positions: u64 = 8;
-        let labels: Vec<String> = (0..num_positions).map(|i| format!("Filter-{}", i)).collect();
+        let num_positions: u64 = 6;
+        let labels: Vec<String> = (0..num_positions).map(|i| format!("State-{}", i)).collect();
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("State", PropertyValue::Integer(0), false).unwrap();
-        props.define_property("Label", PropertyValue::String("Filter-0".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String("State-0".into()), false)
+            .unwrap();
+        props
+            .define_property(
+                "Closed_Position",
+                PropertyValue::String(String::new()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("SpeedSetting", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_property_limits("SpeedSetting", 0.0, 9.0).unwrap();
+        props
+            .define_property("SerialCommand", PropertyValue::String(String::new()), false)
+            .unwrap();
+        props
+            .define_property("SerialResponse", PropertyValue::String(String::new()), true)
+            .unwrap();
 
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
             position: 0,
             num_positions,
             labels,
             gate_open: true,
+            speed_setting: 0,
+            manual_serial_answer: String::new(),
+            closed_position: String::new(),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let cmd = command.to_string();
+    fn cmd(&self, command: &str) -> MmResult<String> {
+        let cmd = format!("{}\r", command);
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
         })
     }
+
+    fn parse_last_word(resp: &str) -> &str {
+        resp.split_whitespace().last().unwrap_or("")
+    }
 }
 
 impl Default for AsiFW1000 {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for AsiFW1000 {
-    fn name(&self) -> &str { "ASI-FW1000" }
-    fn description(&self) -> &str { "ASI FW-1000 filter wheel" }
+    fn name(&self) -> &str {
+        "ASI-FW1000"
+    }
+    fn description(&self) -> &str {
+        "ASI FW-1000 filter wheel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
 
         let ver = self.cmd("VN")?;
-        if ver.len() < 2 {
+        if ver.len() < 3 {
             return Err(MmError::LocallyDefined("No version response".into()));
         }
 
         let nf = self.cmd("NF")?;
-        let n: u64 = nf.trim().parse().unwrap_or(8);
+        let mut n: u64 = Self::parse_last_word(&nf).parse().unwrap_or(6);
+        if n != 6 && n != 8 {
+            n = 6;
+        }
         self.num_positions = n;
-        // Resize labels if needed
-        self.labels = (0..n).map(|i| format!("Filter-{}", i)).collect();
+        self.labels = (0..n).map(|i| format!("State-{}", i)).collect();
+        let allowed: Vec<String> = self
+            .labels
+            .iter()
+            .cloned()
+            .chain(std::iter::once(String::new()))
+            .collect();
+        let allowed_refs: Vec<&str> = allowed.iter().map(String::as_str).collect();
+        self.props
+            .set_allowed_values("Closed_Position", &allowed_refs)?;
 
         let pos_str = self.cmd("MP")?;
-        self.position = pos_str.trim().parse().unwrap_or(0);
+        self.position = Self::parse_last_word(&pos_str).parse().unwrap_or(0);
 
         self.initialized = true;
         Ok(())
@@ -108,8 +159,14 @@ impl Device for AsiFW1000 {
         match name {
             "State" => Ok(PropertyValue::Integer(self.position as i64)),
             "Label" => Ok(PropertyValue::String(
-                self.labels.get(self.position as usize).cloned().unwrap_or_default()
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
             )),
+            "SpeedSetting" => Ok(PropertyValue::Integer(self.speed_setting)),
+            "SerialResponse" => Ok(PropertyValue::String(self.manual_serial_answer.clone())),
+            "Closed_Position" => Ok(PropertyValue::String(self.closed_position.clone())),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -124,17 +181,54 @@ impl Device for AsiFW1000 {
                 let label = val.as_str().to_string();
                 self.set_position_by_label(&label)
             }
+            "Closed_Position" => {
+                let label = val.as_str().to_string();
+                self.props.set(name, PropertyValue::String(label.clone()))?;
+                self.closed_position = label;
+                Ok(())
+            }
+            "SpeedSetting" => {
+                let speed = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(speed))?;
+                if self.initialized {
+                    let resp = self.cmd(&format!("SV {}", speed))?;
+                    if !resp.starts_with("SV") {
+                        return Err(MmError::SerialInvalidResponse);
+                    }
+                }
+                self.speed_setting = speed;
+                Ok(())
+            }
+            "SerialCommand" => {
+                let command = val.as_str().to_string();
+                self.manual_serial_answer = self.cmd(&command)?;
+                self.props.set(name, PropertyValue::String(command))?;
+                if let Some(e) = self.props.entry_mut("SerialResponse") {
+                    e.value = PropertyValue::String(self.manual_serial_answer.clone());
+                }
+                Ok(())
+            }
             _ => self.props.set(name, val),
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        self.cmd("?")
+            .map(|resp| resp.trim() == "3")
+            .unwrap_or(false)
+    }
 }
 
 impl StateDevice for AsiFW1000 {
@@ -143,22 +237,41 @@ impl StateDevice for AsiFW1000 {
             return Err(MmError::UnknownPosition);
         }
         if self.initialized {
-            self.cmd(&format!("MP {}", pos))?;
+            let resp = self.cmd(&format!("MP {}", pos))?;
+            let pos_read: u64 = Self::parse_last_word(&resp)
+                .parse()
+                .map_err(|_| MmError::LocallyDefined("Error setting filter wheel".into()))?;
+            if pos_read != pos {
+                return Err(MmError::LocallyDefined("Error setting filter wheel".into()));
+            }
         }
         self.position = pos;
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
+    fn get_position(&self) -> MmResult<u64> {
+        let pos_str = self.cmd("MP")?;
+        Self::parse_last_word(&pos_str)
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)
+    }
 
-    fn get_number_of_positions(&self) -> u64 { self.num_positions }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned().ok_or(MmError::UnknownPosition)
+        self.labels
+            .get(pos as usize)
+            .cloned()
+            .ok_or(MmError::UnknownPosition)
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
@@ -173,10 +286,16 @@ impl StateDevice for AsiFW1000 {
 
     fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
         self.gate_open = open;
+        if !open && !self.closed_position.is_empty() {
+            let label = self.closed_position.clone();
+            self.set_position_by_label(&label)?;
+        }
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]
@@ -186,14 +305,15 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("VN", "FW-1000 v2.1")
-            .expect("NF", "8")
-            .expect("MP", "0")
+            .expect("VN\r", "FW-1000 v2.1")
+            .expect("NF\r", "NF 8")
+            .expect("MP\r", "MP 0")
     }
 
     #[test]
     fn initialize() {
-        let mut fw = AsiFW1000::new().with_transport(Box::new(make_transport()));
+        let t = make_transport().expect("MP\r", "MP 0");
+        let mut fw = AsiFW1000::new().with_transport(Box::new(t));
         fw.initialize().unwrap();
         assert_eq!(fw.get_position().unwrap(), 0);
         assert_eq!(fw.get_number_of_positions(), 8);
@@ -201,7 +321,9 @@ mod tests {
 
     #[test]
     fn set_position() {
-        let t = make_transport().expect("MP 5", "5");
+        let t = make_transport()
+            .expect("MP 5\r", "MP 5")
+            .expect("MP\r", "MP 5");
         let mut fw = AsiFW1000::new().with_transport(Box::new(t));
         fw.initialize().unwrap();
         fw.set_position(5).unwrap();
@@ -217,12 +339,26 @@ mod tests {
 
     #[test]
     fn label_navigation() {
-        let t = make_transport().any("3");
+        let t = make_transport()
+            .expect("MP 3\r", "MP 3")
+            .expect("MP\r", "MP 3");
         let mut fw = AsiFW1000::new().with_transport(Box::new(t));
         fw.initialize().unwrap();
         fw.set_position_label(3, "DAPI").unwrap();
         fw.set_position_by_label("DAPI").unwrap();
         assert_eq!(fw.get_position().unwrap(), 3);
+    }
+
+    #[test]
+    fn invalid_position_count_falls_back_to_six() {
+        let t = MockTransport::new()
+            .expect("VN\r", "FW-1000 v2.1")
+            .expect("NF\r", "NF 7")
+            .expect("MP\r", "MP 0");
+        let mut fw = AsiFW1000::new().with_transport(Box::new(t));
+        fw.initialize().unwrap();
+        assert_eq!(fw.get_number_of_positions(), 6);
+        assert!(fw.set_position(6).is_err());
     }
 
     #[test]

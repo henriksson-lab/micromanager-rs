@@ -21,18 +21,20 @@ fn cstr(s: &str) -> CString {
 // ── Camera struct ──────────────────────────────────────────────────────────────
 
 pub struct TwainCamera {
-    props:   PropertyMap,
-    ctx:     *mut ffi::TwainCtx,
+    props: PropertyMap,
+    ctx: *mut ffi::TwainCtx,
 
     // Pre-init
-    source_name: String,   // empty = default source
-    exposure_ms: f64,      // stored but not pushed to TWAIN (many sources ignore it)
+    source_name: String, // empty = default source
+    exposure_ms: f64,    // stored but not pushed to TWAIN (many sources ignore it)
+    pixel_type: String,
+    binning: i32,
 
     // Post-init (updated after every snap)
-    img_width:       u32,
-    img_height:      u32,
+    img_width: u32,
+    img_height: u32,
     bytes_per_pixel: u32,
-    bit_depth:       u32,
+    bit_depth: u32,
 
     capturing: bool,
 }
@@ -40,41 +42,92 @@ pub struct TwainCamera {
 impl TwainCamera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("SourceName",  PropertyValue::String("".into()),  false).unwrap();
-        props.define_property("Exposure",    PropertyValue::Float(100.0),       false).unwrap();
-        props.define_property("Width",       PropertyValue::Integer(0),         true).unwrap();
-        props.define_property("Height",      PropertyValue::Integer(0),         true).unwrap();
-        props.define_property("BitDepth",    PropertyValue::Integer(8),         true).unwrap();
-        props.define_property("BytesPerPixel", PropertyValue::Integer(1),       true).unwrap();
+        props
+            .define_property("TwainCamera", PropertyValue::String("".into()), false)
+            .unwrap();
+        props
+            .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props.set_allowed_values("Binning", &["1"]).unwrap();
+        props
+            .define_property("PixelType", PropertyValue::String("32bitRGB".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("PixelType", &["32bitRGB"])
+            .unwrap();
+        props
+            .define_property("Exposure", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props
+            .define_property("ScanMode", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property(
+                "vendor settings",
+                PropertyValue::String("Hide".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("vendor settings", &["Show", "Hide"])
+            .unwrap();
+        props
+            .define_property("Width", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Height", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("BitDepth", PropertyValue::Integer(8), true)
+            .unwrap();
+        props
+            .define_property("BytesPerPixel", PropertyValue::Integer(1), true)
+            .unwrap();
 
         Self {
             props,
             ctx: std::ptr::null_mut(),
-            source_name:     String::new(),
-            exposure_ms:     100.0,
-            img_width:       0,
-            img_height:      0,
+            source_name: String::new(),
+            exposure_ms: 10.0,
+            pixel_type: "32bitRGB".into(),
+            binning: 1,
+            img_width: 0,
+            img_height: 0,
             bytes_per_pixel: 1,
-            bit_depth:       8,
-            capturing:       false,
+            bit_depth: 8,
+            capturing: false,
         }
     }
 
     fn check_open(&self) -> MmResult<()> {
-        if self.ctx.is_null() { Err(MmError::NotConnected) } else { Ok(()) }
+        if self.ctx.is_null() {
+            Err(MmError::NotConnected)
+        } else {
+            Ok(())
+        }
     }
 
     fn sync_dims(&mut self) {
-        if self.ctx.is_null() { return; }
-        self.img_width       = unsafe { ffi::twain_get_image_width(self.ctx)       } as u32;
-        self.img_height      = unsafe { ffi::twain_get_image_height(self.ctx)      } as u32;
-        self.bytes_per_pixel = unsafe { ffi::twain_get_bytes_per_pixel(self.ctx)   } as u32;
-        self.bit_depth       = unsafe { ffi::twain_get_bit_depth(self.ctx)         } as u32;
+        if self.ctx.is_null() {
+            return;
+        }
+        self.img_width = unsafe { ffi::twain_get_image_width(self.ctx) } as u32;
+        self.img_height = unsafe { ffi::twain_get_image_height(self.ctx) } as u32;
+        self.bytes_per_pixel = unsafe { ffi::twain_get_bytes_per_pixel(self.ctx) } as u32;
+        self.bit_depth = unsafe { ffi::twain_get_bit_depth(self.ctx) } as u32;
 
-        self.props.entry_mut("Width").map(|e| e.value = PropertyValue::Integer(self.img_width as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
-        self.props.entry_mut("BitDepth").map(|e| e.value = PropertyValue::Integer(self.bit_depth as i64));
-        self.props.entry_mut("BytesPerPixel").map(|e| e.value = PropertyValue::Integer(self.bytes_per_pixel as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.img_width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
+        self.props
+            .entry_mut("BitDepth")
+            .map(|e| e.value = PropertyValue::Integer(self.bit_depth as i64));
+        self.props
+            .entry_mut("BytesPerPixel")
+            .map(|e| e.value = PropertyValue::Integer(self.bytes_per_pixel as i64));
     }
 
     /// Snap timeout: generous overhead above exposure, minimum 30 s (TWAIN
@@ -85,7 +138,9 @@ impl TwainCamera {
 }
 
 impl Default for TwainCamera {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for TwainCamera {
@@ -101,11 +156,17 @@ impl Drop for TwainCamera {
 // ── Device trait ───────────────────────────────────────────────────────────────
 
 impl Device for TwainCamera {
-    fn name(&self) -> &str { "TwainCamera" }
-    fn description(&self) -> &str { "Generic TWAIN camera adapter" }
+    fn name(&self) -> &str {
+        "TwainCam"
+    }
+    fn description(&self) -> &str {
+        "Twain camera"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if !self.ctx.is_null() { return Ok(()); }
+        if !self.ctx.is_null() {
+            return Ok(());
+        }
 
         if unsafe { ffi::twain_init() } != 0 {
             return Err(MmError::LocallyDefined("TWAIN: failed to open DSM".into()));
@@ -115,19 +176,23 @@ impl Device for TwainCamera {
         let mut disc_buf = vec![0i8; BUF];
         let count = unsafe { ffi::twain_find_sources(disc_buf.as_mut_ptr(), BUF as i32) };
         if count < 0 {
-            return Err(MmError::LocallyDefined("TWAIN: source enumeration failed".into()));
+            return Err(MmError::LocallyDefined(
+                "TWAIN: source enumeration failed".into(),
+            ));
         }
         if count == 0 {
-            return Err(MmError::LocallyDefined("TWAIN: no TWAIN sources found".into()));
+            return Err(MmError::LocallyDefined(
+                "TWAIN: no TWAIN sources found".into(),
+            ));
         }
 
-        // Build allowed values list for SourceName property.
+        // Build allowed values list for TwainCamera property.
         let sources_str = unsafe { CStr::from_ptr(disc_buf.as_ptr()) }
             .to_string_lossy()
             .into_owned();
         let source_names: Vec<&str> = sources_str.split('\n').collect();
         let refs: Vec<&str> = source_names.iter().map(|s| s.trim()).collect();
-        self.props.set_allowed_values("SourceName", &refs).ok();
+        self.props.set_allowed_values("TwainCamera", &refs).ok();
 
         // Open selected source (or default if name is empty).
         let name_cstr = cstr(&self.source_name);
@@ -140,7 +205,11 @@ impl Device for TwainCamera {
         if ptr.is_null() {
             return Err(MmError::LocallyDefined(format!(
                 "TWAIN: failed to open source '{}'",
-                if self.source_name.is_empty() { "<default>" } else { &self.source_name }
+                if self.source_name.is_empty() {
+                    "<default>"
+                } else {
+                    &self.source_name
+                }
             )));
         }
         self.ctx = ptr;
@@ -152,7 +221,8 @@ impl Device for TwainCamera {
                 .into_owned()
         };
         self.source_name = opened_name.clone();
-        self.props.entry_mut("SourceName")
+        self.props
+            .entry_mut("TwainCamera")
             .map(|e| e.value = PropertyValue::String(opened_name));
 
         Ok(())
@@ -169,18 +239,21 @@ impl Device for TwainCamera {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "SourceName" => Ok(PropertyValue::String(self.source_name.clone())),
-            "Exposure"   => Ok(PropertyValue::Float(self.exposure_ms)),
+            "TwainCamera" => Ok(PropertyValue::String(self.source_name.clone())),
+            "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
+            "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
+            "PixelType" => Ok(PropertyValue::String(self.pixel_type.clone())),
+            "vendor settings" => Ok(PropertyValue::String("Hide".into())),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "SourceName" => {
+            "TwainCamera" => {
                 if !self.ctx.is_null() {
                     return Err(MmError::LocallyDefined(
-                        "SourceName cannot be changed after initialize()".into(),
+                        "TwainCamera cannot be changed after initialize()".into(),
                     ));
                 }
                 self.source_name = val.as_str().to_string();
@@ -190,17 +263,43 @@ impl Device for TwainCamera {
                 self.exposure_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, PropertyValue::Float(self.exposure_ms))
             }
+            "Binning" => {
+                let binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
+                self.props
+                    .set(name, PropertyValue::Integer(binning as i64))?;
+                self.binning = binning;
+                Ok(())
+            }
+            "PixelType" => {
+                let pixel_type = val.as_str().to_string();
+                self.props
+                    .set(name, PropertyValue::String(pixel_type.clone()))?;
+                self.pixel_type = pixel_type;
+                Ok(())
+            }
+            "vendor settings" => {
+                // Upstream resets this action property to Hide after a Show request.
+                self.props.set(name, PropertyValue::String("Hide".into()))
+            }
             _ => self.props.set(name, val),
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Camera }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Camera
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 // ── Camera trait ───────────────────────────────────────────────────────────────
@@ -210,13 +309,17 @@ impl Camera for TwainCamera {
         self.check_open()?;
         let timeout = self.snap_timeout_ms();
         let rc = unsafe { ffi::twain_snap(self.ctx, timeout) };
-        if rc != 0 { return Err(MmError::SnapImageFailed); }
+        if rc != 0 {
+            return Err(MmError::SnapImageFailed);
+        }
         self.sync_dims();
         Ok(())
     }
 
     fn get_image_buffer(&self) -> MmResult<&[u8]> {
-        if self.ctx.is_null() { return Err(MmError::NotConnected); }
+        if self.ctx.is_null() {
+            return Err(MmError::NotConnected);
+        }
         let ptr = unsafe { ffi::twain_get_frame_ptr(self.ctx) };
         if ptr.is_null() {
             return Err(MmError::LocallyDefined("No image captured yet".into()));
@@ -230,24 +333,45 @@ impl Camera for TwainCamera {
         Ok(unsafe { std::slice::from_raw_parts(ptr, bytes) })
     }
 
-    fn get_image_width(&self) -> u32  { self.img_width }
-    fn get_image_height(&self) -> u32 { self.img_height }
-    fn get_image_bytes_per_pixel(&self) -> u32 { self.bytes_per_pixel.max(1) }
-    fn get_bit_depth(&self) -> u32 { self.bit_depth }
-    fn get_number_of_components(&self) -> u32 {
-        // TWAIN commonly delivers 8-bit gray (1 bpp) or 24-bit RGB (3 bpp).
-        if self.bytes_per_pixel >= 3 { 3 } else { 1 }
+    fn get_image_width(&self) -> u32 {
+        self.img_width
     }
-    fn get_number_of_channels(&self) -> u32 { 1 }
-    fn get_exposure(&self) -> f64 { self.exposure_ms }
+    fn get_image_height(&self) -> u32 {
+        self.img_height
+    }
+    fn get_image_bytes_per_pixel(&self) -> u32 {
+        self.bytes_per_pixel.max(1)
+    }
+    fn get_bit_depth(&self) -> u32 {
+        self.bit_depth
+    }
+    fn get_number_of_components(&self) -> u32 {
+        match self.pixel_type.as_str() {
+            "32bitRGB" => 4,
+            "8bit" | "16bit" => 1,
+            _ => 0,
+        }
+    }
+    fn get_number_of_channels(&self) -> u32 {
+        1
+    }
+    fn get_exposure(&self) -> f64 {
+        self.exposure_ms
+    }
 
     fn set_exposure(&mut self, exp_ms: f64) {
         self.exposure_ms = exp_ms;
-        self.props.set("Exposure", PropertyValue::Float(exp_ms)).ok();
+        self.props
+            .set("Exposure", PropertyValue::Float(exp_ms))
+            .ok();
     }
 
-    fn get_binning(&self) -> i32 { 1 }
-    fn set_binning(&mut self, _bin: i32) -> MmResult<()> { Ok(()) }
+    fn get_binning(&self) -> i32 {
+        self.binning
+    }
+    fn set_binning(&mut self, bin: i32) -> MmResult<()> {
+        self.set_property("Binning", PropertyValue::Integer(bin as i64))
+    }
 
     fn get_roi(&self) -> MmResult<ImageRoi> {
         Ok(ImageRoi::new(0, 0, self.img_width, self.img_height))
@@ -259,7 +383,9 @@ impl Camera for TwainCamera {
         Ok(())
     }
 
-    fn clear_roi(&mut self) -> MmResult<()> { Ok(()) }
+    fn clear_roi(&mut self) -> MmResult<()> {
+        Ok(())
+    }
 
     fn start_sequence_acquisition(&mut self, _count: i64, _interval_ms: f64) -> MmResult<()> {
         self.check_open()?;
@@ -274,7 +400,9 @@ impl Camera for TwainCamera {
         Ok(())
     }
 
-    fn is_capturing(&self) -> bool { self.capturing }
+    fn is_capturing(&self) -> bool {
+        self.capturing
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -287,8 +415,13 @@ mod tests {
     fn default_properties() {
         let d = TwainCamera::new();
         assert_eq!(d.device_type(), DeviceType::Camera);
-        assert_eq!(d.get_exposure(), 100.0);
+        assert_eq!(d.name(), "TwainCam");
+        assert_eq!(d.get_exposure(), 10.0);
         assert_eq!(d.get_binning(), 1);
+        assert_eq!(
+            d.get_property("PixelType").unwrap(),
+            PropertyValue::String("32bitRGB".into())
+        );
         assert!(!d.is_capturing());
         assert_eq!(d.get_number_of_channels(), 1);
     }
@@ -296,14 +429,16 @@ mod tests {
     #[test]
     fn set_source_name_pre_init() {
         let mut d = TwainCamera::new();
-        d.set_property("SourceName", PropertyValue::String("MyScanner".into())).unwrap();
+        d.set_property("TwainCamera", PropertyValue::String("MyScanner".into()))
+            .unwrap();
         assert_eq!(d.source_name, "MyScanner");
     }
 
     #[test]
     fn set_exposure_pre_init() {
         let mut d = TwainCamera::new();
-        d.set_property("Exposure", PropertyValue::Float(250.0)).unwrap();
+        d.set_property("Exposure", PropertyValue::Float(250.0))
+            .unwrap();
         assert_eq!(d.exposure_ms, 250.0);
         assert_eq!(d.get_exposure(), 250.0);
     }
@@ -334,17 +469,37 @@ mod tests {
         assert!(d.is_property_read_only("Height"));
         assert!(d.is_property_read_only("BitDepth"));
         assert!(d.is_property_read_only("BytesPerPixel"));
-        assert!(!d.is_property_read_only("SourceName"));
+        assert!(!d.is_property_read_only("TwainCamera"));
         assert!(!d.is_property_read_only("Exposure"));
+    }
+
+    #[test]
+    fn twain_action_and_mode_properties_match_upstream_defaults() {
+        let mut d = TwainCamera::new();
+        assert!(d.has_property("TwainCamera"));
+        assert!(d.has_property("ScanMode"));
+        assert!(d.has_property("vendor settings"));
+        assert!(d
+            .set_property("Binning", PropertyValue::Integer(2))
+            .is_err());
+        assert!(d
+            .set_property("PixelType", PropertyValue::String("8bit".into()))
+            .is_err());
+        d.set_property("vendor settings", PropertyValue::String("Show".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("vendor settings").unwrap(),
+            PropertyValue::String("Hide".into())
+        );
     }
 
     #[test]
     fn components_by_bit_depth() {
         let mut d = TwainCamera::new();
-        d.bytes_per_pixel = 1;
-        assert_eq!(d.get_number_of_components(), 1);   // 8-bit gray
-        d.bytes_per_pixel = 3;
-        assert_eq!(d.get_number_of_components(), 3);   // 24-bit RGB
+        d.pixel_type = "8bit".into();
+        assert_eq!(d.get_number_of_components(), 1); // 8-bit gray
+        d.pixel_type = "32bitRGB".into();
+        assert_eq!(d.get_number_of_components(), 4);
     }
 
     #[test]

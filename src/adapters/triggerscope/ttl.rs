@@ -1,8 +1,8 @@
 /// TriggerScope TTL channel — digital output.
 ///
 /// ASCII serial protocol, `\n` terminated.
-///   Set TTL high: `"TTL<ch> 1\n"` → `"TTL<ch> OK\n"`
-///   Set TTL low:  `"TTL<ch> 0\n"` → `"TTL<ch> OK\n"`
+///   Set TTL high: `"TTL<ch>,1\n"` → controller response
+///   Set TTL low:  `"TTL<ch>,0\n"` → controller response
 ///   Get TTL:      `"TTL<ch>?\n"`   → `"TTL<ch> <0|1>\n"`
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
@@ -22,8 +22,12 @@ pub struct TriggerScopeTTL {
 impl TriggerScopeTTL {
     pub fn new(channel: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Channel", PropertyValue::Integer(channel as i64), true).unwrap();
-        props.define_property("State", PropertyValue::Integer(0), false).unwrap();
+        props
+            .define_property("Channel", PropertyValue::Integer(channel as i64), true)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -56,34 +60,30 @@ impl TriggerScopeTTL {
     fn send_state(&mut self, high: bool) -> MmResult<()> {
         let ch = self.channel;
         let val = if high { 1 } else { 0 };
-        let cmd = format!("TTL{:02} {}\n", ch, val);
-        let resp = self.send_recv(&cmd)?;
-        if !resp.contains("OK") {
-            return Err(MmError::SerialInvalidResponse);
-        }
+        let cmd = format!("TTL{},{}\n", ch, val);
+        let _ = self.send_recv(&cmd)?;
         Ok(())
     }
 }
 
 impl Device for TriggerScopeTTL {
-    fn name(&self) -> &str { "TriggerScopeTTL" }
-    fn description(&self) -> &str { "ARC TriggerScope TTL channel" }
+    fn name(&self) -> &str {
+        "TriggerScopeTTL"
+    }
+    fn description(&self) -> &str {
+        "ARC TriggerScope TTL channel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        self.send_state(false)?;
-        self.state = false;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.send_state(false);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
@@ -104,18 +104,28 @@ impl Device for TriggerScopeTTL {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for TriggerScopeTTL {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
-        if pos > 1 { return Err(MmError::UnknownPosition); }
+        if pos > 1 {
+            return Err(MmError::UnknownPosition);
+        }
         let high = pos == 1;
         if self.initialized {
             self.send_state(high)?;
@@ -124,8 +134,12 @@ impl StateDevice for TriggerScopeTTL {
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(if self.state { 1 } else { 0 }) }
-    fn get_number_of_positions(&self) -> u64 { 2 }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(if self.state { 1 } else { 0 })
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        2
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
         match pos {
@@ -137,7 +151,7 @@ impl StateDevice for TriggerScopeTTL {
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
         match label {
-            "Low"  => self.set_position(0),
+            "Low" => self.set_position(0),
             "High" => self.set_position(1),
             _ => Err(MmError::UnknownLabel(label.to_string())),
         }
@@ -152,7 +166,9 @@ impl StateDevice for TriggerScopeTTL {
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]
@@ -162,8 +178,7 @@ mod tests {
 
     #[test]
     fn ttl_initialize_low() {
-        let t = MockTransport::new()
-            .expect("TTL01 0\n", "TTL01 OK");
+        let t = MockTransport::new();
         let mut ttl = TriggerScopeTTL::new(1).with_transport(Box::new(t));
         ttl.initialize().unwrap();
         assert_eq!(ttl.get_position().unwrap(), 0);
@@ -172,9 +187,8 @@ mod tests {
     #[test]
     fn ttl_set_high_then_low() {
         let t = MockTransport::new()
-            .expect("TTL03 0\n", "TTL03 OK")
-            .expect("TTL03 1\n", "TTL03 OK")
-            .expect("TTL03 0\n", "TTL03 OK");
+            .expect("TTL3,1\n", "TTL3 OK")
+            .expect("TTL3,0\n", "TTL3 OK");
         let mut ttl = TriggerScopeTTL::new(3).with_transport(Box::new(t));
         ttl.initialize().unwrap();
         ttl.set_position(1).unwrap();
@@ -185,10 +199,18 @@ mod tests {
 
     #[test]
     fn ttl_invalid_position() {
-        let t = MockTransport::new()
-            .expect("TTL01 0\n", "TTL01 OK");
+        let t = MockTransport::new();
         let mut ttl = TriggerScopeTTL::new(1).with_transport(Box::new(t));
         ttl.initialize().unwrap();
         assert!(ttl.set_position(2).is_err());
+    }
+
+    #[test]
+    fn ttl_accepts_non_ok_echo_response() {
+        let t = MockTransport::new().expect("TTL3,1\n", "TTL3,1");
+        let mut ttl = TriggerScopeTTL::new(3).with_transport(Box::new(t));
+        ttl.initialize().unwrap();
+        ttl.set_position(1).unwrap();
+        assert_eq!(ttl.get_position().unwrap(), 1);
     }
 }

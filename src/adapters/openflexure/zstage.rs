@@ -18,7 +18,9 @@ pub struct OfZStage {
 impl OfZStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("StepSizeUm", PropertyValue::Float(0.05), false).unwrap();
+        props
+            .define_property("StepSizeUm", PropertyValue::Float(0.05), false)
+            .unwrap();
         Self {
             props,
             initialized: false,
@@ -43,51 +45,76 @@ impl OfZStage {
         let mut parts = resp.split_whitespace();
         let _x: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         let _y: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let z: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(self.steps_z);
+        let z: i64 = parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(self.steps_z);
         self.steps_z = z;
         Ok(())
     }
 }
 
 impl Default for OfZStage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for OfZStage {
-    fn name(&self) -> &str { "OFZStage" }
-    fn description(&self) -> &str { "OpenFlexure Z stage" }
+    fn name(&self) -> &str {
+        "OFZStage"
+    }
+    fn description(&self) -> &str {
+        "OpenFlexure Z stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.commander.is_none() { return Err(MmError::CommHubMissing); }
+        if self.commander.is_none() {
+            return Err(MmError::CommHubMissing);
+        }
+        let response = self.send("blocking_moves false")?;
+        if !response.contains("done") {
+            return Err(MmError::SerialInvalidResponse);
+        }
         self.sync_state()?;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized { let _ = self.send("release"); self.initialized = false; }
+        if self.initialized {
+            let _ = self.send("release");
+            self.initialized = false;
+        }
         Ok(())
     }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for OfZStage {
-    fn set_position_um(&mut self, pos: f64) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
-        let target = (pos / self.step_size_um).round() as i64;
-        let delta = target - self.steps_z;
-        if delta != 0 { self.send(&format!("mrz {}", delta))?; }
-        self.steps_z = target;
-        Ok(())
+    fn set_position_um(&mut self, _pos: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
     }
 
     fn get_position_um(&self) -> MmResult<f64> {
@@ -95,26 +122,36 @@ impl Stage for OfZStage {
     }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
         let delta_steps = (d / self.step_size_um).round() as i64;
-        if delta_steps != 0 { self.send(&format!("mrz {}", delta_steps))?; }
+        if delta_steps != 0 {
+            self.send(&format!("mrz {}", delta_steps))?;
+        }
         self.steps_z += delta_steps;
         Ok(())
     }
 
-    fn home(&mut self) -> MmResult<()> { self.set_position_um(0.0) }
-
-    fn stop(&mut self) -> MmResult<()> {
-        self.send("stop")?;
-        let _ = self.sync_state();
-        Ok(())
+    fn home(&mut self) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
     }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((0.0, 0.0)) }  // unlimited
+    fn stop(&mut self) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Err(MmError::UnsupportedCommand)
+    }
 
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -126,7 +163,13 @@ mod tests {
         let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let commander: Commander = Arc::new(move |cmd| {
             log.lock().unwrap().push(cmd.to_string());
-            if cmd == "p" { Ok("0 0 0".to_string()) } else { Ok("ok".to_string()) }
+            if cmd == "blocking_moves false" {
+                Ok("done".to_string())
+            } else if cmd == "p" {
+                Ok("0 0 0".to_string())
+            } else {
+                Ok("ok".to_string())
+            }
         });
         OfZStage::new().with_commander(commander)
     }

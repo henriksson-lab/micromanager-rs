@@ -19,6 +19,7 @@ const SCREW_PITCH_Z_MM: f64 = 0.3;
 const MICROSTEPPING_Z: f64 = 256.0;
 const FULLSTEPS_PER_REV_Z: f64 = 200.0;
 const USTEPS_PER_MM_Z: f64 = MICROSTEPPING_Z * FULLSTEPS_PER_REV_Z / SCREW_PITCH_Z_MM;
+const DIRECTION_Z: f64 = -1.0;
 
 pub struct SquidPlusZStage {
     props: PropertyMap,
@@ -34,7 +35,6 @@ impl SquidPlusZStage {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
-        common::define_illumination_props(&mut props);
 
         Self {
             props,
@@ -51,9 +51,8 @@ impl SquidPlusZStage {
     }
 
     fn next_cmd_id(&mut self) -> u8 {
-        let id = self.cmd_id;
         self.cmd_id = self.cmd_id.wrapping_add(1);
-        id
+        self.cmd_id
     }
 
     fn send_and_wait(&mut self, pkt: &[u8]) -> MmResult<()> {
@@ -62,7 +61,7 @@ impl SquidPlusZStage {
     }
 
     fn um_to_usteps(um: f64) -> i32 {
-        (um / 1000.0 * USTEPS_PER_MM_Z).round() as i32
+        (um / 1000.0 * USTEPS_PER_MM_Z / DIRECTION_Z) as i32
     }
 }
 
@@ -84,22 +83,13 @@ impl Device for SquidPlusZStage {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        let id = self.next_cmd_id();
-        let pkt = protocol::build_home(id, protocol::AXIS_Z, protocol::HOME_NEGATIVE);
-        self.send_and_wait(&pkt)?;
         self.z_pos_um = 0.0;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            // Turn off illumination on shutdown
-            let id = self.next_cmd_id();
-            let pkt = protocol::build_turn_off_illumination(id);
-            let _ = self.send_and_wait(&pkt);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
@@ -108,17 +98,6 @@ impl Device for SquidPlusZStage {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        // Try illumination dispatch first
-        if let Some(t) = self.transport.as_mut() {
-            if let Some(result) =
-                common::handle_illumination_set(name, &val, t.as_mut(), &mut self.cmd_id)
-            {
-                if result.is_ok() {
-                    self.props.set(name, val)?;
-                }
-                return result;
-            }
-        }
         self.props.set(name, val)
     }
 
@@ -131,10 +110,7 @@ impl Device for SquidPlusZStage {
     }
 
     fn is_property_read_only(&self, name: &str) -> bool {
-        self.props
-            .entry(name)
-            .map(|e| e.read_only)
-            .unwrap_or(false)
+        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
 
     fn device_type(&self) -> DeviceType {
@@ -148,10 +124,9 @@ impl Device for SquidPlusZStage {
 
 impl Stage for SquidPlusZStage {
     fn set_position_um(&mut self, pos: f64) -> MmResult<()> {
-        let delta = pos - self.z_pos_um;
-        let usteps = Self::um_to_usteps(delta);
+        let usteps = Self::um_to_usteps(pos);
         let id = self.next_cmd_id();
-        let pkt = protocol::build_move(id, protocol::CMD_MOVE_Z, usteps);
+        let pkt = protocol::build_move(id, protocol::CMD_MOVETO_Z, usteps);
         self.send_and_wait(&pkt)?;
         self.z_pos_um = pos;
         Ok(())
@@ -172,18 +147,18 @@ impl Stage for SquidPlusZStage {
 
     fn home(&mut self) -> MmResult<()> {
         let id = self.next_cmd_id();
-        let pkt = protocol::build_home(id, protocol::AXIS_Z, protocol::HOME_NEGATIVE);
+        let pkt = protocol::build_home(id, protocol::AXIS_Z, protocol::HOME_POSITIVE);
         self.send_and_wait(&pkt)?;
         self.z_pos_um = 0.0;
         Ok(())
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        Ok(())
+        Err(MmError::UnsupportedCommand)
     }
 
     fn get_limits(&self) -> MmResult<(f64, f64)> {
-        Ok((0.0, 0.0))
+        Err(MmError::UnsupportedCommand)
     }
 
     fn get_focus_direction(&self) -> FocusDirection {
@@ -209,7 +184,7 @@ mod tests {
     }
 
     fn make_init_transport() -> MockTransport {
-        MockTransport::new().expect_binary(&ok_response(0)) // home Z
+        MockTransport::new()
     }
 
     #[test]
@@ -222,7 +197,6 @@ mod tests {
 
     #[test]
     fn set_position_um() {
-        // 10 µm → 10/1000 * 170666.667 ≈ 1707 usteps
         let t = make_init_transport().expect_binary(&ok_response(1));
         let mut dev = SquidPlusZStage::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
@@ -254,29 +228,9 @@ mod tests {
 
     #[test]
     fn ustep_conversion() {
-        // 1 mm = 1000 µm → 170667 usteps
+        // 1 mm = 1000 µm, default C++ direction is negative and casts toward zero.
         let usteps = SquidPlusZStage::um_to_usteps(1000.0);
-        assert_eq!(usteps, 170667);
-    }
-
-    #[test]
-    fn illumination_on_off() {
-        let t = make_init_transport()
-            .expect_binary(&ok_response(1))  // turn on
-            .expect_binary(&ok_response(2)); // turn off
-        let mut dev = SquidPlusZStage::new().with_transport(Box::new(t));
-        dev.initialize().unwrap();
-        dev.set_property("Illumination-On", PropertyValue::Integer(1)).unwrap();
-        dev.set_property("Illumination-On", PropertyValue::Integer(0)).unwrap();
-    }
-
-    #[test]
-    fn set_illumination_intensity() {
-        let t = make_init_transport().expect_binary(&ok_response(1));
-        let mut dev = SquidPlusZStage::new().with_transport(Box::new(t));
-        dev.initialize().unwrap();
-        dev.set_property("Illumination-405nm", PropertyValue::Float(50.0))
-            .unwrap();
+        assert_eq!(usteps, -170666);
     }
 
     #[test]

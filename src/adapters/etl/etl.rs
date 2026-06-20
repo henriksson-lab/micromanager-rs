@@ -14,8 +14,8 @@
 ///   [0x41, 0x72, 0x00, 0x00, 0xB4, 0x27] (hard-coded in C++ source)
 ///   Response: 6 bytes; bytes [1..2] encode current value
 ///
-/// Initialisation handshake:
-///   Send "Start" via serial (ASCII, no CRC).
+/// Initialisation calls the upstream `Send("Start")` path, but that send helper
+/// is commented out in the C++ source and performs no serial write.
 ///
 /// Current range: -293 mA to +293 mA.
 use crate::error::{MmError, MmResult};
@@ -60,7 +60,14 @@ fn build_set_current_cmd(current_ma: f64) -> [u8; 6] {
     let payload = [0x41u8, 0x77, val_hi, val_lo];
     let crc = crc16_ibm(&payload);
     // CRC is appended little-endian (lo byte first)
-    [0x41, 0x77, val_hi, val_lo, (crc & 0xFF) as u8, (crc >> 8) as u8]
+    [
+        0x41,
+        0x77,
+        val_hi,
+        val_lo,
+        (crc & 0xFF) as u8,
+        (crc >> 8) as u8,
+    ]
 }
 
 pub struct EtlDevice {
@@ -114,9 +121,7 @@ impl EtlDevice {
 
     /// Set the lens current in mA.
     pub fn set_current(&mut self, current_ma: f64) -> MmResult<()> {
-        let clamped = current_ma
-            .max(self.min_current_ma)
-            .min(self.max_current_ma);
+        let clamped = current_ma.max(self.min_current_ma).min(self.max_current_ma);
         let cmd = build_set_current_cmd(clamped);
         self.call_transport(|t| t.send_bytes(&cmd))?;
         self.current_ma = clamped;
@@ -158,35 +163,51 @@ impl Device for EtlDevice {
         "ETL"
     }
     fn description(&self) -> &str {
-        "Optotune Electrically Tunable Lens"
+        "Optotune Electric Tunable Lens"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        // Send the "Start" initialisation handshake (ASCII, via send())
-        self.call_transport(|t| t.send("Start"))?;
-        // Set current to 0 mA at init
-        self.set_current(0.0)?;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            // Set current to 0 on shutdown
-            let _ = self.set_current(0.0);
             self.initialized = false;
         }
         Ok(())
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "Current-mA" => Ok(PropertyValue::Float(self.current_ma)),
+            "MaxI_mA" => Ok(PropertyValue::Float(self.max_current_ma)),
+            "MinI_mA" => Ok(PropertyValue::Float(self.min_current_ma)),
+            _ => self.props.get(name).cloned(),
+        }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Current-mA" => {
+                let current = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.set_current(current)?;
+                self.props.set(name, PropertyValue::Float(self.current_ma))
+            }
+            "MaxI_mA" => {
+                let max = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.max_current_ma = max;
+                self.props.set(name, PropertyValue::Float(max))
+            }
+            "MinI_mA" => {
+                let min = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.min_current_ma = min;
+                self.props.set(name, PropertyValue::Float(min))
+            }
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -213,7 +234,6 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_initialized() -> EtlDevice {
-        // init: send "Start" (string), then set_current(0.0) sends 6 bytes
         let t = MockTransport::new(); // send_bytes records to received_bytes, no response needed
         let mut d = EtlDevice::new().with_transport(Box::new(t));
         d.initialize().unwrap();
@@ -225,6 +245,14 @@ mod tests {
         let d = make_initialized();
         assert!(d.initialized);
         assert_eq!(d.current(), 0.0);
+    }
+
+    #[test]
+    fn initialize_and_shutdown_do_not_write_current_like_upstream() {
+        let t = MockTransport::new();
+        let mut d = EtlDevice::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        d.shutdown().unwrap();
     }
 
     #[test]

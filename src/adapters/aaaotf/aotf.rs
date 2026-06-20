@@ -18,6 +18,8 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::thread;
+use std::time::Duration;
 
 // ─── Single-channel AOTF ─────────────────────────────────────────────────────
 
@@ -41,28 +43,23 @@ impl AaAotf {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
         props
-            .define_property(
-                "Channel",
-                PropertyValue::String("1".into()),
-                false,
-            )
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1"]).unwrap();
+        props
+            .define_property("Power (% of max)", PropertyValue::Float(100.0), false)
             .unwrap();
         props
-            .define_property(
-                "Power (% of max)",
-                PropertyValue::Float(100.0),
-                false,
-            )
+            .set_property_limits("Power (% of max)", 0.0, 100.0)
             .unwrap();
         props
-            .define_property(
-                "Frequency (MHz)",
-                PropertyValue::Float(100.0),
-                false,
-            )
+            .define_property("Frequency (MHz)", PropertyValue::Float(100.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Frequency (MHz)", 50.0, 200.0)
             .unwrap();
         props
             .define_property(
@@ -70,6 +67,15 @@ impl AaAotf {
                 PropertyValue::Integer(1900),
                 false,
             )
+            .unwrap();
+        props
+            .set_property_limits("Maximum intensity (dB)", 0.0, 2200.0)
+            .unwrap();
+        props
+            .define_property("Channel", PropertyValue::String("1".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("Channel", &["1", "2", "3", "4", "5", "6", "7", "8"])
             .unwrap();
 
         Self {
@@ -100,8 +106,16 @@ impl AaAotf {
     }
 
     fn send(&mut self, command: &str) -> MmResult<()> {
-        let cmd = command.to_string();
+        let cmd = format!("{command}\r");
         self.call_transport(|t| t.send(&cmd))
+    }
+
+    fn close_all_channels_startup(&mut self) -> MmResult<()> {
+        let mut command = String::new();
+        for ch in 1u8..=8 {
+            command.push_str(&format!("L{}O0\r", ch));
+        }
+        self.send(&command)
     }
 
     fn set_channel_state(&mut self, open: bool) -> MmResult<()> {
@@ -109,21 +123,33 @@ impl AaAotf {
         let cmd = format!("L{}O{}", self.channel, flag);
         self.send(&cmd)?;
         self.state = open;
+        self.props
+            .set("State", PropertyValue::Integer(if open { 1 } else { 0 }))?;
         Ok(())
     }
 
     pub fn set_intensity(&mut self, pct: f64) -> MmResult<()> {
+        if !(0.0..=100.0).contains(&pct) {
+            return Err(MmError::InvalidPropertyValue);
+        }
         let val = pct * self.max_intensity as f64 / 10000.0;
         let cmd = format!("L{}D{}", self.channel, val);
         self.send(&cmd)?;
         self.intensity_pct = pct;
+        self.props
+            .set("Power (% of max)", PropertyValue::Float(pct))?;
         Ok(())
     }
 
     pub fn set_frequency(&mut self, mhz: f64) -> MmResult<()> {
+        if !(50.0..=200.0).contains(&mhz) {
+            return Err(MmError::InvalidPropertyValue);
+        }
         let cmd = format!("L{}F{:.2}", self.channel, mhz);
         self.send(&cmd)?;
         self.freq_mhz = mhz;
+        self.props
+            .set("Frequency (MHz)", PropertyValue::Float(mhz))?;
         Ok(())
     }
 }
@@ -140,20 +166,21 @@ impl Device for AaAotf {
     }
 
     fn description(&self) -> &str {
-        "AA Crystal Technology AOTF shutter controller"
+        "AA AOTF Shutter Controller driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
+        if self.initialized {
+            return Ok(());
+        }
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
         // Set internal modulation mode
         self.send("I0")?;
+        self.set_channel_state(false)?;
         // Close all channels
-        for ch in 1u8..=8 {
-            let cmd = format!("L{}O0", ch);
-            self.send(&cmd)?;
-        }
+        self.close_all_channels_startup()?;
         self.state = false;
         self.initialized = true;
         Ok(())
@@ -177,6 +204,12 @@ impl Device for AaAotf {
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" => {
+                if self.initialized {
+                    return Err(MmError::InvalidProperty);
+                }
+                self.props.set(name, val)
+            }
             "Power (% of max)" => {
                 let pct = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.set_intensity(pct)
@@ -187,18 +220,20 @@ impl Device for AaAotf {
             }
             "Maximum intensity (dB)" => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set("Maximum intensity (dB)", PropertyValue::Integer(v))?;
                 self.max_intensity = v;
                 Ok(())
             }
             "Channel" => {
                 let s = val.as_str().to_string();
-                let ch: u8 = s
-                    .parse()
-                    .map_err(|_| MmError::InvalidPropertyValue)?;
+                let ch: u8 = s.parse().map_err(|_| MmError::InvalidPropertyValue)?;
                 if ch < 1 || ch > 8 {
                     return Err(MmError::InvalidPropertyValue);
                 }
                 let was_open = self.state;
+                self.props
+                    .set("Channel", PropertyValue::String(ch.to_string()))?;
                 self.channel = ch;
                 if was_open {
                     self.set_channel_state(true)?;
@@ -207,6 +242,9 @@ impl Device for AaAotf {
             }
             "State" => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if v != 0 && v != 1 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 self.set_channel_state(v != 0)
             }
             _ => self.props.set(name, val),
@@ -244,8 +282,7 @@ impl Shutter for AaAotf {
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -257,6 +294,8 @@ pub struct AaMultiAotf {
     initialized: bool,
     /// 8-bit bitmask of active channels (bit0=ch1 … bit7=ch8)
     channel_mask: u8,
+    /// Milliseconds to wait between per-channel commands
+    delay_between_channels_ms: f64,
     /// Shutter state
     state: bool,
 }
@@ -265,7 +304,18 @@ impl AaMultiAotf {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1"]).unwrap();
+        props
+            .define_property(
+                "Delay between channels (ms)",
+                PropertyValue::Float(0.0),
+                false,
+            )
             .unwrap();
         props
             .define_property(
@@ -274,12 +324,16 @@ impl AaMultiAotf {
                 false,
             )
             .unwrap();
+        props
+            .set_property_limits("Channels (8 bit word 1..255)", 1.0, 255.0)
+            .unwrap();
 
         Self {
             props,
             transport: None,
             initialized: false,
-            channel_mask: 200,
+            channel_mask: 1,
+            delay_between_channels_ms: 0.0,
             state: false,
         }
     }
@@ -300,7 +354,7 @@ impl AaMultiAotf {
     }
 
     fn send(&mut self, command: &str) -> MmResult<()> {
-        let cmd = command.to_string();
+        let cmd = format!("{command}\r");
         self.call_transport(|t| t.send(&cmd))
     }
 
@@ -314,8 +368,15 @@ impl AaMultiAotf {
             };
             let cmd = format!("L{}O{}", ch, flag);
             self.send(&cmd)?;
+            if self.delay_between_channels_ms > 0.0 {
+                thread::sleep(Duration::from_millis(
+                    self.delay_between_channels_ms.ceil() as u64
+                ));
+            }
         }
         self.state = open;
+        self.props
+            .set("State", PropertyValue::Integer(if open { 1 } else { 0 }))?;
         Ok(())
     }
 }
@@ -332,16 +393,21 @@ impl Device for AaMultiAotf {
     }
 
     fn description(&self) -> &str {
-        "AA Crystal Technology multi-channel AOTF shutter controller"
+        "multiline AA AOTF Shutter Controller driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
+        if self.initialized {
+            return Ok(());
+        }
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
         self.send("I0")?;
+        self.set_channels_state(false)?;
         // Close all channels
         for ch in 1u8..=8 {
+            thread::sleep(Duration::from_millis(50));
             let cmd = format!("L{}O0", ch);
             self.send(&cmd)?;
         }
@@ -357,8 +423,9 @@ impl Device for AaMultiAotf {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "Channels (8 bit word 1..255)" => {
-                Ok(PropertyValue::Integer(self.channel_mask as i64))
+            "Channels (8 bit word 1..255)" => Ok(PropertyValue::Integer(self.channel_mask as i64)),
+            "Delay between channels (ms)" => {
+                Ok(PropertyValue::Float(self.delay_between_channels_ms))
             }
             "State" => Ok(PropertyValue::Integer(if self.state { 1 } else { 0 })),
             _ => self.props.get(name).cloned(),
@@ -367,20 +434,39 @@ impl Device for AaMultiAotf {
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" => {
+                if self.initialized {
+                    return Err(MmError::InvalidProperty);
+                }
+                self.props.set(name, val)
+            }
             "Channels (8 bit word 1..255)" => {
                 let mask = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if mask < 1 || mask > 255 {
                     return Err(MmError::InvalidPropertyValue);
                 }
                 let was_open = self.state;
+                self.props
+                    .set("Channels (8 bit word 1..255)", PropertyValue::Integer(mask))?;
                 self.channel_mask = mask as u8;
                 if was_open {
                     self.set_channels_state(true)?;
                 }
                 Ok(())
             }
+            "Delay between channels (ms)" => {
+                let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.delay_between_channels_ms = delay.max(0.0);
+                self.props.set(
+                    "Delay between channels (ms)",
+                    PropertyValue::Float(self.delay_between_channels_ms),
+                )
+            }
             "State" => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if v != 0 && v != 1 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 self.set_channels_state(v != 0)
             }
             _ => self.props.set(name, val),
@@ -418,8 +504,7 @@ impl Shutter for AaMultiAotf {
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -427,6 +512,38 @@ impl Shutter for AaMultiAotf {
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingTransport {
+        received: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingTransport {
+        fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
+            let received = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    received: received.clone(),
+                },
+                received,
+            )
+        }
+    }
+
+    impl Transport for RecordingTransport {
+        fn send(&mut self, cmd: &str) -> MmResult<()> {
+            self.received.lock().unwrap().push(cmd.to_string());
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            Err(MmError::SerialTimeout)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            Ok(())
+        }
+    }
 
     // ─── AaAotf tests ─────────────────────────────────────────────────────────
 
@@ -448,6 +565,43 @@ mod tests {
     #[test]
     fn aotf_no_transport_error() {
         assert!(AaAotf::new().initialize().is_err());
+    }
+
+    #[test]
+    fn aotf_property_surface_matches_upstream_order() {
+        let d = AaAotf::new();
+        assert_eq!(
+            d.property_names(),
+            vec![
+                "Port",
+                "State",
+                "Power (% of max)",
+                "Frequency (MHz)",
+                "Maximum intensity (dB)",
+                "Channel",
+            ]
+        );
+    }
+
+    #[test]
+    fn aotf_commands_are_cr_terminated() {
+        let (transport, received) = RecordingTransport::new();
+        let mut d = AaAotf::new().with_transport(Box::new(transport));
+        d.initialize().unwrap();
+        d.set_open(true).unwrap();
+        d.set_intensity(50.0).unwrap();
+        d.set_frequency(150.0).unwrap();
+
+        let received = received.lock().unwrap();
+        assert_eq!(received[0], "I0\r");
+        assert_eq!(received[1], "L1O0\r");
+        assert_eq!(
+            received[2],
+            "L1O0\rL2O0\rL3O0\rL4O0\rL5O0\rL6O0\rL7O0\rL8O0\r\r"
+        );
+        assert_eq!(received[3], "L1O1\r");
+        assert_eq!(received[4], "L1D9.5\r");
+        assert_eq!(received[5], "L1F150.00\r");
     }
 
     #[test]
@@ -484,8 +638,41 @@ mod tests {
         let t = MockTransport::new();
         let mut d = AaAotf::new().with_transport(Box::new(t));
         d.initialize().unwrap();
-        d.fire(0.0).unwrap();
-        assert!(!d.get_open().unwrap());
+        assert_eq!(d.fire(0.0).unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn aotf_rejects_out_of_range_action_values() {
+        let t = MockTransport::new();
+        let mut d = AaAotf::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(
+            d.set_property("Power (% of max)", PropertyValue::Float(101.0))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            d.set_property("Frequency (MHz)", PropertyValue::Float(49.0))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            d.set_property("State", PropertyValue::Integer(2))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+    }
+
+    #[test]
+    fn aotf_rejects_port_change_after_initialize() {
+        let t = MockTransport::new();
+        let mut d = AaAotf::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(
+            d.set_property("Port", PropertyValue::String("COM2".into()))
+                .unwrap_err(),
+            MmError::InvalidProperty
+        );
     }
 
     #[test]
@@ -505,6 +692,28 @@ mod tests {
     }
 
     #[test]
+    fn multi_aotf_upstream_defaults() {
+        let d = AaMultiAotf::new();
+        assert_eq!(
+            d.property_names(),
+            vec![
+                "Port",
+                "State",
+                "Delay between channels (ms)",
+                "Channels (8 bit word 1..255)",
+            ]
+        );
+        assert_eq!(
+            d.get_property("Channels (8 bit word 1..255)").unwrap(),
+            PropertyValue::Integer(1)
+        );
+        assert_eq!(
+            d.get_property("Delay between channels (ms)").unwrap(),
+            PropertyValue::Float(0.0)
+        );
+    }
+
+    #[test]
     fn multi_aotf_open_uses_mask() {
         let t = MockTransport::new();
         // mask=0b00000011 = channels 1 and 2
@@ -518,6 +727,37 @@ mod tests {
     #[test]
     fn multi_aotf_no_transport_error() {
         assert!(AaMultiAotf::new().initialize().is_err());
+    }
+
+    #[test]
+    fn multi_aotf_delay_clamps_negative() {
+        let mut d = AaMultiAotf::new();
+        d.set_property("Delay between channels (ms)", PropertyValue::Float(-2.5))
+            .unwrap();
+        assert_eq!(
+            d.get_property("Delay between channels (ms)").unwrap(),
+            PropertyValue::Float(0.0)
+        );
+    }
+
+    #[test]
+    fn multi_aotf_rejects_port_change_after_initialize() {
+        let t = MockTransport::new();
+        let mut d = AaMultiAotf::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(
+            d.set_property("Port", PropertyValue::String("COM2".into()))
+                .unwrap_err(),
+            MmError::InvalidProperty
+        );
+    }
+
+    #[test]
+    fn multi_aotf_fire() {
+        let t = MockTransport::new();
+        let mut d = AaMultiAotf::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(d.fire(0.0).unwrap_err(), MmError::UnsupportedCommand);
     }
 
     #[test]

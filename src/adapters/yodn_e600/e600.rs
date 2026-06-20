@@ -32,24 +32,48 @@ pub struct YodnE600 {
 impl YodnE600 {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("ErrorCode", PropertyValue::String("0x00".into()), true).unwrap();
-        props.define_property("LampSwitch", PropertyValue::Integer(0), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Main Version", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("Panel Version", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("Error", PropertyValue::String("0x00".into()), true)
+            .unwrap();
+        props
+            .define_property("Lamp", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("Lamp", &["0", "1"]).unwrap();
 
         // Per-channel properties
         for i in 1..=NUM_CHANNELS {
             let intensity_name = format!("Intensity CH{}", i);
-            props.define_property(&intensity_name, PropertyValue::Integer(0), false).unwrap();
-            props.set_property_limits(&intensity_name, 0.0, 100.0).unwrap();
+            props
+                .define_property(&intensity_name, PropertyValue::Integer(0), false)
+                .unwrap();
+            props
+                .set_property_limits(&intensity_name, 0.0, 100.0)
+                .unwrap();
 
             let temp_name = format!("Temperature CH{}(Deg.C)", i);
-            props.define_property(&temp_name, PropertyValue::Integer(0), true).unwrap();
+            props
+                .define_property(&temp_name, PropertyValue::Integer(0), true)
+                .unwrap();
 
             let use_name = format!("Use CH{}", i);
-            props.define_property(&use_name, PropertyValue::Integer(0), false).unwrap();
+            props
+                .define_property(&use_name, PropertyValue::Integer(0), false)
+                .unwrap();
+            props.set_allowed_values(&use_name, &["0", "1"]).unwrap();
 
             let time_name = format!("Use Time CH{}", i);
-            props.define_property(&time_name, PropertyValue::Integer(0), true).unwrap();
+            props
+                .define_property(&time_name, PropertyValue::Integer(0), true)
+                .unwrap();
         }
 
         Self {
@@ -103,6 +127,13 @@ impl YodnE600 {
         Ok(resp.get(2).copied().unwrap_or(0))
     }
 
+    fn get_version(&mut self, command: u8) -> MmResult<String> {
+        let resp = self.send_recv_bytes(&[command], 128)?;
+        Ok(String::from_utf8_lossy(&resp)
+            .trim_matches(char::from(0))
+            .to_string())
+    }
+
     /// Get channel intensity (0-100).
     fn get_channel_intensity(&mut self, ch_idx: usize) -> MmResult<u8> {
         let ch_id = CHANNEL_IDS[ch_idx];
@@ -140,7 +171,19 @@ impl YodnE600 {
     }
 
     fn error_code_str(code: u8) -> String {
-        format!("0x{:02X}", code)
+        match code {
+            0 => "0x00 (No Error)".to_string(),
+            1 => "0x01 (Over Heat)".to_string(),
+            _ => format!("0x{:02X}", code),
+        }
+    }
+
+    fn temperature_transform(raw: u8) -> i64 {
+        if raw >= 128 {
+            raw as i64 - 256
+        } else {
+            raw as i64
+        }
     }
 }
 
@@ -167,41 +210,66 @@ impl Device for YodnE600 {
         // Send open/handshake command
         let _resp = self.send_recv_bytes(&[0x70], 1)?;
 
+        let main_version = self.get_version(0x50)?;
+        self.props
+            .entry_mut("Main Version")
+            .map(|e| e.value = PropertyValue::String(main_version));
+
+        let mut panel_version = self.get_version(0x51)?;
+        if !panel_version.is_empty() {
+            panel_version.remove(0);
+        }
+        self.props
+            .entry_mut("Panel Version")
+            .map(|e| e.value = PropertyValue::String(panel_version));
+
         // Read lamp state
         let lamp = self.get_lamp_state()?;
         self.is_open = lamp != 0;
-        self.props.entry_mut("LampSwitch")
+        self.props
+            .entry_mut("Lamp")
             .map(|e| e.value = PropertyValue::Integer(lamp as i64));
 
-        // Read per-channel data
+        // Read per-channel data in the same order as E600Controller::Update().
         for i in 0..NUM_CHANNELS {
             let intensity = self.get_channel_intensity(i)?;
             self.intensities[i] = intensity;
             let intensity_name = format!("Intensity CH{}", i + 1);
-            self.props.entry_mut(&intensity_name)
+            self.props
+                .entry_mut(&intensity_name)
                 .map(|e| e.value = PropertyValue::Integer(intensity as i64));
+        }
 
-            let temp = self.get_channel_temperature(i)?;
-            let temp_name = format!("Temperature CH{}(Deg.C)", i + 1);
-            self.props.entry_mut(&temp_name)
-                .map(|e| e.value = PropertyValue::Integer(temp as i64));
-
+        for i in 0..NUM_CHANNELS {
             let use_state = self.get_channel_use_state(i)?;
             self.channel_use[i] = use_state != 0;
             let use_name = format!("Use CH{}", i + 1);
-            self.props.entry_mut(&use_name)
+            self.props
+                .entry_mut(&use_name)
                 .map(|e| e.value = PropertyValue::Integer(use_state as i64));
+        }
 
+        for i in 0..NUM_CHANNELS {
+            let temp = self.get_channel_temperature(i)?;
+            let temp_name = format!("Temperature CH{}(Deg.C)", i + 1);
+            self.props
+                .entry_mut(&temp_name)
+                .map(|e| e.value = PropertyValue::Integer(Self::temperature_transform(temp)));
+        }
+
+        for i in 0..NUM_CHANNELS {
             let use_time = self.get_channel_use_time(i)?;
             let time_name = format!("Use Time CH{}", i + 1);
-            self.props.entry_mut(&time_name)
+            self.props
+                .entry_mut(&time_name)
                 .map(|e| e.value = PropertyValue::Integer(use_time as i64));
         }
 
         // Read error code
         let err = self.get_error_code()?;
         self.error_code = err;
-        self.props.entry_mut("ErrorCode")
+        self.props
+            .entry_mut("Error")
             .map(|e| e.value = PropertyValue::String(Self::error_code_str(err)));
 
         self.initialized = true;
@@ -210,8 +278,6 @@ impl Device for YodnE600 {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            // Send lamp off
-            let _ = self.send_bytes_only(&[0x60, 0x00, 0x00]);
             // Send close command
             let _ = self.send_bytes_only(&[0x75]);
             self.is_open = false;
@@ -225,7 +291,7 @@ impl Device for YodnE600 {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        if name == "LampSwitch" {
+        if name == "Lamp" {
             let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
             if self.initialized {
                 if v == 1 {
@@ -242,13 +308,12 @@ impl Device for YodnE600 {
         // Handle intensity: "Intensity CH<N>"
         if let Some(rest) = name.strip_prefix("Intensity CH") {
             if let Ok(n) = rest.parse::<usize>() {
-                let ch = n - 1;
-                if ch < NUM_CHANNELS {
+                if let Some(ch) = n.checked_sub(1).filter(|&ch| ch < NUM_CHANNELS) {
                     let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
                     if self.initialized {
-                        // Set intensity command: [0x50, ch_id, value] (approximate from protocol)
+                        // Set intensity command.
                         let ch_id = CHANNEL_IDS[ch];
-                        let _ = self.send_bytes_only(&[0x50, ch_id, v]);
+                        let _ = self.send_bytes_only(&[0x61, ch_id, v]);
                     }
                     self.intensities[ch] = v;
                     return self.props.set(name, PropertyValue::Integer(v as i64));
@@ -259,14 +324,12 @@ impl Device for YodnE600 {
         // Handle use state: "Use CH<N>"
         if let Some(rest) = name.strip_prefix("Use CH") {
             if let Ok(n) = rest.parse::<usize>() {
-                let ch = n - 1;
-                if ch < NUM_CHANNELS {
+                if let Some(ch) = n.checked_sub(1).filter(|&ch| ch < NUM_CHANNELS) {
                     let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                     let on = v != 0;
                     if self.initialized {
-                        // Use state command: approximately [0x58, ch_id, state]
                         let ch_id = CHANNEL_IDS[ch];
-                        let _ = self.send_bytes_only(&[0x58, ch_id, if on { 1 } else { 0 }]);
+                        let _ = self.send_bytes_only(&[0x60, ch_id, if on { 1 } else { 0 }]);
                     }
                     self.channel_use[ch] = on;
                     return self.props.set(name, PropertyValue::Integer(v));
@@ -306,7 +369,8 @@ impl Shutter for YodnE600 {
             self.send_bytes_only(&[0x60, 0x00, 0x00])?;
         }
         self.is_open = open;
-        self.props.entry_mut("LampSwitch")
+        self.props
+            .entry_mut("Lamp")
             .map(|e| e.value = PropertyValue::Integer(if open { 1 } else { 0 }));
         Ok(())
     }
@@ -316,8 +380,7 @@ impl Shutter for YodnE600 {
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -330,20 +393,23 @@ mod tests {
         MockTransport::new()
             // open handshake — response: [0x70] (1 byte)
             .expect_binary(b"\x70")
+            // main and panel versions
+            .expect_binary(b"M1.0")
+            .expect_binary(b"Q2.0")
             // get lamp state — response: 3 bytes, byte[2]=0 (off)
             .expect_binary(b"\x57\x00\x00")
             // get channel intensities — 3 bytes each, byte[2]=intensity
             .expect_binary(b"\x56\x01\x00")
             .expect_binary(b"\x56\x02\x00")
             .expect_binary(b"\x56\x03\x00")
-            // get channel temperatures — 3 bytes each
-            .expect_binary(b"\x55\x01\x19")
-            .expect_binary(b"\x55\x02\x19")
-            .expect_binary(b"\x55\x03\x19")
             // get channel use states — 3 bytes each, byte[2]=state
             .expect_binary(b"\x57\x01\x00")
             .expect_binary(b"\x57\x02\x00")
             .expect_binary(b"\x57\x03\x00")
+            // get channel temperatures — 3 bytes each
+            .expect_binary(b"\x55\x01\x19")
+            .expect_binary(b"\x55\x02\x19")
+            .expect_binary(b"\x55\x03\x19")
             // get channel use times — 4 bytes each
             .expect_binary(b"\x53\x01\x00\x00")
             .expect_binary(b"\x53\x02\x00\x00")
@@ -357,6 +423,14 @@ mod tests {
         let mut dev = YodnE600::new().with_transport(Box::new(make_transport()));
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
+        assert_eq!(
+            dev.get_property("Error").unwrap(),
+            PropertyValue::String("0x00 (No Error)".into())
+        );
+        assert_eq!(
+            dev.get_property("Panel Version").unwrap(),
+            PropertyValue::String("2.0".into())
+        );
     }
 
     #[test]
@@ -375,5 +449,12 @@ mod tests {
     fn no_transport_error() {
         let mut dev = YodnE600::new();
         assert!(dev.initialize().is_err());
+    }
+
+    #[test]
+    fn fire_is_unsupported_like_upstream() {
+        let mut dev = YodnE600::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+        assert_eq!(dev.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
     }
 }

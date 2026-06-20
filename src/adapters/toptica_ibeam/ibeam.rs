@@ -1,6 +1,6 @@
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Device, Shutter};
+use crate::traits::{Device, Generic, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
@@ -23,13 +23,46 @@ pub struct IBeamSmartCW {
 impl IBeamSmartCW {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("SerialID", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("FirmwareVersion", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("MaxPower_mW", PropertyValue::Float(0.0), true).unwrap();
-        props.define_property("ClipStatus", PropertyValue::String("Unknown".into()), true).unwrap();
-        props.define_property("LaserOperation", PropertyValue::String("Off".into()), false).unwrap();
-        props.define_property("Power_mW", PropertyValue::Float(0.0), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Serial ID", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property(
+                "Firmware version",
+                PropertyValue::String(String::new()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "Maximum power (mW)",
+                PropertyValue::String("125".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "Clipping status",
+                PropertyValue::String("Undefined".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "Laser Operation",
+                PropertyValue::String("Off".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("Laser Operation", &["Off", "On"])
+            .unwrap();
+        props
+            .define_property("Power (mW)", PropertyValue::Float(0.0), false)
+            .unwrap();
 
         Self {
             props,
@@ -91,19 +124,22 @@ impl Device for IBeamSmartCW {
 
         // Get serial number (response contains "iBEAM-xxxx")
         if let Ok(serial) = self.cmd("id") {
-            self.props.entry_mut("SerialID")
+            self.props
+                .entry_mut("Serial ID")
                 .map(|e| e.value = PropertyValue::String(serial));
         }
 
         // Get firmware version (response contains "iB..." version string)
         if let Ok(ver) = self.cmd("ver") {
-            self.props.entry_mut("FirmwareVersion")
+            self.props
+                .entry_mut("Firmware version")
                 .map(|e| e.value = PropertyValue::String(ver));
         }
 
         // Get clip status
         if let Ok(clip) = self.cmd("sta clip") {
-            self.props.entry_mut("ClipStatus")
+            self.props
+                .entry_mut("Clipping status")
                 .map(|e| e.value = PropertyValue::String(clip));
         }
 
@@ -111,7 +147,8 @@ impl Device for IBeamSmartCW {
         if let Ok(la) = self.cmd("sta la") {
             self.is_open = la.contains("ON");
             let label = if self.is_open { "On" } else { "Off" };
-            self.props.entry_mut("LaserOperation")
+            self.props
+                .entry_mut("Laser Operation")
                 .map(|e| e.value = PropertyValue::String(label.into()));
         }
 
@@ -120,16 +157,21 @@ impl Device for IBeamSmartCW {
             // Parse "CH2, PWR: 10.0 mW" pattern
             if let Some(pwr_pos) = pow_resp.find("PWR:") {
                 let rest = &pow_resp[pwr_pos + 4..];
-                let mw: f64 = rest.split_whitespace().next()
+                let mw: f64 = rest
+                    .split_whitespace()
+                    .next()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0.0);
                 self.power_mw = mw;
-                self.props.entry_mut("Power_mW")
+                self.props
+                    .entry_mut("Power (mW)")
                     .map(|e| e.value = PropertyValue::Float(mw));
             }
         }
 
-        self.props.set_property_limits("Power_mW", 0.0, self.max_power_mw).ok();
+        self.props
+            .set_property_limits("Power (mW)", 0.0, self.max_power_mw)
+            .ok();
 
         self.initialized = true;
         Ok(())
@@ -147,24 +189,25 @@ impl Device for IBeamSmartCW {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "Power_mW" => Ok(PropertyValue::Float(self.power_mw)),
+            "Power (mW)" => Ok(PropertyValue::Float(self.power_mw)),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "Power_mW" => {
+            "Power (mW)" => {
                 let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 if self.initialized {
                     self.cmd(&format!("set pow {:.2}", mw))?;
                 }
                 self.power_mw = mw;
-                self.props.entry_mut("Power_mW")
+                self.props
+                    .entry_mut("Power (mW)")
                     .map(|e| e.value = PropertyValue::Float(mw));
                 Ok(())
             }
-            "LaserOperation" => {
+            "Laser Operation" => {
                 let s = match &val {
                     PropertyValue::String(s) => s.clone(),
                     _ => return Err(MmError::InvalidPropertyValue),
@@ -194,7 +237,7 @@ impl Device for IBeamSmartCW {
     }
 
     fn device_type(&self) -> DeviceType {
-        DeviceType::Shutter
+        DeviceType::Generic
     }
 
     fn busy(&self) -> bool {
@@ -202,13 +245,16 @@ impl Device for IBeamSmartCW {
     }
 }
 
+impl Generic for IBeamSmartCW {}
+
 impl Shutter for IBeamSmartCW {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         let cmd = if open { "la on" } else { "la off" };
         self.cmd(cmd)?;
         self.is_open = open;
         let label = if open { "On" } else { "Off" };
-        self.props.entry_mut("LaserOperation")
+        self.props
+            .entry_mut("Laser Operation")
             .map(|e| e.value = PropertyValue::String(label.into()));
         Ok(())
     }
@@ -244,11 +290,11 @@ mod tests {
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
         assert_eq!(
-            dev.get_property("SerialID").unwrap(),
+            dev.get_property("Serial ID").unwrap(),
             PropertyValue::String("iBEAM-1234".into())
         );
         assert_eq!(
-            dev.get_property("ClipStatus").unwrap(),
+            dev.get_property("Clipping status").unwrap(),
             PropertyValue::String("PASS".into())
         );
     }
@@ -271,7 +317,8 @@ mod tests {
         let t = make_transport().expect("set pow 50.00", "[OK]");
         let mut dev = IBeamSmartCW::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
-        dev.set_property("Power_mW", PropertyValue::Float(50.0)).unwrap();
+        dev.set_property("Power (mW)", PropertyValue::Float(50.0))
+            .unwrap();
         assert_eq!(dev.power_mw, 50.0);
     }
 

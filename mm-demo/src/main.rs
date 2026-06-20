@@ -1,12 +1,12 @@
-use minifb::{Key, Window, WindowOptions};
-use micromanager::adapters::demo::DemoAdapter;
 use micromanager::CMMCore;
+use micromanager::adapters::demo::DemoAdapter;
+use minifb::{Key, Window, WindowOptions};
 
 fn main() {
     // Set up CMMCore with DemoCamera
     let mut core = CMMCore::new();
     core.register_adapter(Box::new(DemoAdapter));
-    core.load_device("Camera", "demo", "DCamera").unwrap();
+    core.load_device("Camera", "demo", "DCam").unwrap();
     core.initialize_device("Camera").unwrap();
     core.set_camera_device("Camera").unwrap();
     core.set_exposure(25.0).unwrap();
@@ -40,6 +40,8 @@ fn main() {
             *dst = (v << 16) | (v << 8) | v;
         }
 
-        window.update_with_buffer(&pixel_buf, width, height).unwrap();
+        window
+            .update_with_buffer(&pixel_buf, width, height)
+            .unwrap();
     }
 }

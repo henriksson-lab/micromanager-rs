@@ -3,7 +3,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, StateDevice};
 use crate::types::{DeviceType, PropertyValue};
 
-const NUM_POSITIONS: u64 = 6;
+const NUM_POSITIONS: u64 = 10;
 
 /// Demo filter wheel / state device.
 pub struct DemoStateDevice {
@@ -18,8 +18,21 @@ impl DemoStateDevice {
     pub fn new() -> Self {
         let labels: Vec<String> = (0..NUM_POSITIONS).map(|i| format!("State-{}", i)).collect();
         let mut props = PropertyMap::new();
-        props.define_property("State", PropertyValue::Integer(0), false).unwrap();
-        props.define_property("Label", PropertyValue::String(labels[0].clone()), false).unwrap();
+        props
+            .define_property("Closed_Position", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .set_allowed_values(
+                "Closed_Position",
+                &["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+            )
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String(labels[0].clone()), false)
+            .unwrap();
         Self {
             props,
             initialized: false,
@@ -37,8 +50,12 @@ impl Default for DemoStateDevice {
 }
 
 impl Device for DemoStateDevice {
-    fn name(&self) -> &str { "DWheel" }
-    fn description(&self) -> &str { "Demo filter wheel" }
+    fn name(&self) -> &str {
+        "DWheel"
+    }
+    fn description(&self) -> &str {
+        "Demo filter wheel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         self.initialized = true;
@@ -53,15 +70,28 @@ impl Device for DemoStateDevice {
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "State" => Ok(PropertyValue::Integer(self.position as i64)),
-            "Label" => Ok(PropertyValue::String(self.labels[self.position as usize].clone())),
+            "Label" => Ok(PropertyValue::String(
+                self.labels[self.position as usize].clone(),
+            )),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Closed_Position" => {
+                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0..NUM_POSITIONS as i64).contains(&pos) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.props.set(name, val)
+            }
             "State" => {
-                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
+                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if pos < 0 {
+                    return Err(MmError::UnknownPosition);
+                }
+                let pos = pos as u64;
                 if pos >= NUM_POSITIONS {
                     return Err(MmError::UnknownPosition);
                 }
@@ -70,7 +100,10 @@ impl Device for DemoStateDevice {
             }
             "Label" => {
                 let label = val.as_str().to_string();
-                let pos = self.labels.iter().position(|l| l == &label)
+                let pos = self
+                    .labels
+                    .iter()
+                    .position(|l| l == &label)
                     .ok_or(MmError::UnknownLabel(label))? as u64;
                 self.position = pos;
                 Ok(())
@@ -91,8 +124,12 @@ impl Device for DemoStateDevice {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
 
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for DemoStateDevice {
@@ -113,13 +150,17 @@ impl StateDevice for DemoStateDevice {
     }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize)
+        self.labels
+            .get(pos as usize)
             .cloned()
             .ok_or(MmError::UnknownPosition)
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.position = pos;
         Ok(())
@@ -155,6 +196,7 @@ mod tests {
         w.set_position(3).unwrap();
         assert_eq!(w.get_position().unwrap(), 3);
         assert!(w.set_position(10).is_err());
+        assert_eq!(w.get_number_of_positions(), 10);
     }
 
     #[test]
@@ -164,5 +206,27 @@ mod tests {
         w.set_position_label(2, "DAPI").unwrap();
         w.set_position_by_label("DAPI").unwrap();
         assert_eq!(w.get_position().unwrap(), 2);
+    }
+
+    #[test]
+    fn upstream_filter_wheel_closed_position_property() {
+        let mut w = DemoStateDevice::new();
+        assert!(w.has_property("Closed_Position"));
+        w.set_property("Closed_Position", PropertyValue::Integer(9))
+            .unwrap();
+        assert_eq!(
+            w.get_property("Closed_Position").unwrap(),
+            PropertyValue::Integer(9)
+        );
+        assert_eq!(
+            w.set_property("Closed_Position", PropertyValue::Integer(10))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            w.set_property("State", PropertyValue::Integer(-1))
+                .unwrap_err(),
+            MmError::UnknownPosition
+        );
     }
 }

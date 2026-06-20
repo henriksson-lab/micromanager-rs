@@ -19,10 +19,8 @@ pub struct Uc2XYStage {
 
 impl Uc2XYStage {
     pub fn new() -> Self {
-        let mut props = PropertyMap::new();
-        props.define_property("StepSizeUm", PropertyValue::Float(0.05), false).unwrap();
         Self {
-            props,
+            props: PropertyMap::new(),
             initialized: false,
             pos_x_steps: 0,
             pos_y_steps: 0,
@@ -52,35 +50,60 @@ impl Uc2XYStage {
 }
 
 impl Default for Uc2XYStage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for Uc2XYStage {
-    fn name(&self) -> &str { "UC2XYStage" }
-    fn description(&self) -> &str { "XY Stage for openUC2" }
+    fn name(&self) -> &str {
+        "openUC2-XYStage"
+    }
+    fn description(&self) -> &str {
+        "XY Stage for openUC2"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.writer.is_none() { return Err(MmError::CommHubMissing); }
+        if self.writer.is_none() {
+            return Err(MmError::CommHubMissing);
+        }
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for Uc2XYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
         let xs = (x / self.step_size_um).round() as i64;
         let ys = (y / self.step_size_um).round() as i64;
         self.move_abs(xs, ys)?;
@@ -90,6 +113,9 @@ impl XYStage for Uc2XYStage {
     }
 
     fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
         Ok((
             self.pos_x_steps as f64 * self.step_size_um,
             self.pos_y_steps as f64 * self.step_size_um,
@@ -102,20 +128,27 @@ impl XYStage for Uc2XYStage {
     }
 
     fn home(&mut self) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
-        self.move_abs(0, 0)?;
         self.pos_x_steps = 0;
         self.pos_y_steps = 0;
         Ok(())
     }
 
-    fn stop(&mut self) -> MmResult<()> { Ok(()) }
-
-    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Ok((0.0, 100000.0 * self.step_size_um, 0.0, 100000.0 * self.step_size_um))
+    fn stop(&mut self) -> MmResult<()> {
+        Ok(())
     }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (self.step_size_um, self.step_size_um) }
+    fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
+        Ok((
+            0.0,
+            100000.0 * self.step_size_um,
+            0.0,
+            100000.0 * self.step_size_um,
+        ))
+    }
+
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (self.step_size_um, self.step_size_um)
+    }
 
     fn set_origin(&mut self) -> MmResult<()> {
         self.pos_x_steps = 0;
@@ -149,5 +182,36 @@ mod tests {
         assert!((x - 100.0).abs() < 0.1);
         assert!((y - 200.0).abs() < 0.1);
         assert!(!log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn home_only_zeros_cached_position_like_upstream() {
+        let (mut stage, log) = make_stage();
+        stage.initialize().unwrap();
+        stage.set_xy_position_um(100.0, 200.0).unwrap();
+        log.lock().unwrap().clear();
+
+        stage.home().unwrap();
+
+        assert_eq!(stage.get_xy_position_um().unwrap(), (0.0, 0.0));
+        assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_position_requires_initialization_like_upstream() {
+        let (stage, _) = make_stage();
+
+        assert_eq!(
+            stage.get_xy_position_um().unwrap_err(),
+            MmError::NotConnected
+        );
+    }
+
+    #[test]
+    fn no_step_size_property_like_upstream() {
+        let stage = Uc2XYStage::new();
+
+        assert!(!stage.has_property("StepSizeUm"));
+        assert_eq!(stage.property_names(), Vec::<String>::new());
     }
 }

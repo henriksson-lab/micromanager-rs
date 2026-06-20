@@ -26,7 +26,7 @@ pub const DEVICE_NAME_PRIZMATIX: &str = "Prizmatix Ctrl";
 static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
     name: DEVICE_NAME_PRIZMATIX,
     description: "Prizmatix LED Controller",
-    device_type: DeviceType::Shutter,
+    device_type: DeviceType::Generic,
 }];
 
 pub struct PrizmatixAdapter;
@@ -42,9 +42,7 @@ impl AdapterModule for PrizmatixAdapter {
 
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
-            DEVICE_NAME_PRIZMATIX => {
-                Some(AnyDevice::Shutter(Box::new(PrizmatixController::new())))
-            }
+            DEVICE_NAME_PRIZMATIX => Some(AnyDevice::Generic(Box::new(PrizmatixController::new()))),
             _ => None,
         }
     }

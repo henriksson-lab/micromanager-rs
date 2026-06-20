@@ -19,11 +19,11 @@
 /// | `SerialNumber` | R/W (pre-init) | Camera serial number; empty = first found |
 /// | `Exposure` | R/W | Exposure time in **milliseconds** (converts to µs internally) |
 /// | `Gain` | R/W | Analog gain (camera-native float units) |
-/// | `PixelFormat` | R/W | GenICam pixel format string, e.g. `"Mono8"` |
+/// | `PixelType` | R/W | GenICam pixel format string, e.g. `"Mono8"` |
 /// | `Binning` | R/W | Symmetric horizontal+vertical binning factor |
 /// | `Width` | R | Active image width in pixels |
 /// | `Height` | R | Active image height in pixels |
-/// | `Temperature` | R | Device temperature in °C (if supported) |
+/// | `Temperature` | R | Device temperature string (if supported) |
 ///
 /// # Snap vs. sequence
 ///

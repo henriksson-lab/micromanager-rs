@@ -26,8 +26,16 @@ pub struct Motion8ZStage {
 impl Motion8ZStage {
     pub fn new(device_id: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, transport: None, initialized: false, device_id, pos_um: 0.0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            device_id,
+            pos_um: 0.0,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -36,7 +44,9 @@ impl Motion8ZStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -45,7 +55,10 @@ impl Motion8ZStage {
 
     fn cmd(&mut self, tag: &str) -> MmResult<String> {
         let c = format!("{}\n", tag);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     fn query_z(&mut self) -> MmResult<f64> {
@@ -55,30 +68,55 @@ impl Motion8ZStage {
     }
 }
 
-impl Default for Motion8ZStage { fn default() -> Self { Self::new(0) } }
+impl Default for Motion8ZStage {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
 
 impl Device for Motion8ZStage {
-    fn name(&self) -> &str { "ScientificaMotion8-ZStage" }
-    fn description(&self) -> &str { "Scientifica Motion8 Z stage" }
+    fn name(&self) -> &str {
+        "ScientificaMotion8-ZStage"
+    }
+    fn description(&self) -> &str {
+        "Scientifica Motion8 Z stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         self.pos_um = self.query_z()?;
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for Motion8ZStage {
@@ -86,13 +124,18 @@ impl Stage for Motion8ZStage {
         let steps = (z * STEPS_PER_UM).round() as i64;
         let resp = self.cmd(&format!("M8Z:MOV:{},{}", self.device_id, steps))?;
         if resp.starts_with("ERR") {
-            return Err(MmError::LocallyDefined(format!("Motion8 Z move error: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Motion8 Z move error: {}",
+                resp
+            )));
         }
         self.pos_um = z;
         Ok(())
     }
 
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.pos_um) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.pos_um)
+    }
 
     fn set_relative_position_um(&mut self, dz: f64) -> MmResult<()> {
         let new_z = self.pos_um + dz;
@@ -100,19 +143,32 @@ impl Stage for Motion8ZStage {
     }
 
     fn home(&mut self) -> MmResult<()> {
-        // Motion8 Z home not supported
-        self.pos_um = 0.0;
+        // Upstream Motion8 Home is a no-op success.
         Ok(())
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        let _ = self.cmd(&format!("M8Z:STOP:{}", self.device_id));
+        let resp = self.cmd(&format!("M8Z:STOP:{}", self.device_id))?;
+        if resp.starts_with("ERR") {
+            return Err(MmError::LocallyDefined(format!(
+                "Motion8 Z stop error: {}",
+                resp
+            )));
+        }
         Ok(())
     }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((-10_000.0, 10_000.0)) }
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Err(MmError::LocallyDefined(
+            "Motion8 Z limits not supported".into(),
+        ))
+    }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -147,5 +203,26 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(Motion8ZStage::new(0).initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(Motion8ZStage::new(0).initialize().is_err());
+    }
+
+    #[test]
+    fn home_is_noop_and_limits_unsupported() {
+        let t = MockTransport::new().any("5000");
+        let mut s = Motion8ZStage::new(0).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.home().unwrap();
+        assert!((s.get_position_um().unwrap() - 50.0).abs() < 1e-9);
+        assert!(s.get_limits().is_err());
+    }
+
+    #[test]
+    fn stop_propagates_errors() {
+        let t = MockTransport::new().any("5000").any("ERR stop");
+        let mut s = Motion8ZStage::new(0).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.stop().is_err());
+        assert!((s.get_position_um().unwrap() - 50.0).abs() < 1e-9);
+    }
 }

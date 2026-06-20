@@ -23,9 +23,12 @@ pub struct ArduinoDa {
 impl ArduinoDa {
     pub fn new(channel: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Volts", PropertyValue::Float(0.0), false).unwrap();
-        props.define_property("MaxVolts", PropertyValue::Float(5.0), false).unwrap();
-        props.define_property("Channel", PropertyValue::Integer(channel as i64), true).unwrap();
+        props
+            .define_property("Volts", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("MaxVolt", PropertyValue::Float(5.0), false)
+            .unwrap();
 
         Self {
             props,
@@ -48,7 +51,7 @@ impl ArduinoDa {
     fn volts_to_counts(&self, volts: f64) -> u16 {
         let clamped = volts.clamp(self.min_volts, self.max_volts);
         let frac = (clamped - self.min_volts) / (self.max_volts - self.min_volts);
-        (frac * 4095.0).round() as u16
+        (frac * 4095.0) as u16
     }
 
     fn write_volts(&self, volts: f64) -> MmResult<()> {
@@ -59,27 +62,31 @@ impl ArduinoDa {
 }
 
 impl Device for ArduinoDa {
-    fn name(&self) -> &str { "Arduino-DA" }
-    fn description(&self) -> &str { "Arduino DAC channel" }
+    fn name(&self) -> &str {
+        match self.channel {
+            1 => "Arduino-DAC1",
+            2 => "Arduino-DAC2",
+            _ => "Arduino-DAC1",
+        }
+    }
+    fn description(&self) -> &str {
+        "Arduino DAC channel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.writer.is_none() {
             return Err(MmError::CommHubMissing);
         }
         // Update max_volts from property in case it was set pre-init
-        if let Ok(PropertyValue::Float(mv)) = self.props.get("MaxVolts").cloned() {
+        if let Ok(PropertyValue::Float(mv)) = self.props.get("MaxVolt").cloned() {
             self.max_volts = mv;
         }
-        self.write_volts(0.0)?;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.write_volts(0.0);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
@@ -99,11 +106,12 @@ impl Device for ArduinoDa {
                 }
                 self.volts = v;
                 self.gated_volts = v;
-                self.props.entry_mut("Volts")
+                self.props
+                    .entry_mut("Volts")
                     .map(|e| e.value = PropertyValue::Float(v));
                 Ok(())
             }
-            "MaxVolts" => {
+            "MaxVolt" => {
                 let v = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.max_volts = v;
                 self.props.set(name, PropertyValue::Float(v))
@@ -124,8 +132,12 @@ impl Device for ArduinoDa {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
 
-    fn device_type(&self) -> DeviceType { DeviceType::SignalIO }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::SignalIO
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl SignalIO for ArduinoDa {
@@ -153,7 +165,7 @@ impl SignalIO for ArduinoDa {
     }
 
     fn get_signal(&self) -> MmResult<f64> {
-        Ok(self.volts)
+        Err(MmError::UnsupportedCommand)
     }
 
     fn get_limits(&self) -> MmResult<(f64, f64)> {
@@ -177,12 +189,11 @@ mod tests {
     }
 
     #[test]
-    fn initialize_writes_zero() {
+    fn initialize_does_not_write() {
         let (mut da, log) = make_da();
         da.initialize().unwrap();
         let writes = log.lock().unwrap();
-        assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0], (1, 0));
+        assert!(writes.is_empty());
     }
 
     #[test]
@@ -192,6 +203,15 @@ mod tests {
         da.set_signal(5.0).unwrap(); // max = 4095
         let writes = log.lock().unwrap();
         assert_eq!(writes.last().unwrap(), &(1, 4095));
+    }
+
+    #[test]
+    fn conversion_truncates_like_cpp() {
+        let (mut da, log) = make_da();
+        da.initialize().unwrap();
+        da.set_signal(2.5).unwrap();
+        let writes = log.lock().unwrap();
+        assert_eq!(writes.last().unwrap(), &(1, 2047));
     }
 
     #[test]
@@ -209,5 +229,13 @@ mod tests {
     fn limits() {
         let (da, _) = make_da();
         assert_eq!(da.get_limits().unwrap(), (0.0, 5.0));
+    }
+
+    #[test]
+    fn get_signal_is_unsupported_like_cpp() {
+        let (mut da, _) = make_da();
+        da.initialize().unwrap();
+        da.set_signal(2.5).unwrap();
+        assert_eq!(da.get_signal().unwrap_err(), MmError::UnsupportedCommand);
     }
 }

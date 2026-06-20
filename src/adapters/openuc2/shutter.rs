@@ -31,7 +31,7 @@ impl Uc2Shutter {
     fn send_state(&self, open: bool) -> MmResult<()> {
         let writer = self.writer.as_ref().ok_or(MmError::NotConnected)?;
         let val = if open { 255 } else { 0 };
-        let cmd = format!(r#"{{"task":"/laser_act","LASERid":1,"LASERval":{}}}"#, val);
+        let cmd = format!(r#"{{"task":"/laser_act", "LASERid":1,"LASERval":{}}}"#, val);
         writer(&cmd)?;
         Ok(())
     }
@@ -42,7 +42,7 @@ impl Default for Uc2Shutter {
 }
 
 impl Device for Uc2Shutter {
-    fn name(&self) -> &str { "UC2Shutter" }
+    fn name(&self) -> &str { "openUC2-LED-Laser" }
     fn description(&self) -> &str { "LED/Laser Shutter for openUC2" }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -52,7 +52,7 @@ impl Device for Uc2Shutter {
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized { let _ = self.send_state(false); self.initialized = false; }
+        self.initialized = false;
         Ok(())
     }
 
@@ -80,7 +80,7 @@ impl Shutter for Uc2Shutter {
 
     fn get_open(&self) -> MmResult<bool> { Ok(self.open) }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { self.set_open(true) }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { Err(MmError::UnsupportedCommand) }
 }
 
 #[cfg(test)]
@@ -105,5 +105,12 @@ mod tests {
         assert!(s.get_open().unwrap());
         s.set_open(false).unwrap();
         assert!(!s.get_open().unwrap());
+    }
+
+    #[test]
+    fn fire_is_unsupported_like_upstream() {
+        let mut s = make_shutter();
+        s.initialize().unwrap();
+        assert_eq!(s.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
     }
 }

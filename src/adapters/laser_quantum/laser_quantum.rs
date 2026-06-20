@@ -28,23 +28,63 @@ pub struct LaserQuantumLaser {
     is_open: bool,
     power_mw: f64,
     current_pct: f64,
-    #[allow(dead_code)]
     max_power_mw: f64,
 }
 
 impl LaserQuantumLaser {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("PowerSetpoint_mW", PropertyValue::Float(0.0), false).unwrap();
-        props.define_property("Current_pct", PropertyValue::Float(0.0), false).unwrap();
-        props.set_property_limits("Current_pct", 0.0, 100.0).unwrap();
-        props.define_property("ControlMode", PropertyValue::String("POWER".into()), false).unwrap();
-        props.set_allowed_values("ControlMode", &["POWER", "CURRENT"]).unwrap();
-        props.define_property("Version", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("PsuTime_h", PropertyValue::Float(0.0), true).unwrap();
-        props.define_property("LaserEnabledTime_h", PropertyValue::Float(0.0), true).unwrap();
-        props.define_property("LaserOpTime_h", PropertyValue::Float(0.0), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Maximum power (mW)", PropertyValue::Float(500.0), false)
+            .unwrap();
+        props
+            .define_property("Power (mW)", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("Power (mW)", 0.0, 500.0).unwrap();
+        props
+            .define_property("Current (%)", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .set_property_limits("Current (%)", 0.0, 100.0)
+            .unwrap();
+        props
+            .define_property("Control mode", PropertyValue::String("Power".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("Control mode", &["Power", "Current"])
+            .unwrap();
+        props
+            .define_property("Version", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property(
+                "Laser Operation",
+                PropertyValue::String("Off".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("Laser Operation", &["Off", "On"])
+            .unwrap();
+        props
+            .define_property(
+                "Current control",
+                PropertyValue::String("Enabled".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("Time PSU (h)", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("Time enabled (h)", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("Time operation (h)", PropertyValue::Float(0.0), true)
+            .unwrap();
 
         Self {
             props,
@@ -53,7 +93,7 @@ impl LaserQuantumLaser {
             is_open: false,
             power_mw: 0.0,
             current_pct: 0.0,
-            max_power_mw: 1000.0,
+            max_power_mw: 500.0,
         }
     }
 
@@ -73,7 +113,7 @@ impl LaserQuantumLaser {
     }
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let cmd = command.to_string();
+        let cmd = format!("{}\r", command);
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
@@ -82,22 +122,32 @@ impl LaserQuantumLaser {
 
     /// Parse a numeric response that may have a trailing unit suffix (e.g. "125.3mW" → 125.3).
     fn parse_numeric(s: &str) -> f64 {
-        // Strip non-numeric tail (%, mW, C, etc.)
+        // Strip non-numeric prefix/tail (timer labels, %, mW, C, etc.)
         let trimmed = s.trim();
-        let end = trimmed
-            .find(|c: char| c != '.' && c != '-' && !c.is_ascii_digit())
+        let start = trimmed
+            .find(|c: char| c == '.' || c == '-' || c.is_ascii_digit())
             .unwrap_or(trimmed.len());
-        trimmed[..end].parse().unwrap_or(0.0)
+        let numeric = &trimmed[start..];
+        let end = numeric
+            .find(|c: char| c != '.' && c != '-' && !c.is_ascii_digit())
+            .unwrap_or(numeric.len());
+        numeric[..end].parse().unwrap_or(0.0)
     }
 }
 
 impl Default for LaserQuantumLaser {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for LaserQuantumLaser {
-    fn name(&self) -> &str { "LaserQuantumLaser" }
-    fn description(&self) -> &str { "LaserQuantum Gem/Ventus/Opus/Axiom laser" }
+    fn name(&self) -> &str {
+        "Laser"
+    }
+    fn description(&self) -> &str {
+        "LaserQuantum laser"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -106,39 +156,65 @@ impl Device for LaserQuantumLaser {
 
         let ver = self.cmd("VERSION?")?;
         if !ver.contains("SMD12") {
-            return Err(MmError::LocallyDefined(
-                format!("Unexpected version string: {}", ver)
-            ));
+            return Err(MmError::LocallyDefined(format!(
+                "Unexpected version string: {}",
+                ver
+            )));
         }
-        self.props.entry_mut("Version").map(|e| e.value = PropertyValue::String(ver));
+        self.props
+            .entry_mut("Version")
+            .map(|e| e.value = PropertyValue::String(ver));
 
         let status = self.cmd("STATUS?")?;
         self.is_open = status.trim().eq_ignore_ascii_case("enabled");
+        let operation = if self.is_open { "On" } else { "Off" };
+        self.props
+            .entry_mut("Laser Operation")
+            .map(|e| e.value = PropertyValue::String(operation.into()));
 
         let ctrl = self.cmd("CONTROL?")?;
-        self.props.entry_mut("ControlMode")
-            .map(|e| e.value = PropertyValue::String(ctrl.trim().to_uppercase()));
+        let mode = if ctrl.trim().eq_ignore_ascii_case("CURRENT") {
+            "Current"
+        } else {
+            "Power"
+        };
+        self.props
+            .entry_mut("Control mode")
+            .map(|e| e.value = PropertyValue::String(mode.into()));
 
         // Timers (4 responses: 3 data lines + empty)
         if let Ok(line1) = self.cmd("TIMERS?") {
             let psu = Self::parse_numeric(&line1);
-            self.props.entry_mut("PsuTime_h").map(|e| e.value = PropertyValue::Float(psu));
+            self.props
+                .entry_mut("Time PSU (h)")
+                .map(|e| e.value = PropertyValue::Float(psu));
+            if let Ok(line2) = self.call_transport(|t| t.receive_line()) {
+                let laser_enabled = Self::parse_numeric(&line2);
+                self.props
+                    .entry_mut("Time enabled (h)")
+                    .map(|e| e.value = PropertyValue::Float(laser_enabled));
+            }
+            if let Ok(line3) = self.call_transport(|t| t.receive_line()) {
+                let laser_op = Self::parse_numeric(&line3);
+                self.props
+                    .entry_mut("Time operation (h)")
+                    .map(|e| e.value = PropertyValue::Float(laser_op));
+            }
+            let _ = self.call_transport(|t| t.receive_line());
         }
-        // Read remaining timer lines
-        let _ = self.call_transport(|t| { let r = t.receive_line()?; Ok(r) });
-        let _ = self.call_transport(|t| { let r = t.receive_line()?; Ok(r) });
-        let _ = self.call_transport(|t| { let r = t.receive_line()?; Ok(r) });
 
         // Current power and current
         if let Ok(p) = self.cmd("POWER?") {
             self.power_mw = Self::parse_numeric(&p);
-            self.props.entry_mut("PowerSetpoint_mW")
+            self.props
+                .entry_mut("Power (mW)")
                 .map(|e| e.value = PropertyValue::Float(self.power_mw));
         }
         if let Ok(c) = self.cmd("CURRENT?") {
             self.current_pct = Self::parse_numeric(&c);
-            self.props.entry_mut("Current_pct")
-                .map(|e| e.value = PropertyValue::Float(self.current_pct));
+            self.props
+                .entry_mut("Current (%)")
+                .map(|e| e.value = PropertyValue::Integer(self.current_pct as i64));
         }
 
         self.initialized = true;
@@ -156,52 +232,97 @@ impl Device for LaserQuantumLaser {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "PowerSetpoint_mW" => Ok(PropertyValue::Float(self.power_mw)),
-            "Current_pct" => Ok(PropertyValue::Float(self.current_pct)),
+            "Power (mW)" => Ok(PropertyValue::Float(self.power_mw)),
+            "Current (%)" => Ok(PropertyValue::Integer(self.current_pct as i64)),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "PowerSetpoint_mW" => {
+            "Power (mW)" => {
                 let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.0..=self.max_power_mw).contains(&mw) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 if self.initialized {
                     self.cmd(&format!("POWER={:.4}", mw))?;
                 }
                 self.power_mw = mw;
-                self.props.entry_mut("PowerSetpoint_mW")
+                self.props
+                    .entry_mut("Power (mW)")
                     .map(|e| e.value = PropertyValue::Float(mw));
                 Ok(())
             }
-            "Current_pct" => {
+            "Maximum power (mW)" => {
+                let max_power = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if max_power < 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.max_power_mw = max_power;
+                self.props
+                    .set_property_limits("Power (mW)", 0.0, max_power)?;
+                self.props.set(name, PropertyValue::Float(max_power))
+            }
+            "Current (%)" => {
                 let pct = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.0..=100.0).contains(&pct) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 if self.initialized {
                     self.cmd(&format!("CURRENT={:.4}", pct))?;
                 }
                 self.current_pct = pct;
-                self.props.entry_mut("Current_pct")
-                    .map(|e| e.value = PropertyValue::Float(pct));
+                self.props
+                    .entry_mut("Current (%)")
+                    .map(|e| e.value = PropertyValue::Integer(pct as i64));
                 Ok(())
             }
-            "ControlMode" => {
-                let mode = val.as_str().to_uppercase();
+            "Control mode" => {
+                let mode = val.as_str().to_string();
+                let cmd_mode = match mode.as_str() {
+                    "Power" => "POWER",
+                    "Current" => "CURRENT",
+                    _ => return Err(MmError::InvalidPropertyValue),
+                };
                 if self.initialized {
-                    self.cmd(&format!("CONTROL={}", mode))?;
+                    self.cmd(&format!("CONTROL={}", cmd_mode))?;
                 }
                 self.props.set(name, PropertyValue::String(mode))
+            }
+            "Laser Operation" => {
+                let operation = val.as_str().to_string();
+                let open = match operation.as_str() {
+                    "On" => true,
+                    "Off" => false,
+                    _ => return Err(MmError::InvalidPropertyValue),
+                };
+                if self.initialized {
+                    let cmd = if open { "ON" } else { "OFF" };
+                    self.cmd(cmd)?;
+                }
+                self.is_open = open;
+                self.props.set(name, PropertyValue::String(operation))
             }
             _ => self.props.set(name, val),
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Generic
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for LaserQuantumLaser {
@@ -209,10 +330,16 @@ impl Shutter for LaserQuantumLaser {
         let cmd = if open { "ON" } else { "OFF" };
         self.cmd(cmd)?;
         self.is_open = open;
+        let operation = if open { "On" } else { "Off" };
+        self.props
+            .entry_mut("Laser Operation")
+            .map(|e| e.value = PropertyValue::String(operation.into()));
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.is_open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.is_open)
+    }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
         self.set_open(true)
@@ -226,17 +353,17 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("VERSION?", "SMD12 v2.0")
-            .expect("STATUS?", "DISABLED")
-            .expect("CONTROL?", "POWER")
+            .expect("VERSION?\r", "SMD12 v2.0")
+            .expect("STATUS?\r", "DISABLED")
+            .expect("CONTROL?\r", "POWER")
             // TIMERS?: 4 responses
-            .expect("TIMERS?", "PSU Time = 100.5 Hours")
+            .expect("TIMERS?\r", "PSU Time = 100.5 Hours")
             .any("Laser Enabled Time = 50.2 Hours")
             .any("Laser Operation Time = 48.0 Hours")
             .any("")
             // POWER?, CURRENT?
-            .expect("POWER?", "50.0mW")
-            .expect("CURRENT?", "30.0%")
+            .expect("POWER?\r", "50.0mW")
+            .expect("CURRENT?\r", "30.0%")
     }
 
     #[test]
@@ -244,15 +371,34 @@ mod tests {
         let mut dev = LaserQuantumLaser::new().with_transport(Box::new(make_transport()));
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
+        assert_eq!(dev.device_type(), DeviceType::Generic);
         assert_eq!(dev.power_mw, 50.0);
         assert_eq!(dev.current_pct, 30.0);
+        assert_eq!(dev.name(), "Laser");
+        assert_eq!(dev.description(), "LaserQuantum laser");
+        assert_eq!(
+            dev.get_property("Time PSU (h)").unwrap(),
+            PropertyValue::Float(100.5)
+        );
+        assert_eq!(
+            dev.get_property("Time enabled (h)").unwrap(),
+            PropertyValue::Float(50.2)
+        );
+        assert_eq!(
+            dev.get_property("Time operation (h)").unwrap(),
+            PropertyValue::Float(48.0)
+        );
+        assert!(dev.has_property("Maximum power (mW)"));
+        assert!(dev.has_property("Laser Operation"));
+        assert!(dev.has_property("Current control"));
+        assert!(!dev.has_property("PowerSetpoint_mW"));
+        assert!(!dev.has_property("Current_pct"));
+        assert!(!dev.has_property("ControlMode"));
     }
 
     #[test]
     fn open_close() {
-        let t = make_transport()
-            .expect("ON", "OK")
-            .expect("OFF", "OK");
+        let t = make_transport().expect("ON\r", "OK").expect("OFF\r", "OK");
         let mut dev = LaserQuantumLaser::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_open(true).unwrap();
@@ -266,8 +412,43 @@ mod tests {
         let t = make_transport().any("OK");
         let mut dev = LaserQuantumLaser::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
-        dev.set_property("PowerSetpoint_mW", PropertyValue::Float(80.0)).unwrap();
+        dev.set_property("Power (mW)", PropertyValue::Float(80.0))
+            .unwrap();
         assert_eq!(dev.power_mw, 80.0);
+    }
+
+    #[test]
+    fn maximum_power_limits_power_property() {
+        let mut dev = LaserQuantumLaser::new();
+        let entry = dev.props.entry("Power (mW)").unwrap();
+        assert!(entry.has_limits);
+        assert_eq!(entry.lower_limit, 0.0);
+        assert_eq!(entry.upper_limit, 500.0);
+
+        dev.set_property("Maximum power (mW)", PropertyValue::Float(75.0))
+            .unwrap();
+        let entry = dev.props.entry("Power (mW)").unwrap();
+        assert_eq!(entry.upper_limit, 75.0);
+
+        assert_eq!(
+            dev.set_property("Power (mW)", PropertyValue::Float(80.0)),
+            Err(MmError::InvalidPropertyValue)
+        );
+    }
+
+    #[test]
+    fn current_property_rejects_out_of_range_values() {
+        let mut dev = LaserQuantumLaser::new();
+        assert_eq!(
+            dev.set_property("Current (%)", PropertyValue::Float(101.0)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.set_property("Current (%)", PropertyValue::Float(-1.0)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        dev.set_property("Current (%)", PropertyValue::Float(100.0))
+            .unwrap();
     }
 
     #[test]
@@ -275,6 +456,10 @@ mod tests {
         assert_eq!(LaserQuantumLaser::parse_numeric("125.3mW"), 125.3);
         assert_eq!(LaserQuantumLaser::parse_numeric("45.5%"), 45.5);
         assert_eq!(LaserQuantumLaser::parse_numeric("23.1C"), 23.1);
+        assert_eq!(
+            LaserQuantumLaser::parse_numeric("PSU Time = 100.5 Hours"),
+            100.5
+        );
     }
 
     #[test]

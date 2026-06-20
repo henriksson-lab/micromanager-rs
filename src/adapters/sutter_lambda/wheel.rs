@@ -17,7 +17,11 @@ use crate::types::{DeviceType, PropertyValue};
 
 /// Which wheel on the Lambda controller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WheelId { A, B, C }
+pub enum WheelId {
+    A,
+    B,
+    C,
+}
 
 pub struct LambdaWheel {
     props: PropertyMap,
@@ -34,14 +38,28 @@ pub struct LambdaWheel {
 impl LambdaWheel {
     pub fn new(wheel: WheelId) -> Self {
         let num_positions: u8 = 10;
-        let labels: Vec<String> = (0..num_positions).map(|i| format!("Position-{}", i)).collect();
+        let labels: Vec<String> = (0..num_positions)
+            .map(|i| format!("Filter-{}", i))
+            .collect();
         let mut props = PropertyMap::new();
-        props.define_property("State", PropertyValue::Integer(0), false).unwrap();
-        props.define_property("Label", PropertyValue::String("Position-0".into()), false).unwrap();
-        props.define_property("Speed", PropertyValue::Integer(3), false).unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Speed", PropertyValue::Integer(3), false)
+            .unwrap();
         props.set_property_limits("Speed", 0.0, 7.0).unwrap();
-        let wheel_name = match wheel { WheelId::A => "A", WheelId::B => "B", WheelId::C => "C" };
-        props.define_property("Wheel", PropertyValue::String(wheel_name.into()), true).unwrap();
+        let wheel_name = match wheel {
+            WheelId::A => "A",
+            WheelId::B => "B",
+            WheelId::C => "C",
+        };
+        props
+            .define_property("Wheel", PropertyValue::String(wheel_name.into()), true)
+            .unwrap();
 
         Self {
             props,
@@ -108,15 +126,21 @@ impl LambdaWheel {
 }
 
 impl Device for LambdaWheel {
-    fn name(&self) -> &str { "LambdaWheel" }
-    fn description(&self) -> &str { "Sutter Lambda filter wheel" }
+    fn name(&self) -> &str {
+        match self.wheel {
+            WheelId::A => "Wheel-A",
+            WheelId::B => "Wheel-B",
+            WheelId::C => "Wheel-C",
+        }
+    }
+    fn description(&self) -> &str {
+        "Sutter Lambda filter wheel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        // Move to position 0 to confirm communication
-        self.send_move(0)?;
         self.position = 0;
         self.initialized = true;
         Ok(())
@@ -131,7 +155,10 @@ impl Device for LambdaWheel {
         match name {
             "State" => Ok(PropertyValue::Integer(self.position as i64)),
             "Label" => Ok(PropertyValue::String(
-                self.labels.get(self.position as usize).cloned().unwrap_or_default()
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
             )),
             _ => self.props.get(name).cloned(),
         }
@@ -149,7 +176,9 @@ impl Device for LambdaWheel {
             }
             "Speed" => {
                 let s = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
-                if s > 7 { return Err(MmError::InvalidPropertyValue); }
+                if s > 7 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 self.speed = s;
                 self.props.set(name, PropertyValue::Integer(s as i64))
             }
@@ -157,13 +186,21 @@ impl Device for LambdaWheel {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for LambdaWheel {
@@ -178,16 +215,26 @@ impl StateDevice for LambdaWheel {
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position as u64) }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position as u64)
+    }
 
-    fn get_number_of_positions(&self) -> u64 { self.num_positions as u64 }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions as u64
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned().ok_or(MmError::UnknownPosition)
+        self.labels
+            .get(pos as usize)
+            .cloned()
+            .ok_or(MmError::UnknownPosition)
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
@@ -205,7 +252,9 @@ impl StateDevice for LambdaWheel {
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]
@@ -214,14 +263,12 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_wheel_a() -> LambdaWheel {
-        // Init: move to pos 0 (speed 3 → cmd = 0x30 | 0 = 0x30), response = [0x30, 0x0D]
-        let t = MockTransport::new()
-            .expect_binary(&[0x30, 0x0D]);
+        let t = MockTransport::new();
         LambdaWheel::new(WheelId::A).with_transport(Box::new(t))
     }
 
     #[test]
-    fn initialize_moves_to_zero() {
+    fn initialize_does_not_move_wheel() {
         let mut wheel = make_wheel_a();
         wheel.initialize().unwrap();
         assert_eq!(wheel.get_position().unwrap(), 0);
@@ -229,10 +276,8 @@ mod tests {
 
     #[test]
     fn set_position_wheel_a() {
-        // After init (1 response), set to position 3: cmd = (3<<4)|3 = 0x33
-        let t = MockTransport::new()
-            .expect_binary(&[0x30, 0x0D])   // init move to 0
-            .expect_binary(&[0x33, 0x0D]);  // move to 3
+        // Set to position 3: cmd = (3<<4)|3 = 0x33
+        let t = MockTransport::new().expect_binary(&[0x33, 0x0D]); // move to 3
         let mut wheel = LambdaWheel::new(WheelId::A).with_transport(Box::new(t));
         wheel.initialize().unwrap();
         wheel.set_position(3).unwrap();
@@ -242,9 +287,7 @@ mod tests {
     #[test]
     fn set_position_wheel_b() {
         // Wheel B: cmd = 0x80 | (3<<4) | 5 = 0x80 | 0x30 | 0x05 = 0xB5
-        let t = MockTransport::new()
-            .expect_binary(&[0xB0, 0x0D])   // init move B to 0
-            .expect_binary(&[0xB5, 0x0D]);  // move B to 5
+        let t = MockTransport::new().expect_binary(&[0xB5, 0x0D]); // move B to 5
         let mut wheel = LambdaWheel::new(WheelId::B).with_transport(Box::new(t));
         wheel.initialize().unwrap();
         wheel.set_position(5).unwrap();
@@ -253,10 +296,8 @@ mod tests {
 
     #[test]
     fn set_position_wheel_c() {
-        // Wheel C: send [0xFC, (3<<4)|0=0x30], recv [0xFC, 0x30, 0x0D]
-        let t = MockTransport::new()
-            .expect_binary(&[0xFC, 0x30, 0x0D])  // init
-            .expect_binary(&[0xFC, 0x32, 0x0D]);  // move to 2
+        // Wheel C: send [0xFC, (3<<4)|2=0x32], recv [0xFC, 0x32, 0x0D]
+        let t = MockTransport::new().expect_binary(&[0xFC, 0x32, 0x0D]); // move to 2
         let mut wheel = LambdaWheel::new(WheelId::C).with_transport(Box::new(t));
         wheel.initialize().unwrap();
         wheel.set_position(2).unwrap();
@@ -272,9 +313,7 @@ mod tests {
 
     #[test]
     fn label_navigation() {
-        let t = MockTransport::new()
-            .expect_binary(&[0x30, 0x0D])   // init
-            .expect_binary(&[0x34, 0x0D]);  // move to 4
+        let t = MockTransport::new().expect_binary(&[0x34, 0x0D]); // move to 4
         let mut wheel = LambdaWheel::new(WheelId::A).with_transport(Box::new(t));
         wheel.initialize().unwrap();
         wheel.set_position_label(4, "DAPI").unwrap();

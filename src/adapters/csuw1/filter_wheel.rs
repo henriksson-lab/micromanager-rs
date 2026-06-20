@@ -1,7 +1,7 @@
 /// Yokogawa CSU-W1 filter wheel and dichroic selector.
 ///
 /// Protocol (TX/RX `\r`):
-///   `FW_POS,<wheel>,<pos>\r`   → `A`           set filter wheel position (1-based)
+///   `FW_POS, <wheel>, <pos>\r` → `A`           set filter wheel position (1-based)
 ///   `FW_POS, <wheel>, ?\r`     → `<pos>\rA`    query position (1-based in response)
 ///   `DMM_POS,1,<pos>\r`        → `A`           set dichroic position (1-based)
 ///   `DMM_POS,1, ?\r`           → `<pos>\rA`    query dichroic position
@@ -18,6 +18,7 @@ pub struct CsuFilterWheel {
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
     wheel: u8,
+    speed: i64,
     num_positions: u64,
     position: u64,
     labels: Vec<String>,
@@ -26,10 +27,54 @@ pub struct CsuFilterWheel {
 impl CsuFilterWheel {
     pub fn new(wheel: u8, num_positions: u64) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Wheel", PropertyValue::Integer(wheel as i64), false).unwrap();
-        let labels = (0..num_positions).map(|i| format!("Filter-{}", i + 1)).collect();
-        Self { props, transport: None, initialized: false, wheel, num_positions, position: 0, labels }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property(
+                "Name",
+                PropertyValue::String("CSUW1-Filter Wheel".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "Description",
+                PropertyValue::String("CSUW1-Filter Wheel".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("WheelNumber", PropertyValue::Integer(wheel as i64), false)
+            .unwrap();
+        props
+            .set_allowed_values("WheelNumber", &["1", "2"])
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String("Filter-1".into()), false)
+            .unwrap();
+        props
+            .define_property("Speed", PropertyValue::Integer(2), false)
+            .unwrap();
+        props
+            .set_allowed_values("Speed", &["0", "1", "2", "3"])
+            .unwrap();
+        let labels = (0..num_positions)
+            .map(|i| format!("Filter-{}", i + 1))
+            .collect();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            wheel,
+            speed: 2,
+            num_positions,
+            position: 0,
+            labels,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -38,7 +83,9 @@ impl CsuFilterWheel {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -63,72 +110,201 @@ impl CsuFilterWheel {
     }
 }
 
-impl Default for CsuFilterWheel { fn default() -> Self { Self::new(1, 6) } }
+impl Default for CsuFilterWheel {
+    fn default() -> Self {
+        Self::new(1, 10)
+    }
+}
 
 impl Device for CsuFilterWheel {
-    fn name(&self) -> &str { "CsuFilterWheel" }
-    fn description(&self) -> &str { "Yokogawa CSU-W1 Filter Wheel" }
+    fn name(&self) -> &str {
+        "CSUW1-Filter Wheel"
+    }
+    fn description(&self) -> &str {
+        "CSUW1-Filter Wheel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let q = format!("FW_POS, {}, ?", self.wheel);
         let resp = self.cmd(&q)?;
         self.position = Self::parse_pos_response(&resp);
+        if let Ok(resp) = self.cmd(&format!("FW_SPEED, {}, ?", self.wheel)) {
+            self.speed = resp
+                .split(|c: char| c.is_whitespace() || c == '\r' || c == '\n' || c == 'A')
+                .find(|s| !s.is_empty())
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(self.speed);
+        }
+        self.props
+            .set("State", PropertyValue::Integer(self.position as i64))?;
+        self.props.set(
+            "Label",
+            PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )?;
+        self.props
+            .set("Speed", PropertyValue::Integer(self.speed))?;
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        match name {
+            "State" => Ok(PropertyValue::Integer(self.position as i64)),
+            "Label" => Ok(PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            )),
+            "WheelNumber" => Ok(PropertyValue::Integer(self.wheel as i64)),
+            "Speed" => Ok(PropertyValue::Integer(self.speed)),
+            _ => self.props.get(name).cloned(),
+        }
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        match name {
+            "State" => {
+                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if pos < 0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.set_position(pos as u64)
+            }
+            "Label" => {
+                let label = val.as_str().to_string();
+                self.set_position_by_label(&label)
+            }
+            "WheelNumber" => {
+                if self.initialized {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let wheel = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(1..=2).contains(&wheel) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.wheel = wheel as u8;
+                self.props
+                    .set("WheelNumber", PropertyValue::Integer(self.wheel as i64))
+            }
+            "Speed" => {
+                let speed = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0..=3).contains(&speed) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                if self.initialized {
+                    let resp = self.cmd(&format!("FW_SPEED, {}, {}", self.wheel, speed))?;
+                    if resp.contains('N') {
+                        return Err(MmError::LocallyDefined(format!("CSU FW NAK: {}", resp)));
+                    }
+                }
+                self.speed = speed;
+                self.props.set("Speed", PropertyValue::Integer(speed))
+            }
+            _ => self.props.set(name, val),
+        }
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for CsuFilterWheel {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!("Position {} out of range", pos)));
+            return Err(MmError::LocallyDefined(format!(
+                "Position {} out of range",
+                pos
+            )));
         }
-        let cmd = format!("FW_POS,{},{}", self.wheel, pos + 1); // 1-based
+        let cmd = format!("FW_POS, {}, {}", self.wheel, pos + 1); // 1-based
         let resp = self.cmd(&cmd)?;
         if resp.contains('N') {
             return Err(MmError::LocallyDefined(format!("CSU FW NAK: {}", resp)));
         }
         self.position = pos;
+        self.props
+            .set("State", PropertyValue::Integer(self.position as i64))?;
+        self.props.set(
+            "Label",
+            PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )?;
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
-    fn get_number_of_positions(&self) -> u64 { self.num_positions }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned()
+        self.labels
+            .get(pos as usize)
+            .cloned()
             .ok_or_else(|| MmError::LocallyDefined(format!("Position {} out of range", pos)))
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
 
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!("Position {} out of range", pos)));
+            return Err(MmError::LocallyDefined(format!(
+                "Position {} out of range",
+                pos
+            )));
         }
         self.labels[pos as usize] = label.to_string();
+        if pos == self.position {
+            self.props
+                .set("Label", PropertyValue::String(label.to_string()))?;
+        }
         Ok(())
     }
 
-    fn set_gate_open(&mut self, _open: bool) -> MmResult<()> { Ok(()) }
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(true) }
+    fn set_gate_open(&mut self, _open: bool) -> MmResult<()> {
+        Ok(())
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(true)
+    }
 }
 
 /// CSU-W1 dichroic mirror selector.
@@ -144,9 +320,27 @@ pub struct CsuDichroic {
 impl CsuDichroic {
     pub fn new(num_positions: u64) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        let labels = (0..num_positions).map(|i| format!("Dichroic-{}", i + 1)).collect();
-        Self { props, transport: None, initialized: false, num_positions, position: 0, labels }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1", "2"]).unwrap();
+        props
+            .define_property("Label", PropertyValue::String("Dichroic-1".into()), false)
+            .unwrap();
+        let labels = (0..num_positions)
+            .map(|i| format!("Dichroic-{}", i + 1))
+            .collect();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            num_positions,
+            position: 0,
+            labels,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -155,7 +349,9 @@ impl CsuDichroic {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -171,75 +367,171 @@ impl CsuDichroic {
     }
 }
 
-impl Default for CsuDichroic { fn default() -> Self { Self::new(3) } }
+impl Default for CsuDichroic {
+    fn default() -> Self {
+        Self::new(3)
+    }
+}
 
 impl Device for CsuDichroic {
-    fn name(&self) -> &str { "CsuDichroic" }
-    fn description(&self) -> &str { "Yokogawa CSU-W1 Dichroic Selector" }
+    fn name(&self) -> &str {
+        "CSUW1-Dichroic Mirror"
+    }
+    fn description(&self) -> &str {
+        "CSUW1 Dichroics"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let resp = self.cmd("DMM_POS,1, ?")?;
-        self.position = resp.split(|c: char| c.is_whitespace() || c == '\r' || c == '\n' || c == 'A')
+        self.position = resp
+            .split(|c: char| c.is_whitespace() || c == '\r' || c == '\n' || c == 'A')
             .find(|s| !s.is_empty())
             .and_then(|s| s.parse::<u64>().ok())
             .map(|p| p.saturating_sub(1))
             .unwrap_or(0);
+        self.props
+            .set("State", PropertyValue::Integer(self.position as i64))?;
+        self.props.set(
+            "Label",
+            PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )?;
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        match name {
+            "State" => Ok(PropertyValue::Integer(self.position as i64)),
+            "Label" => Ok(PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            )),
+            _ => self.props.get(name).cloned(),
+        }
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        match name {
+            "State" => {
+                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if pos < 0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.set_position(pos as u64)
+            }
+            "Label" => {
+                let label = val.as_str().to_string();
+                self.set_position_by_label(&label)
+            }
+            _ => self.props.set(name, val),
+        }
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for CsuDichroic {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!("Position {} out of range", pos)));
+            return Err(MmError::LocallyDefined(format!(
+                "Position {} out of range",
+                pos
+            )));
         }
         let cmd = format!("DMM_POS,1,{}", pos + 1);
         let resp = self.cmd(&cmd)?;
         if resp.contains('N') {
-            return Err(MmError::LocallyDefined(format!("CSU dichroic NAK: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "CSU dichroic NAK: {}",
+                resp
+            )));
         }
         self.position = pos;
+        self.props
+            .set("State", PropertyValue::Integer(self.position as i64))?;
+        self.props.set(
+            "Label",
+            PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )?;
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
-    fn get_number_of_positions(&self) -> u64 { self.num_positions }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned()
+        self.labels
+            .get(pos as usize)
+            .cloned()
             .ok_or_else(|| MmError::LocallyDefined(format!("Position {} out of range", pos)))
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
 
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!("Position {} out of range", pos)));
+            return Err(MmError::LocallyDefined(format!(
+                "Position {} out of range",
+                pos
+            )));
         }
         self.labels[pos as usize] = label.to_string();
+        if pos == self.position {
+            self.props
+                .set("Label", PropertyValue::String(label.to_string()))?;
+        }
         Ok(())
     }
 
-    fn set_gate_open(&mut self, _open: bool) -> MmResult<()> { Ok(()) }
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(true) }
+    fn set_gate_open(&mut self, _open: bool) -> MmResult<()> {
+        Ok(())
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -249,7 +541,9 @@ mod tests {
 
     #[test]
     fn filter_wheel_init() {
-        let t = MockTransport::new().expect("FW_POS, 1, ?\r", "2\rA");
+        let t = MockTransport::new()
+            .expect("FW_POS, 1, ?\r", "2\rA")
+            .expect("FW_SPEED, 1, ?\r", "2\rA");
         let mut w = CsuFilterWheel::new(1, 6).with_transport(Box::new(t));
         w.initialize().unwrap();
         assert_eq!(w.get_position().unwrap(), 1); // '2' → 0-based 1
@@ -259,7 +553,8 @@ mod tests {
     fn filter_wheel_set() {
         let t = MockTransport::new()
             .expect("FW_POS, 1, ?\r", "1\rA")
-            .expect("FW_POS,1,3\r", "A");
+            .expect("FW_SPEED, 1, ?\r", "2\rA")
+            .expect("FW_POS, 1, 3\r", "A");
         let mut w = CsuFilterWheel::new(1, 6).with_transport(Box::new(t));
         w.initialize().unwrap();
         w.set_position(2).unwrap(); // 0-based 2 → sends 3
@@ -282,5 +577,10 @@ mod tests {
     fn no_transport_error() {
         assert!(CsuFilterWheel::new(1, 6).initialize().is_err());
         assert!(CsuDichroic::new(3).initialize().is_err());
+    }
+
+    #[test]
+    fn default_filter_wheel_has_ten_positions_like_upstream() {
+        assert_eq!(CsuFilterWheel::default().get_number_of_positions(), 10);
     }
 }

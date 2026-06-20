@@ -13,7 +13,7 @@
 ///   `CLEAR\n`                 → OK                         clear faults
 ///
 /// Shutter set_open sends a combined command:
-///   `SHUTTER:<nm1>=OPEN,<nm2>=OPEN,...\n`   (for all wavelengths)
+///   `SHUTTER:<nm1>=1,<nm2>=1,...\n`   (for all wavelengths)
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
@@ -33,10 +33,18 @@ pub struct LdiController {
 impl LdiController {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("FunctionalMode", PropertyValue::String("RUN".into()), false).unwrap();
-        props.set_allowed_values("FunctionalMode", &["RUN", "IDLE"]).unwrap();
-        props.define_property("Fault", PropertyValue::String(String::new()), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("FunctionalMode", PropertyValue::String("RUN".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("FunctionalMode", &["RUN", "IDLE"])
+            .unwrap();
+        props
+            .define_property("Fault", PropertyValue::String(String::new()), true)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -54,7 +62,9 @@ impl LdiController {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -80,18 +90,29 @@ impl LdiController {
     }
 }
 
-impl Default for LdiController { fn default() -> Self { Self::new() } }
+impl Default for LdiController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for LdiController {
-    fn name(&self) -> &str { "LdiController" }
-    fn description(&self) -> &str { "89 North Laser Diode Illuminator" }
+    fn name(&self) -> &str {
+        "LdiController"
+    }
+    fn description(&self) -> &str {
+        "89 North Laser Diode Illuminator"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Discover available wavelengths
         let cfg = self.cmd("CONFIG?")?;
         let wl_str = cfg.strip_prefix("CONFIG:").unwrap_or("");
-        self.wavelengths = wl_str.split(',')
+        self.wavelengths = wl_str
+            .split(',')
             .filter_map(|s| s.trim().parse::<u32>().ok())
             .collect();
         self.intensities = vec![100.0; self.wavelengths.len()];
@@ -104,9 +125,13 @@ impl Device for LdiController {
         // Define per-wavelength properties
         for &nm in &self.wavelengths {
             let int_key = format!("Intensity_{}nm", nm);
-            let _ = self.props.define_property(&int_key, PropertyValue::Float(100.0), false);
+            let _ = self
+                .props
+                .define_property(&int_key, PropertyValue::Float(100.0), false);
             let sh_key = format!("AutoShutter_{}nm", nm);
-            let _ = self.props.define_property(&sh_key, PropertyValue::String("1".into()), false);
+            let _ = self
+                .props
+                .define_property(&sh_key, PropertyValue::String("1".into()), false);
             let _ = self.props.set_allowed_values(&sh_key, &["0", "1"]);
         }
         self.initialized = true;
@@ -136,7 +161,9 @@ impl Device for LdiController {
                     self.cmd(&format!("SET:{}={:.1}", nm, pct))?;
                 }
                 self.intensities[i] = pct;
-                self.props.entry_mut(name).map(|e| e.value = PropertyValue::Float(pct));
+                self.props
+                    .entry_mut(name)
+                    .map(|e| e.value = PropertyValue::Float(pct));
                 return Ok(());
             }
             let sh_key = format!("AutoShutter_{}nm", nm);
@@ -152,27 +179,39 @@ impl Device for LdiController {
                 if self.initialized {
                     self.cmd(&mode)?;
                 }
-                self.props.entry_mut(name).map(|e| e.value = PropertyValue::String(mode));
+                self.props
+                    .entry_mut(name)
+                    .map(|e| e.value = PropertyValue::String(mode));
                 Ok(())
             }
             _ => self.props.set(name, val),
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for LdiController {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         // Build combined SHUTTER command for all wavelengths
-        let state = if open { "OPEN" } else { "CLOSED" };
-        let parts: Vec<String> = self.wavelengths.iter()
+        let state = if open { "1" } else { "0" };
+        let parts: Vec<String> = self
+            .wavelengths
+            .iter()
             .map(|&nm| format!("{}={}", nm, state))
             .collect();
         if !parts.is_empty() {
@@ -183,9 +222,13 @@ impl Shutter for LdiController {
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.open)
+    }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { Ok(()) }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]
@@ -209,8 +252,8 @@ mod tests {
     #[test]
     fn open_close() {
         let t = make_init_transport()
-            .expect("SHUTTER:405=OPEN,488=OPEN,561=OPEN,640=OPEN\n", "ok")
-            .expect("SHUTTER:405=CLOSED,488=CLOSED,561=CLOSED,640=CLOSED\n", "ok");
+            .expect("SHUTTER:405=1,488=1,561=1,640=1\n", "ok")
+            .expect("SHUTTER:405=0,488=0,561=0,640=0\n", "ok");
         let mut dev = LdiController::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_open(true).unwrap();
@@ -221,11 +264,11 @@ mod tests {
 
     #[test]
     fn set_intensity() {
-        let t = make_init_transport()
-            .expect("SET:488=75.0\n", "ok");
+        let t = make_init_transport().expect("SET:488=75.0\n", "ok");
         let mut dev = LdiController::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
-        dev.set_property("Intensity_488nm", PropertyValue::Float(75.0)).unwrap();
+        dev.set_property("Intensity_488nm", PropertyValue::Float(75.0))
+            .unwrap();
         assert!((dev.intensities[1] - 75.0).abs() < 0.01);
     }
 
@@ -240,5 +283,13 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(LdiController::new().initialize().is_err()); }
+    fn fire_is_unsupported() {
+        let mut dev = LdiController::new();
+        assert_eq!(dev.fire(5.0), Err(MmError::UnsupportedCommand));
+    }
+
+    #[test]
+    fn no_transport_error() {
+        assert!(LdiController::new().initialize().is_err());
+    }
 }

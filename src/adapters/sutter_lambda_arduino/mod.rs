@@ -11,7 +11,6 @@
 ///   Load sequence:      "Q<digits>\r" → "K" or "E"
 ///   Start sequencing:   "R\r"  → "K"
 ///   Stop sequencing:    "E\r"  → "K"
-
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, StateDevice};
@@ -32,11 +31,19 @@ pub struct LambdaArduinoWheel {
 
 impl LambdaArduinoWheel {
     pub fn new() -> Self {
-        let labels = (0..NUM_POSITIONS).map(|i| format!("Position-{}", i)).collect();
+        let labels = (0..NUM_POSITIONS)
+            .map(|i| format!("Position-{}", i))
+            .collect();
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("State", PropertyValue::Integer(0), false).unwrap();
-        props.define_property("Speed", PropertyValue::Integer(3), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Speed", PropertyValue::Integer(3), false)
+            .unwrap();
         props.set_property_limits("Speed", 0.0, 7.0).unwrap();
         Self {
             props,
@@ -74,15 +81,19 @@ impl LambdaArduinoWheel {
         match resp.as_str() {
             "K" => Ok(()),
             "E" => Err(MmError::SerialInvalidResponse),
-            _   => Err(MmError::SerialInvalidResponse),
+            _ => Err(MmError::SerialInvalidResponse),
         }
     }
 
     fn get_wheel_position(&mut self) -> MmResult<u64> {
         let resp = self.send_recv("W\r")?;
-        if resp.len() != 1 { return Err(MmError::SerialInvalidResponse); }
+        if resp.len() != 1 {
+            return Err(MmError::SerialInvalidResponse);
+        }
         let ch = resp.chars().next().unwrap();
-        if !ch.is_ascii_digit() { return Err(MmError::SerialInvalidResponse); }
+        if !ch.is_ascii_digit() {
+            return Err(MmError::SerialInvalidResponse);
+        }
         Ok((ch as u64) - ('0' as u64))
     }
 
@@ -92,15 +103,19 @@ impl LambdaArduinoWheel {
         match resp.as_str() {
             "K" => Ok(()),
             "E" => Err(MmError::SerialInvalidResponse),
-            _   => Err(MmError::SerialInvalidResponse),
+            _ => Err(MmError::SerialInvalidResponse),
         }
     }
 
     fn get_wheel_speed(&mut self) -> MmResult<u8> {
         let resp = self.send_recv("F\r")?;
-        if resp.len() != 1 { return Err(MmError::SerialInvalidResponse); }
+        if resp.len() != 1 {
+            return Err(MmError::SerialInvalidResponse);
+        }
         let ch = resp.chars().next().unwrap();
-        if !('0'..='7').contains(&ch) { return Err(MmError::SerialInvalidResponse); }
+        if !('0'..='7').contains(&ch) {
+            return Err(MmError::SerialInvalidResponse);
+        }
         Ok((ch as u8) - b'0')
     }
 
@@ -109,18 +124,24 @@ impl LambdaArduinoWheel {
         let resp = self.send_recv(&cmd)?;
         match resp.as_str() {
             "K" => Ok(()),
-            _   => Err(MmError::SerialInvalidResponse),
+            _ => Err(MmError::SerialInvalidResponse),
         }
     }
 }
 
 impl Default for LambdaArduinoWheel {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for LambdaArduinoWheel {
-    fn name(&self) -> &str { "LambdaArduinoWheel" }
-    fn description(&self) -> &str { "Sutter Lambda Parallel Arduino wheel" }
+    fn name(&self) -> &str {
+        "ArduinoWheelA"
+    }
+    fn description(&self) -> &str {
+        "Sutter Lambda Parallel Arduino wheel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -159,7 +180,9 @@ impl Device for LambdaArduinoWheel {
             }
             "Speed" => {
                 let s = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
-                if s > 7 { return Err(MmError::InvalidPropertyValue); }
+                if s > 7 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 self.set_wheel_speed(s)?;
                 self.speed = s;
                 Ok(())
@@ -168,13 +191,21 @@ impl Device for LambdaArduinoWheel {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for LambdaArduinoWheel {
@@ -189,21 +220,33 @@ impl StateDevice for LambdaArduinoWheel {
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
-    fn get_number_of_positions(&self) -> u64 { NUM_POSITIONS }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        NUM_POSITIONS
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned().ok_or(MmError::UnknownPosition)
+        self.labels
+            .get(pos as usize)
+            .cloned()
+            .ok_or(MmError::UnknownPosition)
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
 
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
-        if pos >= NUM_POSITIONS { return Err(MmError::UnknownPosition); }
+        if pos >= NUM_POSITIONS {
+            return Err(MmError::UnknownPosition);
+        }
         self.labels[pos as usize] = label.to_string();
         Ok(())
     }
@@ -213,7 +256,9 @@ impl StateDevice for LambdaArduinoWheel {
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]
@@ -223,9 +268,9 @@ mod tests {
 
     fn make_initialized_wheel() -> LambdaArduinoWheel {
         let t = MockTransport::new()
-            .expect("O\r", "K")   // go online
-            .expect("W\r", "0")   // get position → 0
-            .expect("F\r", "3");  // get speed → 3
+            .expect("O\r", "K") // go online
+            .expect("W\r", "0") // get position → 0
+            .expect("F\r", "3"); // get speed → 3
         LambdaArduinoWheel::new().with_transport(Box::new(t))
     }
 

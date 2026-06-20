@@ -35,8 +35,17 @@ pub struct Motion8XYStage {
 impl Motion8XYStage {
     pub fn new(device_id: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, transport: None, initialized: false, device_id, x_um: 0.0, y_um: 0.0 }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            device_id,
+            x_um: 0.0,
+            y_um: 0.0,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -45,7 +54,9 @@ impl Motion8XYStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -54,7 +65,10 @@ impl Motion8XYStage {
 
     fn cmd(&mut self, tag: &str) -> MmResult<String> {
         let c = format!("{}\n", tag);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     /// Query XY position; response is "<x_steps>,<y_steps>"
@@ -62,7 +76,10 @@ impl Motion8XYStage {
         let resp = self.cmd(&format!("M8XY:GET:{}", self.device_id))?;
         let parts: Vec<&str> = resp.splitn(2, ',').collect();
         if parts.len() < 2 {
-            return Err(MmError::LocallyDefined(format!("Motion8 XY: bad response: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Motion8 XY: bad response: {}",
+                resp
+            )));
         }
         let x: i64 = parts[0].trim().parse().unwrap_or(0);
         let y: i64 = parts[1].trim().parse().unwrap_or(0);
@@ -70,22 +87,38 @@ impl Motion8XYStage {
     }
 
     fn send_move(&mut self, x_steps: i64, y_steps: i64) -> MmResult<()> {
-        let resp = self.cmd(&format!("M8XY:MOV:{},{},{}", self.device_id, x_steps, y_steps))?;
+        let resp = self.cmd(&format!(
+            "M8XY:MOV:{},{},{}",
+            self.device_id, x_steps, y_steps
+        ))?;
         if resp.starts_with("ERR") {
-            return Err(MmError::LocallyDefined(format!("Motion8 XY move error: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "Motion8 XY move error: {}",
+                resp
+            )));
         }
         Ok(())
     }
 }
 
-impl Default for Motion8XYStage { fn default() -> Self { Self::new(0) } }
+impl Default for Motion8XYStage {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
 
 impl Device for Motion8XYStage {
-    fn name(&self) -> &str { "ScientificaMotion8-XYStage" }
-    fn description(&self) -> &str { "Scientifica Motion8 XY stage" }
+    fn name(&self) -> &str {
+        "ScientificaMotion8-XYStage"
+    }
+    fn description(&self) -> &str {
+        "Scientifica Motion8 XY stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let (x, y) = self.query_xy()?;
         self.x_um = x;
         self.y_um = y;
@@ -93,17 +126,32 @@ impl Device for Motion8XYStage {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for Motion8XYStage {
@@ -116,7 +164,9 @@ impl XYStage for Motion8XYStage {
         Ok(())
     }
 
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        Ok((self.x_um, self.y_um))
+    }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let new_x = self.x_um + dx;
@@ -125,26 +175,39 @@ impl XYStage for Motion8XYStage {
     }
 
     fn home(&mut self) -> MmResult<()> {
-        // Motion8 home is not supported; reset cached position
-        self.x_um = 0.0;
-        self.y_um = 0.0;
+        // Upstream Motion8 Home is a no-op success.
         Ok(())
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        let _ = self.cmd(&format!("M8XY:STOP:{}", self.device_id));
+        let resp = self.cmd(&format!("M8XY:STOP:{}", self.device_id))?;
+        if resp.starts_with("ERR") {
+            return Err(MmError::LocallyDefined(format!(
+                "Motion8 XY stop error: {}",
+                resp
+            )));
+        }
         Ok(())
     }
 
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        // Motion8 does not report limits; return a large nominal range
-        Ok((-100_000.0, 100_000.0, -100_000.0, 100_000.0))
+        Err(MmError::LocallyDefined(
+            "Motion8 XY limits not supported".into(),
+        ))
     }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (0.01, 0.01) }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (0.01, 0.01)
+    }
 
     fn set_origin(&mut self) -> MmResult<()> {
-        let _ = self.cmd(&format!("M8XY:ORIGIN:{}", self.device_id));
+        let resp = self.cmd(&format!("M8XY:ORIGIN:{}", self.device_id))?;
+        if resp.starts_with("ERR") {
+            return Err(MmError::LocallyDefined(format!(
+                "Motion8 XY origin error: {}",
+                resp
+            )));
+        }
         self.x_um = 0.0;
         self.y_um = 0.0;
         Ok(())
@@ -157,8 +220,7 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
-        MockTransport::new()
-            .any("10000,20000")  // GET → (100.0, 200.0) µm
+        MockTransport::new().any("10000,20000") // GET → (100.0, 200.0) µm
     }
 
     #[test]
@@ -201,10 +263,34 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(Motion8XYStage::new(0).initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(Motion8XYStage::new(0).initialize().is_err());
+    }
 
     #[test]
     fn step_size() {
         assert_eq!(Motion8XYStage::new(0).get_step_size_um(), (0.01, 0.01));
+    }
+
+    #[test]
+    fn home_is_noop_and_limits_unsupported() {
+        let mut s = Motion8XYStage::new(0).with_transport(Box::new(make_transport()));
+        s.initialize().unwrap();
+        s.home().unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (100.0, 200.0));
+        assert!(s.get_limits_um().is_err());
+    }
+
+    #[test]
+    fn stop_and_origin_propagate_errors() {
+        let t = MockTransport::new()
+            .any("10000,20000")
+            .any("ERR stop")
+            .any("ERR origin");
+        let mut s = Motion8XYStage::new(0).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.stop().is_err());
+        assert!(s.set_origin().is_err());
+        assert_eq!(s.get_xy_position_um().unwrap(), (100.0, 200.0));
     }
 }

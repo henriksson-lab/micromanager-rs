@@ -32,7 +32,7 @@ pub const DEVICE_NAME_CUBE: &str = "CoherentCube";
 
 static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
     name: DEVICE_NAME_CUBE,
-    description: "Coherent Cube laser controller",
+    description: "CoherentCube Laser",
     device_type: DeviceType::Shutter,
 }];
 

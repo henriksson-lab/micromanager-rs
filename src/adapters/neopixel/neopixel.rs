@@ -96,12 +96,6 @@ impl Device for NeoPixelShutter {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.call_transport(|t| {
-                t.send_bytes(&[0x02])?;
-                let _ = t.receive_bytes(1);
-                Ok(())
-            });
-            self.is_open = false;
             self.initialized = false;
         }
         Ok(())
@@ -151,8 +145,7 @@ impl Shutter for NeoPixelShutter {
     }
 
     fn fire(&mut self, _dt: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -165,8 +158,8 @@ mod tests {
         // init sequence: send 0x1E → receive_line "MM-NeoPixel"
         //                send 0x02 → receive_bytes [0x02]
         let t = MockTransport::new()
-            .any("MM-NeoPixel")         // receive_line response for firmware name
-            .expect_binary(&[0x02]);    // receive_bytes ack for close
+            .any("MM-NeoPixel") // receive_line response for firmware name
+            .expect_binary(&[0x02]); // receive_bytes ack for close
         let mut s = NeoPixelShutter::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s
@@ -214,5 +207,11 @@ mod tests {
         let t = MockTransport::new().any("WRONG-DEVICE");
         let mut s = NeoPixelShutter::new().with_transport(Box::new(t));
         assert!(s.initialize().is_err());
+    }
+
+    #[test]
+    fn fire_is_unsupported_like_upstream() {
+        let mut s = make_initialized_shutter();
+        assert_eq!(s.fire(1.0), Err(MmError::UnsupportedCommand));
     }
 }

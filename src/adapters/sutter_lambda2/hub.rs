@@ -21,7 +21,9 @@ pub struct Lambda2Hub {
 impl Lambda2Hub {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -75,16 +77,24 @@ impl Lambda2Hub {
         })
     }
 
-    pub fn controller_type(&self) -> &str { &self.controller_type }
+    pub fn controller_type(&self) -> &str {
+        &self.controller_type
+    }
 }
 
 impl Default for Lambda2Hub {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for Lambda2Hub {
-    fn name(&self) -> &str { "Lambda2Hub" }
-    fn description(&self) -> &str { "Sutter Lambda 2 controller hub" }
+    fn name(&self) -> &str {
+        "SutterHub"
+    }
+    fn description(&self) -> &str {
+        "Sutter Lambda 2 controller hub"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -106,7 +116,7 @@ impl Device for Lambda2Hub {
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "ControllerType" => Ok(PropertyValue::String(self.controller_type.clone())),
-            "ControllerID"   => Ok(PropertyValue::String(self.controller_id.clone())),
+            "ControllerID" => Ok(PropertyValue::String(self.controller_id.clone())),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -115,13 +125,21 @@ impl Device for Lambda2Hub {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Hub }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Hub
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Hub for Lambda2Hub {
@@ -129,8 +147,10 @@ impl Hub for Lambda2Hub {
         Ok(vec![
             "Lambda2-Wheel-A".to_string(),
             "Lambda2-Wheel-B".to_string(),
+            "Lambda2-Wheel-C".to_string(),
             "Lambda2-Shutter-A".to_string(),
             "Lambda2-Shutter-B".to_string(),
+            "VF-5".to_string(),
         ])
     }
 }
@@ -160,13 +180,13 @@ mod tests {
 
     #[test]
     fn detect_installed_devices() {
-        let t = MockTransport::new()
-            .expect_binary(&[0xEE, 0x0D])
-            .any("SC");
+        let t = MockTransport::new().expect_binary(&[0xEE, 0x0D]).any("SC");
         let mut hub = Lambda2Hub::new().with_transport(Box::new(t));
         hub.initialize().unwrap();
         let devs = hub.detect_installed_devices().unwrap();
         assert!(devs.contains(&"Lambda2-Shutter-A".to_string()));
         assert!(devs.contains(&"Lambda2-Wheel-A".to_string()));
+        assert!(devs.contains(&"Lambda2-Wheel-C".to_string()));
+        assert!(devs.contains(&"VF-5".to_string()));
     }
 }

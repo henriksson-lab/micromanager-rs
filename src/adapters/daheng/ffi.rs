@@ -1,7 +1,7 @@
-/// Raw FFI bindings to the Daheng Galaxy C API (GxIAPI).
-///
-/// Only the subset needed by the Camera adapter is declared here.
-/// The full API has hundreds of functions; we bind the minimum viable set.
+//! Raw FFI bindings to the Daheng Galaxy C API (GxIAPI).
+//!
+//! Only the subset needed by the Camera adapter is declared here.
+//! The full API has hundreds of functions; we bind the minimum viable set.
 #![allow(non_camel_case_types, dead_code)]
 
 use std::os::raw::{c_char, c_double, c_int, c_uint, c_ulonglong, c_void};
@@ -85,8 +85,9 @@ pub struct GxFrameData {
     pub image_size: c_int,
     pub frame_id: c_ulonglong,
     pub timestamp: c_ulonglong,
-    pub buf_id: c_ulonglong,
-    pub reserved: c_int,
+    pub offset_x: c_int,
+    pub offset_y: c_int,
+    pub reserved: [c_int; 1],
 }
 
 impl Default for GxFrameData {

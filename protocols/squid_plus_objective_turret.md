@@ -46,16 +46,16 @@ Count conversion: `counts = mm × 1 000 000 / 1250`
 | Step | Command sent       | Expected response   | Purpose                          |
 |------|--------------------|---------------------|----------------------------------|
 | 1    | `X:RSET=0\n`       | (none, fire-and-forget) | Reset axis                   |
-| 2    | `XLS1=1250\n`      | (none, fire-and-forget) | Set encoder resolution       |
+| 2    | `XLS3=1251\n`      | (none, fire-and-forget) | Set encoder resolution       |
 | 3    | `X:SSPD=1000\n`    | (none, fire-and-forget) | Set speed (1.0 mm/s × 1000) |
-| 4    | `X:SRCH=0\n`       | `X:SRCH=...\r\n`   | Home via findIndex (blocking)    |
+| 4    | `X:INDX=0\n`       | `X:INDX=...\r\n`   | Home via findIndex (blocking)    |
 | 5    | `X:EPOS=0\n`       | `X:EPOS=<counts>\r\n` | Read encoder position          |
 
 After step 5 the driver snaps to the nearest discrete position (0 or 1) based
 on the reported encoder count.
 
 **Note on homing:** The Python squid-control reference uses `findIndex`
-(`X:SRCH`) for homing, which differs from the original C++ MicroManager Xeryon
+(`X:INDX`) for homing, which differs from the original C++ MicroManager Xeryon
 adapter (which uses `X:ZERO`).
 
 ## Position Change
@@ -86,7 +86,7 @@ X:STOP=1\n          (fire-and-forget)
 | Property           | Type   | Default      | Pre-init | Description                     |
 |--------------------|--------|--------------|----------|---------------------------------|
 | Port               | String | Undefined    | yes      | Serial port name                |
-| EncoderResolution  | String | XLS1=1250    | yes      | Encoder resolution command      |
+| EncoderResolution  | String | XLS3=1251    | yes      | Encoder resolution command      |
 | Speed_mm_per_s     | Float  | 1.0          | yes      | Movement speed in mm/s          |
 
 ## Relevant Commands Summary
@@ -95,7 +95,7 @@ X:STOP=1\n          (fire-and-forget)
 |--------|----------------|---------------|------------------------------|
 | `RSET` | 0              | host → ctrl   | Reset axis                   |
 | `SSPD` | speed × 1000   | host → ctrl   | Set speed                    |
-| `SRCH` | 0              | host → ctrl   | Find encoder index (home)    |
+| `INDX` | 0              | host → ctrl   | Find encoder index (home)    |
 | `EPOS` | 0              | host → ctrl   | Query encoder position       |
 | `DPOS` | encoder counts  | host → ctrl   | Set desired position (abs)   |
 | `STOP` | 1              | host → ctrl   | Stop movement                |

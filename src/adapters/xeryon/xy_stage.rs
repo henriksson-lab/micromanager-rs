@@ -125,7 +125,7 @@ impl XeryonXYStage {
         if let Some(val_str) = cmd.split('=').nth(1) {
             match val_str.trim() {
                 "312" => 312.5,
-                "1250" => 1250.0,
+                "1250" | "1251" => 1250.0,
                 "78" => 78.125,
                 "5" => 5.0,
                 "1" => 1.0,
@@ -355,6 +355,7 @@ mod tests {
         assert!((XeryonXYStage::resolution_from_cmd("XLS1=5") - 5.0).abs() < 0.01);
         assert!((XeryonXYStage::resolution_from_cmd("XLS1=1") - 1.0).abs() < 0.01);
         assert!((XeryonXYStage::resolution_from_cmd("XLS1=1250") - 1250.0).abs() < 0.01);
+        assert!((XeryonXYStage::resolution_from_cmd("XLS3=1251") - 1250.0).abs() < 0.01);
     }
 
     #[test]

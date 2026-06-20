@@ -54,6 +54,10 @@ impl WSZStage {
             Ok(())
         }
     }
+
+    fn um_to_steps(pos_um: f64) -> i64 {
+        (pos_um * NM_PER_UM) as i64
+    }
 }
 
 impl Default for WSZStage { fn default() -> Self { Self::new() } }
@@ -86,7 +90,7 @@ impl Device for WSZStage {
 
 impl Stage for WSZStage {
     fn set_position_um(&mut self, z: f64) -> MmResult<()> {
-        let znm = (z * NM_PER_UM).round() as i64;
+        let znm = Self::um_to_steps(z);
         let resp = self.cmd(&format!("MOVE Z {}", znm))?;
         Self::check_ok(&resp)?;
         self.pos_um = z;
@@ -96,7 +100,7 @@ impl Stage for WSZStage {
     fn get_position_um(&self) -> MmResult<f64> { Ok(self.pos_um) }
 
     fn set_relative_position_um(&mut self, dz: f64) -> MmResult<()> {
-        let dznm = (dz * NM_PER_UM).round() as i64;
+        let dznm = Self::um_to_steps(dz);
         let resp = self.cmd(&format!("RMOVE Z {}", dznm))?;
         Self::check_ok(&resp)?;
         self.pos_um += dz;
@@ -161,4 +165,10 @@ mod tests {
 
     #[test]
     fn no_transport_error() { assert!(WSZStage::new().initialize().is_err()); }
+
+    #[test]
+    fn um_to_steps_truncates_like_cpp_int_cast() {
+        assert_eq!(WSZStage::um_to_steps(1.9999), 1999);
+        assert_eq!(WSZStage::um_to_steps(-1.9999), -1999);
+    }
 }

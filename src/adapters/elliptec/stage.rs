@@ -30,9 +30,15 @@ pub struct ElliptecStage {
 impl ElliptecStage {
     pub fn new(channel: char) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Channel", PropertyValue::String(channel.to_string()), false).unwrap();
-        props.define_property("PulsesPerMm", PropertyValue::Integer(0), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Channel", PropertyValue::String(channel.to_string()), false)
+            .unwrap();
+        props
+            .define_property("PulsesPerMm", PropertyValue::Integer(0), true)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -49,7 +55,9 @@ impl ElliptecStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -70,7 +78,9 @@ impl ElliptecStage {
     }
 
     fn pulses_to_um(&self, pulses: i32) -> f64 {
-        if self.pulses_per_mm == 0 { return 0.0; }
+        if self.pulses_per_mm == 0 {
+            return 0.0;
+        }
         (pulses as f64 * 1000.0) / self.pulses_per_mm as f64
     }
 
@@ -79,14 +89,24 @@ impl ElliptecStage {
     }
 }
 
-impl Default for ElliptecStage { fn default() -> Self { Self::new('0') } }
+impl Default for ElliptecStage {
+    fn default() -> Self {
+        Self::new('0')
+    }
+}
 
 impl Device for ElliptecStage {
-    fn name(&self) -> &str { "ElliptecStage" }
-    fn description(&self) -> &str { "Thorlabs Elliptec Linear Stage" }
+    fn name(&self) -> &str {
+        "Thorlabs ELL17/ELL20"
+    }
+    fn description(&self) -> &str {
+        "Thorlabs Elliptec Linear Stage ELL17/ELL20"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Get device info to read pulses-per-mm (last 8 hex chars = pulses field)
         let info = self.cmd("in")?;
         // Response: "<ch>IN<id (4)><travel (8)><pulses (8)>" — skip prefix
@@ -97,7 +117,9 @@ impl Device for ElliptecStage {
             let pulses_hex = &data[12..20];
             self.pulses_per_mm = u32::from_str_radix(pulses_hex, 16).unwrap_or(10000);
         }
-        self.props.entry_mut("PulsesPerMm").map(|e| e.value = PropertyValue::Integer(self.pulses_per_mm as i64));
+        self.props
+            .entry_mut("PulsesPerMm")
+            .map(|e| e.value = PropertyValue::Integer(self.pulses_per_mm as i64));
         // Query current position
         let gp = self.cmd("gp")?;
         let prefix = format!("{}PO", self.channel);
@@ -108,17 +130,32 @@ impl Device for ElliptecStage {
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for ElliptecStage {
@@ -130,7 +167,9 @@ impl Stage for ElliptecStage {
         Ok(())
     }
 
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.position_um) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.position_um)
+    }
 
     fn home(&mut self) -> MmResult<()> {
         self.cmd("ho0")?; // home
@@ -150,12 +189,20 @@ impl Stage for ElliptecStage {
 
     fn get_limits(&self) -> MmResult<(f64, f64)> {
         // Max travel: 106mm for ELL17, 205mm for ELL20
-        let max = if self.pulses_per_mm > 0 { 106000.0 } else { 0.0 };
+        let max = if self.pulses_per_mm > 0 {
+            106000.0
+        } else {
+            0.0
+        };
         Ok((0.0, max))
     }
 
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -193,8 +240,7 @@ mod tests {
 
     #[test]
     fn home() {
-        let t = make_init_transport()
-            .expect("0ho0\r", "0HO");
+        let t = make_init_transport().expect("0ho0\r", "0HO");
         let mut s = ElliptecStage::new('0').with_transport(Box::new(t));
         s.initialize().unwrap();
         s.home().unwrap();
@@ -202,5 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(ElliptecStage::new('0').initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(ElliptecStage::new('0').initialize().is_err());
+    }
 }

@@ -9,7 +9,7 @@
 /// Enable mask (active-low, bit = 0 means channel ON):
 ///   `[0x4F, mask, 0x50]`
 ///   All-off mask: 0x7F (bits 0-6 set = all channels disabled)
-///   All-on  mask: 0x00 (all channels enabled)
+///   All-on  mask: 0x10 (Spectra/SpectraX shuttered bits enabled, YG filter high)
 ///
 /// Channel bit mapping (active-low):
 ///   bit 0 = RED, bit 1 = GREEN, bit 2 = CYAN, bit 3 = VIOLET,
@@ -23,7 +23,7 @@ use crate::types::{DeviceType, PropertyValue};
 const INIT_CMD_1: [u8; 4] = [0x57, 0x02, 0xFF, 0x50];
 const INIT_CMD_2: [u8; 4] = [0x57, 0x03, 0xAB, 0x50];
 const ALL_OFF_MASK: u8 = 0x7F;
-const ALL_ON_MASK: u8  = 0x00;
+const ALL_ON_MASK: u8 = 0x10;
 
 pub struct LumencorSpectra {
     props: PropertyMap,
@@ -35,7 +35,13 @@ pub struct LumencorSpectra {
 impl LumencorSpectra {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1"]).unwrap();
         Self {
             props,
             transport: None,
@@ -50,7 +56,9 @@ impl LumencorSpectra {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -63,15 +71,23 @@ impl LumencorSpectra {
 }
 
 impl Default for LumencorSpectra {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for LumencorSpectra {
-    fn name(&self) -> &str { "LumencorSpectra" }
-    fn description(&self) -> &str { "Lumencor Spectra LED illuminator" }
+    fn name(&self) -> &str {
+        "Spectra"
+    }
+    fn description(&self) -> &str {
+        "Lumencor Spectra Light Engine"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         self.call_transport(|t| t.send_bytes(&INIT_CMD_1))?;
         self.call_transport(|t| t.send_bytes(&INIT_CMD_2))?;
         self.send_mask(ALL_OFF_MASK)?;
@@ -81,22 +97,44 @@ impl Device for LumencorSpectra {
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.send_mask(ALL_OFF_MASK);
-        }
         self.initialized = false;
         Ok(())
     }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        match name {
+            "State" => Ok(PropertyValue::Integer(if self.open { 1 } else { 0 })),
+            _ => self.props.get(name).cloned(),
+        }
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        match name {
+            "State" => {
+                let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                match state {
+                    0 => self.set_open(false),
+                    1 => self.set_open(true),
+                    _ => Err(MmError::InvalidPropertyValue),
+                }
+            }
+            _ => self.props.set(name, val),
+        }
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for LumencorSpectra {
@@ -104,14 +142,17 @@ impl Shutter for LumencorSpectra {
         let mask = if open { ALL_ON_MASK } else { ALL_OFF_MASK };
         self.send_mask(mask)?;
         self.open = open;
+        self.props
+            .set("State", PropertyValue::Integer(if open { 1 } else { 0 }))?;
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.open)
+    }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -141,8 +182,7 @@ mod tests {
     fn fire() {
         let mut s = LumencorSpectra::new().with_transport(Box::new(MockTransport::new()));
         s.initialize().unwrap();
-        s.fire(10.0).unwrap();
-        assert!(!s.get_open().unwrap());
+        assert_eq!(s.fire(10.0), Err(MmError::UnsupportedCommand));
     }
 
     #[test]

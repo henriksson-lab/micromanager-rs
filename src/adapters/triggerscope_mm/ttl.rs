@@ -1,7 +1,7 @@
 /// TriggerScope MM TTL — 8-channel digital output bank.
 ///
 /// Protocol: `"PDN<group>\n"` to query number of patterns.
-///           `"TTL<group>-<byte_value>\n"` to set TTL state byte.
+///           `"SDO<group>-<byte_value>\n"` to set TTL state byte.
 ///
 /// Group 0 = TTL channels 1-8, Group 1 = channels 9-16.
 /// The byte value sets all 8 lines simultaneously (0-255).
@@ -24,8 +24,12 @@ impl TriggerScopeMMTTL {
     /// `pin_group`: 0 for TTL1-8, 1 for TTL9-16.
     pub fn new(pin_group: u8) -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("PinGroup", PropertyValue::Integer(pin_group as i64), true).unwrap();
-        props.define_property("State", PropertyValue::Integer(0), false).unwrap();
+        props
+            .define_property("PinGroup", PropertyValue::Integer(pin_group as i64), true)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -57,9 +61,10 @@ impl TriggerScopeMMTTL {
 
     fn send_state(&mut self, val: u8) -> MmResult<()> {
         let grp = self.pin_group;
-        let cmd = format!("TTL{}-{}\n", grp, val);
+        let expected = format!("SDO{}-{}", grp, val);
+        let cmd = format!("{}\n", expected);
         let resp = self.send_recv(&cmd)?;
-        if !resp.contains("OK") && !resp.contains("TTL") {
+        if resp != expected && resp != format!("!{}", expected) && !resp.contains("OK") {
             return Err(MmError::SerialInvalidResponse);
         }
         Ok(())
@@ -67,8 +72,12 @@ impl TriggerScopeMMTTL {
 }
 
 impl Device for TriggerScopeMMTTL {
-    fn name(&self) -> &str { "TriggerScopeMMTTL" }
-    fn description(&self) -> &str { "ARC TriggerScope MM TTL bank" }
+    fn name(&self) -> &str {
+        "TriggerScopeMMTTL"
+    }
+    fn description(&self) -> &str {
+        "ARC TriggerScope MM TTL bank"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -76,20 +85,18 @@ impl Device for TriggerScopeMMTTL {
         }
         // Query number of patterns for this group
         let grp = self.pin_group;
-        let cmd = format!("PDN{}\n", grp);
-        let _resp = self.send_recv(&cmd)?;
-        // Initialize to all zeros
-        self.send_state(0)?;
-        self.state_byte = 0;
+        let expected = format!("PDN{}", grp);
+        let cmd = format!("{}\n", expected);
+        let resp = self.send_recv(&cmd)?;
+        if !resp.starts_with(&expected) && !resp.contains("OK") {
+            return Err(MmError::SerialInvalidResponse);
+        }
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.send_state(0);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
@@ -110,18 +117,28 @@ impl Device for TriggerScopeMMTTL {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for TriggerScopeMMTTL {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
-        if pos > 255 { return Err(MmError::UnknownPosition); }
+        if pos > 255 {
+            return Err(MmError::UnknownPosition);
+        }
         if self.initialized {
             self.send_state(pos as u8)?;
         }
@@ -129,16 +146,23 @@ impl StateDevice for TriggerScopeMMTTL {
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.state_byte as u64) }
-    fn get_number_of_positions(&self) -> u64 { 256 }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.state_byte as u64)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        256
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        if pos > 255 { return Err(MmError::UnknownPosition); }
+        if pos > 255 {
+            return Err(MmError::UnknownPosition);
+        }
         Ok(format!("{:08b}", pos))
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let v = u64::from_str_radix(label, 2).map_err(|_| MmError::UnknownLabel(label.to_string()))?;
+        let v =
+            u64::from_str_radix(label, 2).map_err(|_| MmError::UnknownLabel(label.to_string()))?;
         self.set_position(v)
     }
 
@@ -151,7 +175,9 @@ impl StateDevice for TriggerScopeMMTTL {
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]
@@ -161,9 +187,7 @@ mod tests {
 
     #[test]
     fn ttl_initialize() {
-        let t = MockTransport::new()
-            .expect("PDN0\n", "PDN0-50")
-            .expect("TTL0-0\n", "TTL0 OK");
+        let t = MockTransport::new().expect("PDN0\n", "PDN0-50");
         let mut ttl = TriggerScopeMMTTL::new(0).with_transport(Box::new(t));
         ttl.initialize().unwrap();
         assert_eq!(ttl.get_position().unwrap(), 0);
@@ -173,8 +197,7 @@ mod tests {
     fn ttl_set_state_byte() {
         let t = MockTransport::new()
             .expect("PDN1\n", "PDN1-50")
-            .expect("TTL1-0\n", "TTL1 OK")
-            .expect("TTL1-170\n", "TTL1 OK"); // 0b10101010
+            .expect("SDO1-170\n", "!SDO1-170"); // 0b10101010
         let mut ttl = TriggerScopeMMTTL::new(1).with_transport(Box::new(t));
         ttl.initialize().unwrap();
         ttl.set_position(0b10101010).unwrap();
@@ -182,10 +205,29 @@ mod tests {
     }
 
     #[test]
-    fn ttl_out_of_range() {
+    fn ttl_accepts_mm_echo_response() {
+        let t = MockTransport::new()
+            .expect("PDN1\n", "PDN1-50")
+            .expect("SDO1-170\n", "SDO1-170"); // 0b10101010
+        let mut ttl = TriggerScopeMMTTL::new(1).with_transport(Box::new(t));
+        ttl.initialize().unwrap();
+        ttl.set_position(0b10101010).unwrap();
+        assert_eq!(ttl.get_position().unwrap(), 0b10101010);
+    }
+
+    #[test]
+    fn ttl_rejects_unrelated_write_response() {
         let t = MockTransport::new()
             .expect("PDN0\n", "PDN0-50")
-            .expect("TTL0-0\n", "TTL0 OK");
+            .expect("SDO0-170\n", "!SDO1-170");
+        let mut ttl = TriggerScopeMMTTL::new(0).with_transport(Box::new(t));
+        ttl.initialize().unwrap();
+        assert!(ttl.set_position(0b10101010).is_err());
+    }
+
+    #[test]
+    fn ttl_out_of_range() {
+        let t = MockTransport::new().expect("PDN0\n", "PDN0-50");
         let mut ttl = TriggerScopeMMTTL::new(0).with_transport(Box::new(t));
         ttl.initialize().unwrap();
         assert!(ttl.set_position(256).is_err());

@@ -38,20 +38,20 @@ fn sensor_type_name(t: i32) -> &'static str {
 // ── Camera struct ─────────────────────────────────────────────────────────────
 
 pub struct TSICamera {
-    props:    PropertyMap,
-    ctx:      *mut ffi::TsiCtx,
+    props: PropertyMap,
+    ctx: *mut ffi::TsiCtx,
 
     // Pre-init / cached
-    camera_id:   String,   // TSI camera ID string; empty = first found
+    camera_id: String, // TSI camera ID string; empty = first found
     exposure_ms: f64,
-    binning:     i32,
+    binning: i32,
 
     // Post-init read-only
-    img_width:      u32,
-    img_height:     u32,
-    bit_depth:      u32,
+    img_width: u32,
+    img_height: u32,
+    bit_depth: u32,
     bytes_per_pixel: u32,
-    sensor_type:    i32,
+    sensor_type: i32,
 
     capturing: bool,
 }
@@ -59,45 +59,79 @@ pub struct TSICamera {
 impl TSICamera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("CameraID",    PropertyValue::String("".into()),          false).unwrap();
-        props.define_property("Exposure",    PropertyValue::Float(10.0),               false).unwrap();
-        props.define_property("Binning",     PropertyValue::Integer(1),                false).unwrap();
-        props.define_property("Width",       PropertyValue::Integer(0),                true).unwrap();
-        props.define_property("Height",      PropertyValue::Integer(0),                true).unwrap();
-        props.define_property("BitDepth",    PropertyValue::Integer(16),               true).unwrap();
-        props.define_property("SensorType",  PropertyValue::String("Monochrome".into()), true).unwrap();
-        props.define_property("SerialNumber",PropertyValue::String("".into()),         true).unwrap();
-        props.define_property("FirmwareVer", PropertyValue::String("".into()),         true).unwrap();
+        props
+            .define_property("CameraID", PropertyValue::String("".into()), false)
+            .unwrap();
+        props
+            .define_property("Exposure", PropertyValue::Float(2.0), false)
+            .unwrap();
+        props
+            .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("Width", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Height", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("BitDepth", PropertyValue::Integer(16), true)
+            .unwrap();
+        props
+            .define_property(
+                "SensorType",
+                PropertyValue::String("Monochrome".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("SerialNumber", PropertyValue::String("".into()), true)
+            .unwrap();
+        props
+            .define_property("FirmwareVer", PropertyValue::String("".into()), true)
+            .unwrap();
 
         Self {
             props,
             ctx: std::ptr::null_mut(),
-            camera_id:      String::new(),
-            exposure_ms:    10.0,
-            binning:        1,
-            img_width:      0,
-            img_height:     0,
-            bit_depth:      16,
+            camera_id: String::new(),
+            exposure_ms: 2.0,
+            binning: 1,
+            img_width: 0,
+            img_height: 0,
+            bit_depth: 16,
             bytes_per_pixel: 2,
-            sensor_type:    0,
-            capturing:      false,
+            sensor_type: 0,
+            capturing: false,
         }
     }
 
     fn check_open(&self) -> MmResult<()> {
-        if self.ctx.is_null() { Err(MmError::NotConnected) } else { Ok(()) }
+        if self.ctx.is_null() {
+            Err(MmError::NotConnected)
+        } else {
+            Ok(())
+        }
     }
 
     fn sync_dims(&mut self) {
-        if self.ctx.is_null() { return; }
-        self.img_width  = unsafe { ffi::tsi_get_image_width(self.ctx)  } as u32;
+        if self.ctx.is_null() {
+            return;
+        }
+        self.img_width = unsafe { ffi::tsi_get_image_width(self.ctx) } as u32;
         self.img_height = unsafe { ffi::tsi_get_image_height(self.ctx) } as u32;
-        self.props.entry_mut("Width") .map(|e| e.value = PropertyValue::Integer(self.img_width  as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.img_width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
     }
 
     fn apply_binning(&mut self) {
-        if self.ctx.is_null() { return; }
+        if self.ctx.is_null() {
+            return;
+        }
         let b = self.binning;
         unsafe {
             ffi::tsi_set_binx(self.ctx, b);
@@ -113,7 +147,9 @@ impl TSICamera {
 }
 
 impl Default for TSICamera {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for TSICamera {
@@ -130,11 +166,17 @@ impl Drop for TSICamera {
 // ── Device trait ──────────────────────────────────────────────────────────────
 
 impl Device for TSICamera {
-    fn name(&self) -> &str { "TSICamera" }
-    fn description(&self) -> &str { "Thorlabs Scientific Imaging camera (TSI SDK3)" }
+    fn name(&self) -> &str {
+        "TSICamera"
+    }
+    fn description(&self) -> &str {
+        "Thorlabs Scientific Imaging camera (TSI SDK3)"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if !self.ctx.is_null() { return Ok(()); }
+        if !self.ctx.is_null() {
+            return Ok(());
+        }
 
         if unsafe { ffi::tsi_sdk_open() } != 0 {
             return Err(MmError::LocallyDefined("tsi_sdk_open failed".into()));
@@ -144,7 +186,9 @@ impl Device for TSICamera {
         let mut disc_buf = [0i8; 4096];
         let count = unsafe { ffi::tsi_discover_cameras(disc_buf.as_mut_ptr(), 4096) };
         if count < 0 {
-            return Err(MmError::LocallyDefined("TSI: camera discovery failed".into()));
+            return Err(MmError::LocallyDefined(
+                "TSI: camera discovery failed".into(),
+            ));
         }
         if count == 0 {
             return Err(MmError::LocallyDefined("TSI: no cameras found".into()));
@@ -173,31 +217,37 @@ impl Device for TSICamera {
         let id_cstr = cstr(target_id);
         let ctx = unsafe { ffi::tsi_open_camera(id_cstr.as_ptr()) };
         if ctx.is_null() {
-            return Err(MmError::LocallyDefined(
-                format!("TSI: failed to open camera '{}'", target_id),
-            ));
+            return Err(MmError::LocallyDefined(format!(
+                "TSI: failed to open camera '{}'",
+                target_id
+            )));
         }
         self.ctx = ctx;
         self.camera_id = target_id.to_string();
-        self.props.entry_mut("CameraID")
+        self.props
+            .entry_mut("CameraID")
             .map(|e| e.value = PropertyValue::String(self.camera_id.clone()));
 
         // Read sensor properties.
-        self.bit_depth     = unsafe { ffi::tsi_get_bit_depth(ctx) }.max(1) as u32;
+        self.bit_depth = unsafe { ffi::tsi_get_bit_depth(ctx) }.max(1) as u32;
         self.bytes_per_pixel = unsafe { ffi::tsi_get_bytes_per_pixel(ctx) }.max(1) as u32;
-        self.sensor_type   = unsafe { ffi::tsi_get_sensor_type(ctx) };
+        self.sensor_type = unsafe { ffi::tsi_get_sensor_type(ctx) };
 
-        self.props.entry_mut("BitDepth")
+        self.props
+            .entry_mut("BitDepth")
             .map(|e| e.value = PropertyValue::Integer(self.bit_depth as i64));
-        self.props.entry_mut("SensorType")
+        self.props
+            .entry_mut("SensorType")
             .map(|e| e.value = PropertyValue::String(sensor_type_name(self.sensor_type).into()));
 
         if let Some(sn) = read_str(|b, l| unsafe { ffi::tsi_get_serial_number(ctx, b, l) }) {
-            self.props.entry_mut("SerialNumber")
+            self.props
+                .entry_mut("SerialNumber")
                 .map(|e| e.value = PropertyValue::String(sn));
         }
         if let Some(fw) = read_str(|b, l| unsafe { ffi::tsi_get_firmware_version(ctx, b, l) }) {
-            self.props.entry_mut("FirmwareVer")
+            self.props
+                .entry_mut("FirmwareVer")
                 .map(|e| e.value = PropertyValue::String(fw));
         }
 
@@ -212,7 +262,7 @@ impl Device for TSICamera {
         let mut bin_max = 1i32;
         unsafe { ffi::tsi_get_binx_range(ctx, &mut bin_min, &mut bin_max) };
         let allowed: Vec<String> = (bin_min..=bin_max)
-            .filter(|&b| (bin_max as f64).log2() >= 0.0 && b.count_ones() == 1)   // powers of 2
+            .filter(|&b| (bin_max as f64).log2() >= 0.0 && b.count_ones() == 1) // powers of 2
             .map(|b| b.to_string())
             .collect();
         if !allowed.is_empty() {
@@ -235,9 +285,9 @@ impl Device for TSICamera {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "CameraID"   => Ok(PropertyValue::String(self.camera_id.clone())),
-            "Exposure"   => Ok(PropertyValue::Float(self.exposure_ms)),
-            "Binning"    => Ok(PropertyValue::Integer(self.binning as i64)),
+            "CameraID" => Ok(PropertyValue::String(self.camera_id.clone())),
+            "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
+            "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -254,8 +304,12 @@ impl Device for TSICamera {
                 self.props.set(name, val)
             }
             "Exposure" => {
+                if self.capturing {
+                    return Err(MmError::CameraBusyAcquiring);
+                }
                 self.exposure_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Float(self.exposure_ms))?;
+                self.props
+                    .set(name, PropertyValue::Float(self.exposure_ms))?;
                 if !self.ctx.is_null() {
                     let us = (self.exposure_ms * 1_000.0) as i64;
                     unsafe { ffi::tsi_set_exposure_us(self.ctx, us) };
@@ -263,8 +317,12 @@ impl Device for TSICamera {
                 Ok(())
             }
             "Binning" => {
+                if self.capturing {
+                    return Err(MmError::CameraBusyAcquiring);
+                }
                 self.binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
-                self.props.set(name, PropertyValue::Integer(self.binning as i64))?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.binning as i64))?;
                 self.apply_binning();
                 Ok(())
             }
@@ -272,13 +330,21 @@ impl Device for TSICamera {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Camera }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Camera
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 // ── Camera trait ──────────────────────────────────────────────────────────────
@@ -291,24 +357,34 @@ impl Camera for TSICamera {
             // Sequence mode: wait for the next frame from the continuous stream.
             let timeout = self.snap_timeout_ms();
             let rc = unsafe { ffi::tsi_get_next_frame(self.ctx, timeout) };
-            if rc != 0 { return Err(MmError::SnapImageFailed); }
+            if rc != 0 {
+                return Err(MmError::SnapImageFailed);
+            }
             return Ok(());
         }
 
         // Single-frame snap.
         let timeout = self.snap_timeout_ms();
         let rc = unsafe { ffi::tsi_snap(self.ctx, timeout) };
-        if rc != 0 { return Err(MmError::SnapImageFailed); }
+        if rc != 0 {
+            return Err(MmError::SnapImageFailed);
+        }
 
-        self.img_width  = unsafe { ffi::tsi_get_image_width(self.ctx)  } as u32;
+        self.img_width = unsafe { ffi::tsi_get_image_width(self.ctx) } as u32;
         self.img_height = unsafe { ffi::tsi_get_image_height(self.ctx) } as u32;
-        self.props.entry_mut("Width") .map(|e| e.value = PropertyValue::Integer(self.img_width  as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.img_width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
         Ok(())
     }
 
     fn get_image_buffer(&self) -> MmResult<&[u8]> {
-        if self.ctx.is_null() { return Err(MmError::NotConnected); }
+        if self.ctx.is_null() {
+            return Err(MmError::NotConnected);
+        }
         let ptr = unsafe { ffi::tsi_get_frame_ptr(self.ctx) };
         if ptr.is_null() {
             return Err(MmError::LocallyDefined("No image captured yet".into()));
@@ -322,27 +398,52 @@ impl Camera for TSICamera {
         Ok(unsafe { std::slice::from_raw_parts(ptr as *const u8, bytes) })
     }
 
-    fn get_image_width(&self) -> u32  { self.img_width }
-    fn get_image_height(&self) -> u32 { self.img_height }
-    fn get_image_bytes_per_pixel(&self) -> u32 { self.bytes_per_pixel }
-    fn get_bit_depth(&self) -> u32 { self.bit_depth }
-    fn get_number_of_components(&self) -> u32 { 1 }
-    fn get_number_of_channels(&self) -> u32 { 1 }
-    fn get_exposure(&self) -> f64 { self.exposure_ms }
+    fn get_image_width(&self) -> u32 {
+        self.img_width
+    }
+    fn get_image_height(&self) -> u32 {
+        self.img_height
+    }
+    fn get_image_bytes_per_pixel(&self) -> u32 {
+        self.bytes_per_pixel
+    }
+    fn get_bit_depth(&self) -> u32 {
+        self.bit_depth
+    }
+    fn get_number_of_components(&self) -> u32 {
+        1
+    }
+    fn get_number_of_channels(&self) -> u32 {
+        1
+    }
+    fn get_exposure(&self) -> f64 {
+        self.exposure_ms
+    }
 
     fn set_exposure(&mut self, exp_ms: f64) {
+        if self.capturing {
+            return;
+        }
         self.exposure_ms = exp_ms;
-        self.props.set("Exposure", PropertyValue::Float(exp_ms)).ok();
+        self.props
+            .set("Exposure", PropertyValue::Float(exp_ms))
+            .ok();
         if !self.ctx.is_null() {
             unsafe { ffi::tsi_set_exposure_us(self.ctx, (exp_ms * 1_000.0) as i64) };
         }
     }
 
-    fn get_binning(&self) -> i32 { self.binning }
+    fn get_binning(&self) -> i32 {
+        self.binning
+    }
 
     fn set_binning(&mut self, bin: i32) -> MmResult<()> {
+        if self.capturing {
+            return Err(MmError::CameraBusyAcquiring);
+        }
         self.binning = bin;
-        self.props.set("Binning", PropertyValue::Integer(bin as i64))?;
+        self.props
+            .set("Binning", PropertyValue::Integer(bin as i64))?;
         self.apply_binning();
         Ok(())
     }
@@ -357,20 +458,30 @@ impl Camera for TSICamera {
     }
 
     fn set_roi(&mut self, roi: ImageRoi) -> MmResult<()> {
+        if self.capturing {
+            return Err(MmError::CameraBusyAcquiring);
+        }
         self.check_open()?;
         let rc = unsafe {
             ffi::tsi_set_roi(
                 self.ctx,
-                roi.x as i32, roi.y as i32,
-                roi.width as i32, roi.height as i32,
+                roi.x as i32,
+                roi.y as i32,
+                roi.width as i32,
+                roi.height as i32,
             )
         };
-        if rc != 0 { return Err(MmError::Err); }
+        if rc != 0 {
+            return Err(MmError::Err);
+        }
         self.sync_dims();
         Ok(())
     }
 
     fn clear_roi(&mut self) -> MmResult<()> {
+        if self.capturing {
+            return Err(MmError::CameraBusyAcquiring);
+        }
         self.check_open()?;
         unsafe { ffi::tsi_clear_roi(self.ctx) };
         self.sync_dims();
@@ -379,18 +490,24 @@ impl Camera for TSICamera {
 
     fn start_sequence_acquisition(&mut self, _count: i64, _interval_ms: f64) -> MmResult<()> {
         self.check_open()?;
-        if self.capturing { return Ok(()); }
+        if self.capturing {
+            return Ok(());
+        }
 
         let rc = unsafe { ffi::tsi_start_cont(self.ctx) };
         if rc != 0 {
-            return Err(MmError::LocallyDefined("TSI: failed to start continuous acquisition".into()));
+            return Err(MmError::LocallyDefined(
+                "TSI: failed to start continuous acquisition".into(),
+            ));
         }
         self.capturing = true;
         Ok(())
     }
 
     fn stop_sequence_acquisition(&mut self) -> MmResult<()> {
-        if !self.capturing { return Ok(()); }
+        if !self.capturing {
+            return Ok(());
+        }
         if !self.ctx.is_null() {
             unsafe { ffi::tsi_stop_cont(self.ctx) };
         }
@@ -398,7 +515,9 @@ impl Camera for TSICamera {
         Ok(())
     }
 
-    fn is_capturing(&self) -> bool { self.capturing }
+    fn is_capturing(&self) -> bool {
+        self.capturing
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -411,7 +530,7 @@ mod tests {
     fn default_properties() {
         let d = TSICamera::new();
         assert_eq!(d.device_type(), DeviceType::Camera);
-        assert_eq!(d.get_exposure(), 10.0);
+        assert_eq!(d.get_exposure(), 2.0);
         assert_eq!(d.get_binning(), 1);
         assert!(!d.is_capturing());
         assert_eq!(d.get_number_of_components(), 1);
@@ -420,14 +539,16 @@ mod tests {
     #[test]
     fn set_camera_id_pre_init() {
         let mut d = TSICamera::new();
-        d.set_property("CameraID", PropertyValue::String("CS2100M-USB".into())).unwrap();
+        d.set_property("CameraID", PropertyValue::String("CS2100M-USB".into()))
+            .unwrap();
         assert_eq!(d.camera_id, "CS2100M-USB");
     }
 
     #[test]
     fn set_exposure_pre_init() {
         let mut d = TSICamera::new();
-        d.set_property("Exposure", PropertyValue::Float(50.0)).unwrap();
+        d.set_property("Exposure", PropertyValue::Float(50.0))
+            .unwrap();
         assert_eq!(d.exposure_ms, 50.0);
         assert_eq!(d.get_exposure(), 50.0);
     }
@@ -435,7 +556,8 @@ mod tests {
     #[test]
     fn set_binning_pre_init() {
         let mut d = TSICamera::new();
-        d.set_property("Binning", PropertyValue::Integer(2)).unwrap();
+        d.set_property("Binning", PropertyValue::Integer(2))
+            .unwrap();
         assert_eq!(d.binning, 2);
         assert_eq!(d.get_binning(), 2);
     }
@@ -478,5 +600,43 @@ mod tests {
         let exp_ms = 15.5_f64;
         let exp_us = (exp_ms * 1_000.0) as i64;
         assert_eq!(exp_us, 15_500);
+    }
+
+    #[test]
+    fn acquisition_rejects_setting_changes_before_state_mutation() {
+        let mut d = TSICamera::new();
+        d.capturing = true;
+
+        assert_eq!(
+            d.set_property("Exposure", PropertyValue::Float(50.0))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.get_exposure(), 2.0);
+        assert_eq!(
+            d.get_property("Exposure").unwrap(),
+            PropertyValue::Float(2.0)
+        );
+
+        assert_eq!(d.set_binning(2).unwrap_err(), MmError::CameraBusyAcquiring);
+        assert_eq!(d.get_binning(), 1);
+        assert_eq!(
+            d.set_property("Binning", PropertyValue::Integer(4))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.get_binning(), 1);
+    }
+
+    #[test]
+    fn acquisition_rejects_roi_changes() {
+        let mut d = TSICamera::new();
+        d.capturing = true;
+
+        assert_eq!(
+            d.set_roi(ImageRoi::new(0, 0, 64, 64)).unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.clear_roi().unwrap_err(), MmError::CameraBusyAcquiring);
     }
 }

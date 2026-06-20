@@ -25,11 +25,19 @@ pub struct ThorlabsFilterWheel {
 
 impl ThorlabsFilterWheel {
     pub fn new() -> Self {
-        let labels: Vec<String> = (1..=NUM_POSITIONS).map(|i| format!("Filter-{}", i)).collect();
+        let labels: Vec<String> = (1..=NUM_POSITIONS)
+            .map(|i| format!("Filter-{}", i))
+            .collect();
         let mut props = PropertyMap::new();
-        props.define_property("State", PropertyValue::Integer(0), false).unwrap();
-        props.define_property("Label", PropertyValue::String("Filter-1".into()), false).unwrap();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String("Filter-1".into()), false)
+            .unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
 
         Self {
             props,
@@ -66,12 +74,18 @@ impl ThorlabsFilterWheel {
 }
 
 impl Default for ThorlabsFilterWheel {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for ThorlabsFilterWheel {
-    fn name(&self) -> &str { "ThorlabsFilterWheel" }
-    fn description(&self) -> &str { "Thorlabs motorized filter wheel" }
+    fn name(&self) -> &str {
+        "Thorlabs Filter Wheel"
+    }
+    fn description(&self) -> &str {
+        "Thorlabs filter wheel"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -79,7 +93,9 @@ impl Device for ThorlabsFilterWheel {
         }
         let _ = self.cmd("sensors=0");
         let pos_str = self.cmd("pos?")?;
-        let pos_1indexed: u64 = pos_str.trim().parse()
+        let pos_1indexed: u64 = pos_str
+            .trim()
+            .parse()
             .map_err(|_| MmError::LocallyDefined(format!("Bad pos: {}", pos_str)))?;
         self.position = pos_1indexed.saturating_sub(1); // convert to 0-indexed
         self.initialized = true;
@@ -95,7 +111,10 @@ impl Device for ThorlabsFilterWheel {
         match name {
             "State" => Ok(PropertyValue::Integer(self.position as i64)),
             "Label" => Ok(PropertyValue::String(
-                self.labels.get(self.position as usize).cloned().unwrap_or_default()
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
             )),
             _ => self.props.get(name).cloned(),
         }
@@ -115,13 +134,21 @@ impl Device for ThorlabsFilterWheel {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for ThorlabsFilterWheel {
@@ -131,23 +158,33 @@ impl StateDevice for ThorlabsFilterWheel {
         }
         if self.initialized {
             let resp = self.cmd(&format!("pos={}", pos + 1))?; // 1-indexed in command
-            // Response echoes the new position
+                                                               // Response echoes the new position
             let _ = resp;
         }
         self.position = pos;
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
 
-    fn get_number_of_positions(&self) -> u64 { NUM_POSITIONS }
+    fn get_number_of_positions(&self) -> u64 {
+        NUM_POSITIONS
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned().ok_or(MmError::UnknownPosition)
+        self.labels
+            .get(pos as usize)
+            .cloned()
+            .ok_or(MmError::UnknownPosition)
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
@@ -165,7 +202,9 @@ impl StateDevice for ThorlabsFilterWheel {
         Ok(())
     }
 
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]
@@ -184,7 +223,8 @@ mod tests {
     #[test]
     fn set_position() {
         let t = MockTransport::new()
-            .any("OK").expect("pos?", "1")
+            .any("OK")
+            .expect("pos?", "1")
             .expect("pos=4", "4");
         let mut fw = ThorlabsFilterWheel::new().with_transport(Box::new(t));
         fw.initialize().unwrap();
@@ -202,9 +242,7 @@ mod tests {
 
     #[test]
     fn label_navigation() {
-        let t = MockTransport::new()
-            .any("OK").any("1")
-            .any("2");
+        let t = MockTransport::new().any("OK").any("1").any("2");
         let mut fw = ThorlabsFilterWheel::new().with_transport(Box::new(t));
         fw.initialize().unwrap();
         fw.set_position_label(1, "FITC").unwrap();

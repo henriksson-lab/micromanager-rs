@@ -21,7 +21,7 @@ use crate::types::{DeviceType, PropertyValue};
 #[derive(Debug, Clone, Copy)]
 struct Channel {
     id: char,
-    intensity: u8,   // 0-100
+    intensity: u8, // 0-100
     selected: bool,
 }
 
@@ -36,16 +36,30 @@ pub struct CoolLedPE300 {
 impl CoolLedPE300 {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("Version", PropertyValue::String(String::new()), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Version", PropertyValue::String(String::new()), true)
+            .unwrap();
         for ch in ['A', 'B', 'C'] {
             let key_int = format!("Intensity{}", ch);
-            let key_sel = format!("Select{}", ch);
-            props.define_property(&key_int, PropertyValue::Integer(0), false).unwrap();
+            let key_sel = format!("Selection{}", ch);
+            props
+                .define_property(&key_int, PropertyValue::Integer(0), false)
+                .unwrap();
             props.set_property_limits(&key_int, 0.0, 100.0).unwrap();
-            props.define_property(&key_sel, PropertyValue::String("Off".into()), false).unwrap();
-            props.set_allowed_values(&key_sel, &["On", "Off"]).unwrap();
+            props
+                .define_property(&key_sel, PropertyValue::Integer(0), false)
+                .unwrap();
+            props.set_allowed_values(&key_sel, &["0", "1"]).unwrap();
         }
+        props
+            .define_property("Global State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .set_allowed_values("Global State", &["0", "1"])
+            .unwrap();
 
         Self {
             props,
@@ -53,9 +67,21 @@ impl CoolLedPE300 {
             initialized: false,
             global_on: false,
             channels: [
-                Channel { id: 'A', intensity: 0, selected: false },
-                Channel { id: 'B', intensity: 0, selected: false },
-                Channel { id: 'C', intensity: 0, selected: false },
+                Channel {
+                    id: 'A',
+                    intensity: 0,
+                    selected: false,
+                },
+                Channel {
+                    id: 'B',
+                    intensity: 0,
+                    selected: false,
+                },
+                Channel {
+                    id: 'C',
+                    intensity: 0,
+                    selected: false,
+                },
             ],
         }
     }
@@ -76,22 +102,22 @@ impl CoolLedPE300 {
     }
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let cmd = command.to_string();
+        let cmd = format!("{}\r", command);
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
         })
     }
 
-    /// Parse `CSS` response: `CSS<A6><B6><C6>` where each is `[S/X][N/F][000-100]`.
+    /// Parse `CSS` response: `CSS<ch><S/X><N/F><000-100>...`.
     fn parse_css(resp: &str) -> [(bool, bool, u8); 3] {
         let body = resp.trim().strip_prefix("CSS").unwrap_or(resp.trim());
         let mut result = [(false, false, 0u8); 3];
         for (i, chunk) in body.as_bytes().chunks(6).take(3).enumerate() {
             if chunk.len() >= 6 {
-                let selected = chunk[0] == b'S';
-                let on       = chunk[1] == b'N';
-                let int_str  = std::str::from_utf8(&chunk[2..5]).unwrap_or("0");
+                let selected = chunk[1] == b'S';
+                let on = chunk[2] == b'N';
+                let int_str = std::str::from_utf8(&chunk[3..6]).unwrap_or("0");
                 let intensity = int_str.parse::<u8>().unwrap_or(0);
                 result[i] = (selected, on, intensity);
             }
@@ -101,12 +127,18 @@ impl CoolLedPE300 {
 }
 
 impl Default for CoolLedPE300 {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for CoolLedPE300 {
-    fn name(&self) -> &str { "CoolLEDpE300" }
-    fn description(&self) -> &str { "CoolLED pE-300 LED illuminator" }
+    fn name(&self) -> &str {
+        "pE300"
+    }
+    fn description(&self) -> &str {
+        "pE300 LED illuminator"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -115,26 +147,35 @@ impl Device for CoolLedPE300 {
 
         let model = self.cmd("XMODEL")?;
         if !model.contains("pE-300") {
-            return Err(MmError::LocallyDefined(
-                format!("Unexpected device model: {}", model)
-            ));
+            return Err(MmError::LocallyDefined(format!(
+                "Unexpected device model: {}",
+                model
+            )));
         }
 
         let ver = self.cmd("XVER")?;
-        self.props.entry_mut("Version").map(|e| e.value = PropertyValue::String(ver));
+        self.props
+            .entry_mut("Version")
+            .map(|e| e.value = PropertyValue::String(ver));
 
         let css = self.cmd("CSS?")?;
         let states = Self::parse_css(&css);
+        self.global_on = false;
         for (i, (sel, on, intensity)) in states.iter().enumerate() {
             self.channels[i].selected = *sel;
             self.channels[i].intensity = *intensity;
             let ch = self.channels[i].id;
-            self.props.entry_mut(&format!("Intensity{}", ch))
+            self.props
+                .entry_mut(&format!("Intensity{}", ch))
                 .map(|e| e.value = PropertyValue::Integer(*intensity as i64));
-            self.props.entry_mut(&format!("Select{}", ch))
-                .map(|e| e.value = PropertyValue::String(if *sel { "On".into() } else { "Off".into() }));
-            if i == 0 { self.global_on = *on; }
+            self.props
+                .entry_mut(&format!("Selection{}", ch))
+                .map(|e| e.value = PropertyValue::Integer(if *sel { 1 } else { 0 }));
+            self.global_on |= *on;
         }
+        self.props
+            .entry_mut("Global State")
+            .map(|e| e.value = PropertyValue::Integer(if self.global_on { 1 } else { 0 }));
 
         self.initialized = true;
         Ok(())
@@ -142,8 +183,6 @@ impl Device for CoolLedPE300 {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.cmd("CSF");
-            self.global_on = false;
             self.initialized = false;
         }
         Ok(())
@@ -166,28 +205,53 @@ impl Device for CoolLedPE300 {
                 self.channels[idx].intensity = v;
                 return self.props.set(name, PropertyValue::Integer(v as i64));
             }
-            let key_sel = format!("Select{}", ch);
+            let key_sel = format!("Selection{}", ch);
             if name == key_sel {
-                let s = val.as_str().to_string();
+                let selected = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
                 if self.initialized {
-                    let cmd = if s == "On" { format!("C{}S", ch) } else { format!("C{}X", ch) };
+                    let cmd = if selected {
+                        format!("C{}S", ch)
+                    } else {
+                        format!("C{}X", ch)
+                    };
                     self.cmd(&cmd)?;
                 }
                 let idx = (ch as u8 - b'A') as usize;
-                self.channels[idx].selected = s == "On";
-                return self.props.set(name, PropertyValue::String(s));
+                self.channels[idx].selected = selected;
+                return self
+                    .props
+                    .set(name, PropertyValue::Integer(if selected { 1 } else { 0 }));
             }
+        }
+        if name == "Global State" {
+            let open = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
+            if self.initialized {
+                self.set_open(open)?;
+            } else {
+                self.global_on = open;
+            }
+            return self
+                .props
+                .set(name, PropertyValue::Integer(if open { 1 } else { 0 }));
         }
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for CoolLedPE300 {
@@ -195,12 +259,19 @@ impl Shutter for CoolLedPE300 {
         let cmd = if open { "CSN" } else { "CSF" };
         self.cmd(cmd)?;
         self.global_on = open;
+        self.props
+            .entry_mut("Global State")
+            .map(|e| e.value = PropertyValue::Integer(if open { 1 } else { 0 }));
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.global_on) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.global_on)
+    }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { self.set_open(true) }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]
@@ -210,10 +281,10 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("XMODEL", "pE-300 v1.0")
-            .expect("XVER",   "HW:1.0 FW:2.3")
+            .expect("XMODEL\r", "pE-300 v1.0")
+            .expect("XVER\r", "HW:1.0 FW:2.3")
             // CSS: A=selected/on/50%, B=not selected/off/0%, C=not selected/off/0%
-            .expect("CSS?", "CSSSN050XF000XF000")
+            .expect("CSS?\r", "CSSASN050BXF000CXF000")
     }
 
     #[test]
@@ -238,19 +309,35 @@ mod tests {
 
     #[test]
     fn set_intensity_a() {
-        let t = make_transport().expect("CAI075", "OK");
+        let t = make_transport().expect("CAI075\r", "OK");
         let mut dev = CoolLedPE300::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
-        dev.set_property("IntensityA", PropertyValue::Integer(75)).unwrap();
+        dev.set_property("IntensityA", PropertyValue::Integer(75))
+            .unwrap();
         assert_eq!(dev.channels[0].intensity, 75);
     }
 
     #[test]
+    fn shutdown_does_not_force_global_off() {
+        let mut dev = CoolLedPE300::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+        dev.shutdown().unwrap();
+        assert!(dev.get_open().unwrap());
+    }
+
+    #[test]
+    fn fire_is_unsupported() {
+        let mut dev = CoolLedPE300::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+        assert_eq!(dev.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
     fn parse_css_values() {
-        let states = CoolLedPE300::parse_css("CSSSN050XF000XF000");
-        assert_eq!(states[0], (true,  true,  50));
-        assert_eq!(states[1], (false, false,  0));
-        assert_eq!(states[2], (false, false,  0));
+        let states = CoolLedPE300::parse_css("CSSASN050BXF000CXF000");
+        assert_eq!(states[0], (true, true, 50));
+        assert_eq!(states[1], (false, false, 0));
+        assert_eq!(states[2], (false, false, 0));
     }
 
     #[test]

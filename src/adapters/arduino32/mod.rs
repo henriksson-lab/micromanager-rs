@@ -15,11 +15,13 @@ pub mod hub;
 pub mod shutter;
 pub mod switch;
 pub mod da;
+pub mod input;
 
 pub use hub::Arduino32Hub;
 pub use shutter::Arduino32Shutter;
 pub use switch::Arduino32Switch;
 pub use da::Arduino32Da;
+pub use input::Arduino32Input;
 
 use crate::traits::{AdapterModule, AnyDevice, DeviceInfo};
 use crate::types::DeviceType;
@@ -27,6 +29,7 @@ use crate::types::DeviceType;
 pub const DEVICE_NAME_HUB: &str = "Arduino32-Hub";
 pub const DEVICE_NAME_SHUTTER: &str = "Arduino32-Shutter";
 pub const DEVICE_NAME_SWITCH: &str = "Arduino32-Switch";
+pub const DEVICE_NAME_INPUT: &str = "Arduino32-Input";
 pub const DEVICE_NAME_DA1: &str = "Arduino32-DAC/PWM-1";
 pub const DEVICE_NAME_DA2: &str = "Arduino32-DAC/PWM-2";
 pub const DEVICE_NAME_DA3: &str = "Arduino32-DAC/PWM-3";
@@ -40,6 +43,7 @@ static DEVICE_LIST: &[DeviceInfo] = &[
     DeviceInfo { name: DEVICE_NAME_HUB,     description: "Arduino32 Hub (required)",          device_type: DeviceType::Hub },
     DeviceInfo { name: DEVICE_NAME_SHUTTER,  description: "Arduino32 shutter (digital LSB)",  device_type: DeviceType::Shutter },
     DeviceInfo { name: DEVICE_NAME_SWITCH,   description: "Arduino32 8-bit digital output",   device_type: DeviceType::State },
+    DeviceInfo { name: DEVICE_NAME_INPUT,    description: "ADC",                              device_type: DeviceType::Generic },
     DeviceInfo { name: DEVICE_NAME_DA1,      description: "Arduino32 DAC/PWM channel 1",      device_type: DeviceType::SignalIO },
     DeviceInfo { name: DEVICE_NAME_DA2,      description: "Arduino32 DAC/PWM channel 2",      device_type: DeviceType::SignalIO },
     DeviceInfo { name: DEVICE_NAME_DA3,      description: "Arduino32 DAC/PWM channel 3",      device_type: DeviceType::SignalIO },
@@ -62,6 +66,7 @@ impl AdapterModule for Arduino32Adapter {
             DEVICE_NAME_HUB     => Some(AnyDevice::Hub(Box::new(Arduino32Hub::new()))),
             DEVICE_NAME_SHUTTER => Some(AnyDevice::Shutter(Box::new(Arduino32Shutter::new()))),
             DEVICE_NAME_SWITCH  => Some(AnyDevice::StateDevice(Box::new(Arduino32Switch::new()))),
+            DEVICE_NAME_INPUT   => Some(AnyDevice::Generic(Box::new(Arduino32Input::new()))),
             DEVICE_NAME_DA1     => Some(AnyDevice::SignalIO(Box::new(Arduino32Da::new(1)))),
             DEVICE_NAME_DA2     => Some(AnyDevice::SignalIO(Box::new(Arduino32Da::new(2)))),
             DEVICE_NAME_DA3     => Some(AnyDevice::SignalIO(Box::new(Arduino32Da::new(3)))),

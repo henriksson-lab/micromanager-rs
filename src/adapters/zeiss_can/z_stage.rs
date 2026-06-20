@@ -98,9 +98,9 @@ impl Stage for ZeissFocusStage {
         self.set_position_um(self.pos_um + dz)
     }
 
-    fn home(&mut self) -> MmResult<()> { self.set_position_um(0.0) }
+    fn home(&mut self) -> MmResult<()> { Err(MmError::NotSupported) }
     fn stop(&mut self) -> MmResult<()> { Ok(()) }
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((-5_000.0, 5_000.0)) }
+    fn get_limits(&self) -> MmResult<(f64, f64)> { Err(MmError::NotSupported) }
     fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
     fn is_continuous_focus_drive(&self) -> bool { false }
 }
@@ -143,5 +143,13 @@ mod tests {
         let mut s = stage_with(t);
         s.initialize().unwrap();
         assert!((s.get_position_um().unwrap() - (-10.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn home_is_unsupported() {
+        let t = MockTransport::new().any("PH000000");
+        let mut s = stage_with(t);
+        s.initialize().unwrap();
+        assert_eq!(s.home().unwrap_err(), MmError::NotSupported);
     }
 }

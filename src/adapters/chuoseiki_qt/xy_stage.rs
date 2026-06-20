@@ -23,20 +23,68 @@ pub struct ChuoSeikiQTXYStage {
     initialized: bool,
     x_um: f64,
     y_um: f64,
-    step_um: f64,
+    step_x_um: f64,
+    step_y_um: f64,
+    speed_high_x: i64,
+    speed_low_x: i64,
+    accel_time_x: i64,
+    speed_high_y: i64,
+    speed_low_y: i64,
+    accel_time_y: i64,
 }
 
 impl ChuoSeikiQTXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("X-Axis StepSize: um", PropertyValue::Float(1.0), false)
+            .unwrap();
+        props
+            .define_property("Y-Axis StepSize: um", PropertyValue::Float(1.0), false)
+            .unwrap();
+        props
+            .define_property("X-Axis HighSpeed: pps", PropertyValue::Float(2000.0), false)
+            .unwrap();
+        props
+            .define_property("X-Axis LowSpeed: pps", PropertyValue::Float(500.0), false)
+            .unwrap();
+        props
+            .define_property(
+                "X-Axis AcceleratingTime: msec",
+                PropertyValue::Float(100.0),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("Y-Axis HighSpeed: pps", PropertyValue::Float(2000.0), false)
+            .unwrap();
+        props
+            .define_property("Y-Axis LowSpeed: pps", PropertyValue::Float(500.0), false)
+            .unwrap();
+        props
+            .define_property(
+                "Y-Axis Accelerating Time: msec",
+                PropertyValue::Float(100.0),
+                false,
+            )
+            .unwrap();
         Self {
             props,
             transport: None,
             initialized: false,
             x_um: 0.0,
             y_um: 0.0,
-            step_um: DEFAULT_STEP_UM,
+            step_x_um: DEFAULT_STEP_UM,
+            step_y_um: DEFAULT_STEP_UM,
+            speed_high_x: 2000,
+            speed_low_x: 500,
+            accel_time_x: 100,
+            speed_high_y: 2000,
+            speed_low_y: 500,
+            accel_time_y: 100,
         }
     }
 
@@ -46,7 +94,9 @@ impl ChuoSeikiQTXYStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -55,77 +105,162 @@ impl ChuoSeikiQTXYStage {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let c = format!("{}\r\n", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     /// Parse a controller error response; `!n` means error, anything else is ok.
     fn check_response(resp: &str) -> MmResult<()> {
         if resp.starts_with('!') {
-            Err(MmError::LocallyDefined(format!("ChuoSeiki QT error: {}", resp)))
+            Err(MmError::LocallyDefined(format!(
+                "ChuoSeiki QT error: {}",
+                resp
+            )))
         } else {
             Ok(())
         }
     }
 
-    /// Read position from `Q:A0B0` response.
-    /// Response format: `+00001234K,+00001234K` (9 char pos + state letter)
-    fn read_xy(&mut self) -> MmResult<(f64, f64)> {
-        let resp = self.cmd("Q:A0B0")?;
-        Self::parse_position_response(&resp, self.step_um)
-    }
-
-    fn parse_position_response(resp: &str, step_um: f64) -> MmResult<(f64, f64)> {
+    fn parse_position_response(resp: &str, step_x_um: f64, step_y_um: f64) -> MmResult<(f64, f64)> {
         // Expect at least 21 chars: 9+1 + ',' + 9+1
         if resp.len() < 21 {
             return Err(MmError::LocallyDefined(format!(
-                "ChuoSeiki QT: unexpected position response: {}", resp
+                "ChuoSeiki QT: unexpected position response: {}",
+                resp
             )));
         }
         let x_steps: i64 = resp[..9].trim().parse().unwrap_or(0);
         let y_steps: i64 = resp[11..20].trim().parse().unwrap_or(0);
-        Ok((x_steps as f64 * step_um, y_steps as f64 * step_um))
+        Ok((x_steps as f64 * step_x_um, y_steps as f64 * step_y_um))
+    }
+
+    fn set_positive_float_property(&mut self, name: &str, val: PropertyValue) -> MmResult<f64> {
+        let value = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+        if value <= 0.0 {
+            return Err(MmError::InvalidPropertyValue);
+        }
+        self.props.set(name, PropertyValue::Float(value))?;
+        Ok(value)
+    }
+
+    fn set_i64_property(&mut self, name: &str, val: PropertyValue) -> MmResult<i64> {
+        let value = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+        self.props.set(name, PropertyValue::Float(value as f64))?;
+        Ok(value)
     }
 }
 
-impl Default for ChuoSeikiQTXYStage { fn default() -> Self { Self::new() } }
+impl Default for ChuoSeikiQTXYStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for ChuoSeikiQTXYStage {
-    fn name(&self) -> &str { "ChuoSeikiQT-XYStage" }
-    fn description(&self) -> &str { "ChuoSeiki QT 2-axis XY stage" }
+    fn name(&self) -> &str {
+        "ChuoSeiki_QT 2-Axis"
+    }
+    fn description(&self) -> &str {
+        "ChuoSeiki 2-stage driver adapter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Identity check
         let resp = self.cmd("?:CHUOSEIKI")?;
         if !resp.starts_with("CHUOSEIKI") {
-            return Err(MmError::LocallyDefined(format!("ChuoSeiki QT: unexpected identity: {}", resp)));
+            return Err(MmError::LocallyDefined(format!(
+                "ChuoSeiki QT: unexpected identity: {}",
+                resp
+            )));
         }
         // Enable feedback after control commands
         let _ = self.cmd("X:1");
-        let (x, y) = self.read_xy()?;
-        self.x_um = x;
-        self.y_um = y;
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        match name {
+            "X-Axis StepSize: um" => Ok(PropertyValue::Float(self.step_x_um)),
+            "Y-Axis StepSize: um" => Ok(PropertyValue::Float(self.step_y_um)),
+            "X-Axis HighSpeed: pps" => Ok(PropertyValue::Float(self.speed_high_x as f64)),
+            "X-Axis LowSpeed: pps" => Ok(PropertyValue::Float(self.speed_low_x as f64)),
+            "X-Axis AcceleratingTime: msec" => Ok(PropertyValue::Float(self.accel_time_x as f64)),
+            "Y-Axis HighSpeed: pps" => Ok(PropertyValue::Float(self.speed_high_y as f64)),
+            "Y-Axis LowSpeed: pps" => Ok(PropertyValue::Float(self.speed_low_y as f64)),
+            "Y-Axis Accelerating Time: msec" => Ok(PropertyValue::Float(self.accel_time_y as f64)),
+            _ => self.props.get(name).cloned(),
+        }
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            "X-Axis StepSize: um" => {
+                self.step_x_um = self.set_positive_float_property(name, val)?;
+                Ok(())
+            }
+            "Y-Axis StepSize: um" => {
+                self.step_y_um = self.set_positive_float_property(name, val)?;
+                Ok(())
+            }
+            "X-Axis HighSpeed: pps" => {
+                self.speed_high_x = self.set_i64_property(name, val)?;
+                Ok(())
+            }
+            "X-Axis LowSpeed: pps" => {
+                self.speed_low_x = self.set_i64_property(name, val)?;
+                Ok(())
+            }
+            "X-Axis AcceleratingTime: msec" => {
+                self.accel_time_x = self.set_i64_property(name, val)?;
+                Ok(())
+            }
+            "Y-Axis HighSpeed: pps" => {
+                self.speed_high_y = self.set_i64_property(name, val)?;
+                Ok(())
+            }
+            "Y-Axis LowSpeed: pps" => {
+                self.speed_low_y = self.set_i64_property(name, val)?;
+                Ok(())
+            }
+            "Y-Axis Accelerating Time: msec" => {
+                self.accel_time_y = self.set_i64_property(name, val)?;
+                Ok(())
+            }
+            _ => self.props.set(name, val),
+        }
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl XYStage for ChuoSeikiQTXYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
-        let xs = (x / self.step_um).round() as i64;
-        let ys = (y / self.step_um).round() as i64;
+        let xs = (x / self.step_x_um) as i64;
+        let ys = (y / self.step_y_um) as i64;
         let r = self.cmd(&format!("AGO:A{}B{}", xs, ys))?;
         Self::check_response(&r)?;
         self.x_um = x;
@@ -133,11 +268,13 @@ impl XYStage for ChuoSeikiQTXYStage {
         Ok(())
     }
 
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        Ok((self.x_um, self.y_um))
+    }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
-        let dxs = (dx / self.step_um).round() as i64;
-        let dys = (dy / self.step_um).round() as i64;
+        let dxs = (dx / self.step_x_um) as i64;
+        let dys = (dy / self.step_y_um) as i64;
         let r = self.cmd(&format!("MGO:A{}B{}", dxs, dys))?;
         Self::check_response(&r)?;
         self.x_um += dx;
@@ -154,20 +291,20 @@ impl XYStage for ChuoSeikiQTXYStage {
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        let _ = self.cmd("L:AB");
+        let r = self.cmd("L:")?;
+        Self::check_response(&r)?;
         Ok(())
     }
 
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Ok((-100_000.0, 100_000.0, -100_000.0, 100_000.0))
+        Err(MmError::UnsupportedCommand)
     }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (self.step_um, self.step_um) }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (self.step_x_um, self.step_y_um)
+    }
 
     fn set_origin(&mut self) -> MmResult<()> {
-        // QT controller does not have a set-origin command; reset cached values
-        self.x_um = 0.0;
-        self.y_um = 0.0;
         Ok(())
     }
 }
@@ -179,9 +316,8 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .any("CHUOSEIKI")      // identity
-            .any("OK")             // X:1
-            .any("+00000100K,+00000200K") // Q:A0B0 → 100, 200 steps * 1µm = 100, 200 µm
+            .any("CHUOSEIKI") // identity
+            .any("OK") // X:1
     }
 
     #[test]
@@ -189,8 +325,7 @@ mod tests {
         let mut s = ChuoSeikiQTXYStage::new().with_transport(Box::new(make_transport()));
         s.initialize().unwrap();
         let (x, y) = s.get_xy_position_um().unwrap();
-        assert!((x - 100.0).abs() < 1e-9);
-        assert!((y - 200.0).abs() < 1e-9);
+        assert_eq!((x, y), (0.0, 0.0));
     }
 
     #[test]
@@ -209,8 +344,8 @@ mod tests {
         s.initialize().unwrap();
         s.set_relative_xy_position_um(50.0, 25.0).unwrap();
         let (x, y) = s.get_xy_position_um().unwrap();
-        assert!((x - 150.0).abs() < 1e-9);
-        assert!((y - 225.0).abs() < 1e-9);
+        assert!((x - 50.0).abs() < 1e-9);
+        assert!((y - 25.0).abs() < 1e-9);
     }
 
     #[test]
@@ -222,7 +357,9 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(ChuoSeikiQTXYStage::new().initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(ChuoSeikiQTXYStage::new().initialize().is_err());
+    }
 
     #[test]
     fn bad_identity_fails() {
@@ -235,5 +372,18 @@ mod tests {
     fn step_size() {
         let s = ChuoSeikiQTXYStage::new();
         assert_eq!(s.get_step_size_um(), (1.0, 1.0));
+    }
+
+    #[test]
+    fn parser_uses_axis_step_sizes() {
+        let (x, y) =
+            ChuoSeikiQTXYStage::parse_position_response("+00000100K,+00000200K", 0.5, 2.0).unwrap();
+        assert_eq!((x, y), (50.0, 400.0));
+    }
+
+    #[test]
+    fn limits_are_unsupported() {
+        let s = ChuoSeikiQTXYStage::new();
+        assert_eq!(s.get_limits_um().unwrap_err(), MmError::UnsupportedCommand);
     }
 }

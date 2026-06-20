@@ -1,6 +1,6 @@
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Device, Shutter};
+use crate::traits::{Device, Generic};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
@@ -9,16 +9,16 @@ const MAX_LEDS: usize = 8;
 
 /// Prizmatix LED controller.
 ///
-/// Implements the `Shutter` trait: open = enable all active channels, closed = disable all.
-/// Each channel has an intensity (0-100%) and on/off state property.
+/// Upstream implements this child as a Generic device. Each LED channel has
+/// an intensity property named after the channel and a `State <channel>` toggle.
 pub struct PrizmatixController {
     props: PropertyMap,
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
-    is_open: bool,
     num_leds: usize,
-    /// Intensities for each channel (0-100).
-    intensities: [u8; MAX_LEDS],
+    led_names: Vec<String>,
+    /// Intensities for each channel, scaled to the 12-bit value sent upstream.
+    intensities: [u16; MAX_LEDS],
     /// On/off state for each channel.
     channel_on: [bool; MAX_LEDS],
 }
@@ -26,17 +26,23 @@ pub struct PrizmatixController {
 impl PrizmatixController {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("FirmwareName", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("NumLEDs", PropertyValue::Integer(0), true).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Firmware Name", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("NumLEDs", PropertyValue::Integer(0), true)
+            .unwrap();
 
         Self {
             props,
             transport: None,
             initialized: false,
-            is_open: false,
             num_leds: 0,
-            intensities: [0u8; MAX_LEDS],
+            led_names: Vec::new(),
+            intensities: [0u16; MAX_LEDS],
             channel_on: [false; MAX_LEDS],
         }
     }
@@ -77,28 +83,37 @@ impl PrizmatixController {
         }
     }
 
-    fn intensity_prop_name(ch: usize) -> String {
-        format!("LED{}_Intensity", ch + 1)
+    fn intensity_prop_name(&self, ch: usize) -> String {
+        self.led_names
+            .get(ch)
+            .cloned()
+            .unwrap_or_else(|| format!("LED{}", ch))
     }
 
-    fn state_prop_name(ch: usize) -> String {
-        format!("LED{}_State", ch + 1)
+    fn state_prop_name(&self, ch: usize) -> String {
+        format!("State {}", self.intensity_prop_name(ch))
     }
 
-    /// Send set-power command for a channel.
-    fn send_intensity(&mut self, ch: usize, val: u8) -> MmResult<()> {
-        // Protocol: P:<channel_1based>,<value>
-        let cmd = format!("P:{},{}", ch + 1, val);
+    fn send_combined_power(&mut self) -> MmResult<()> {
+        let mut cmd = String::from("P:");
+        for i in 0..self.num_leds {
+            if self.channel_on[i] {
+                cmd.push_str(&self.intensities[i].to_string());
+            } else {
+                cmd.push('0');
+            }
+            cmd.push(',');
+        }
         self.cmd(&cmd)?;
         Ok(())
     }
 
-    /// Send on/off command for a channel.
-    fn send_on_off(&mut self, ch: usize, on: bool) -> MmResult<()> {
-        // Protocol: O:<channel_1based>,<0/1>
-        let cmd = format!("O:{},{}", ch + 1, if on { 1 } else { 0 });
-        self.cmd(&cmd)?;
-        Ok(())
+    fn firmware_code(response: &str) -> u8 {
+        response
+            .rsplit(['_', ':'])
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
     }
 }
 
@@ -124,30 +139,39 @@ impl Device for PrizmatixController {
 
         // Get number of LEDs from V:0 response "V:0_<nLEDs>"
         let v0 = self.cmd("V:0")?;
-        let num_leds = v0.find('_')
+        let num_leds = v0
+            .find('_')
             .and_then(|pos| v0[pos + 1..].parse::<usize>().ok())
             .unwrap_or(0);
         if num_leds == 0 {
             return Err(MmError::SerialInvalidResponse);
         }
         self.num_leds = num_leds.min(MAX_LEDS);
-        self.props.entry_mut("NumLEDs")
+        self.props
+            .entry_mut("NumLEDs")
             .map(|e| e.value = PropertyValue::Integer(self.num_leds as i64));
 
-        // Get firmware name from V:1 response "V:1_<code>"
+        // Get firmware name from V:1 response.
         if let Ok(v1) = self.cmd("V:1") {
-            let code: u8 = v1.find('_')
-                .and_then(|pos| v1[pos + 1..].parse().ok())
-                .unwrap_or(0);
+            let code = Self::firmware_code(&v1);
             let name = Self::firmware_name(code);
-            self.props.entry_mut("FirmwareName")
+            self.props
+                .entry_mut("Firmware Name")
                 .map(|e| e.value = PropertyValue::String(name.into()));
+            if code == 2 {
+                self.props
+                    .define_property("STBL", PropertyValue::Integer(0), false)
+                    .ok();
+                self.props.set_allowed_values("STBL", &["0", "1"]).ok();
+            }
         }
 
         // Get LED channel names from S:0 response (comma-separated after first char)
         let led_names: Vec<String> = if let Ok(s0) = self.cmd("S:0") {
             // Format: first char is count or prefix, then comma-separated names
-            s0.trim_start_matches(|c: char| !c.is_alphabetic())
+            s0.chars()
+                .skip(1)
+                .collect::<String>()
                 .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
@@ -158,32 +182,28 @@ impl Device for PrizmatixController {
 
         // Define per-LED properties
         for i in 0..self.num_leds {
-            let led_name = led_names.get(i).cloned()
+            let led_name = led_names
+                .get(i)
+                .cloned()
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| format!("LED{}", i + 1));
 
-            let intensity_prop = Self::intensity_prop_name(i);
-            let state_prop = Self::state_prop_name(i);
+            let intensity_prop = led_name.clone();
+            let state_prop = format!("State {}", led_name);
 
-            self.props.define_property(
-                &intensity_prop,
-                PropertyValue::Integer(0),
-                false,
-            ).ok();
-            self.props.set_property_limits(&intensity_prop, 0.0, 100.0).ok();
+            self.props
+                .define_property(&intensity_prop, PropertyValue::Integer(0), false)
+                .ok();
+            self.props
+                .set_property_limits(&intensity_prop, 0.0, 100.0)
+                .ok();
 
-            self.props.define_property(
-                &state_prop,
-                PropertyValue::Integer(0),
-                false,
-            ).ok();
+            self.props
+                .define_property(&state_prop, PropertyValue::Integer(0), false)
+                .ok();
+            self.props.set_allowed_values(&state_prop, &["0", "1"]).ok();
 
-            let label_prop = format!("LED{}_Name", i + 1);
-            self.props.define_property(
-                &label_prop,
-                PropertyValue::String(led_name),
-                true,
-            ).ok();
+            self.led_names.push(led_name);
         }
 
         self.initialized = true;
@@ -192,11 +212,7 @@ impl Device for PrizmatixController {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            // Turn off all channels
-            for i in 0..self.num_leds {
-                let _ = self.send_on_off(i, false);
-            }
-            self.is_open = false;
+            let _ = self.cmd("P:0");
             self.initialized = false;
         }
         Ok(())
@@ -207,41 +223,40 @@ impl Device for PrizmatixController {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        // Handle LED intensity: LED<N>_Intensity
-        if let Some(rest) = name.strip_prefix("LED").and_then(|s| {
-            let end = s.find('_')?;
-            let num: usize = s[..end].parse().ok()?;
-            let suffix = &s[end..];
-            if suffix == "_Intensity" { Some(num) } else { None }
-        }) {
-            let ch = rest - 1;
-            if ch < self.num_leds {
-                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
-                if self.initialized {
-                    self.send_intensity(ch, v)?;
-                }
-                self.intensities[ch] = v;
-                return self.props.set(name, PropertyValue::Integer(v as i64));
+        if name == "STBL" {
+            let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if v != 0 && v != 1 {
+                return Err(MmError::InvalidPropertyValue);
             }
+            if self.initialized {
+                self.cmd(&format!("K:1,8,{}", v))?;
+            }
+            return self.props.set(name, PropertyValue::Integer(v));
         }
 
-        // Handle LED on/off: LED<N>_State
-        if let Some(rest) = name.strip_prefix("LED").and_then(|s| {
-            let end = s.find('_')?;
-            let num: usize = s[..end].parse().ok()?;
-            let suffix = &s[end..];
-            if suffix == "_State" { Some(num) } else { None }
-        }) {
-            let ch = rest - 1;
-            if ch < self.num_leds {
-                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                let on = v != 0;
-                if self.initialized {
-                    self.send_on_off(ch, on)?;
-                }
-                self.channel_on[ch] = on;
-                return self.props.set(name, PropertyValue::Integer(v));
+        if let Some(ch) = (0..self.num_leds).find(|&i| name == self.intensity_prop_name(i)) {
+            let percent = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            if !(0.0..=100.0).contains(&percent) {
+                return Err(MmError::InvalidPropertyValue);
             }
+            let scaled = (percent * 4095.0 / 100.0).floor() as u16;
+            self.intensities[ch] = scaled;
+            if self.initialized {
+                self.send_combined_power()?;
+            }
+            return self.props.set(name, PropertyValue::Integer(percent as i64));
+        }
+
+        if let Some(ch) = (0..self.num_leds).find(|&i| name == self.state_prop_name(i)) {
+            let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if v != 0 && v != 1 {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            self.channel_on[ch] = v != 0;
+            if self.initialized {
+                self.send_combined_power()?;
+            }
+            return self.props.set(name, PropertyValue::Integer(v));
         }
 
         self.props.set(name, val)
@@ -260,7 +275,7 @@ impl Device for PrizmatixController {
     }
 
     fn device_type(&self) -> DeviceType {
-        DeviceType::Shutter
+        DeviceType::Generic
     }
 
     fn busy(&self) -> bool {
@@ -268,25 +283,7 @@ impl Device for PrizmatixController {
     }
 }
 
-impl Shutter for PrizmatixController {
-    fn set_open(&mut self, open: bool) -> MmResult<()> {
-        for i in 0..self.num_leds {
-            self.send_on_off(i, open)?;
-            self.channel_on[i] = open;
-        }
-        self.is_open = open;
-        Ok(())
-    }
-
-    fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
-    }
-
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
-    }
-}
+impl Generic for PrizmatixController {}
 
 #[cfg(test)]
 mod tests {
@@ -306,37 +303,43 @@ mod tests {
         dev.initialize().unwrap();
         assert_eq!(dev.num_leds, 3);
         assert_eq!(
-            dev.get_property("FirmwareName").unwrap(),
+            dev.get_property("Firmware Name").unwrap(),
             PropertyValue::String("Combi-LED".into())
+        );
+        assert!(dev.has_property("Red"));
+        assert!(dev.has_property("State Red"));
+    }
+
+    #[test]
+    fn state_and_intensity_send_combined_power_command() {
+        let t = make_transport()
+            .expect("P:0,0,0,", "OK")
+            .expect("P:3071,0,0,", "OK");
+        let mut dev = PrizmatixController::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("Red", PropertyValue::Integer(75)).unwrap();
+        dev.set_property("State Red", PropertyValue::Integer(1))
+            .unwrap();
+        assert_eq!(dev.intensities[0], 3071);
+    }
+
+    #[test]
+    fn state_properties_are_binary_like_upstream() {
+        let mut dev = PrizmatixController::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.set_property("State Red", PropertyValue::Integer(2))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
         );
     }
 
     #[test]
-    fn open_close_shutter() {
-        let t = make_transport()
-            // set_open(true) — 3 LEDs
-            .expect("O:1,1", "OK")
-            .expect("O:2,1", "OK")
-            .expect("O:3,1", "OK")
-            // set_open(false) — 3 LEDs
-            .expect("O:1,0", "OK")
-            .expect("O:2,0", "OK")
-            .expect("O:3,0", "OK");
+    fn shutdown_sends_upstream_all_off_command() {
+        let t = make_transport().expect("P:0", "OK");
         let mut dev = PrizmatixController::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
-        dev.set_open(true).unwrap();
-        assert!(dev.get_open().unwrap());
-        dev.set_open(false).unwrap();
-        assert!(!dev.get_open().unwrap());
-    }
-
-    #[test]
-    fn set_intensity() {
-        let t = make_transport().expect("P:1,75", "OK");
-        let mut dev = PrizmatixController::new().with_transport(Box::new(t));
-        dev.initialize().unwrap();
-        dev.set_property("LED1_Intensity", PropertyValue::Integer(75)).unwrap();
-        assert_eq!(dev.intensities[0], 75);
+        dev.shutdown().unwrap();
     }
 
     #[test]

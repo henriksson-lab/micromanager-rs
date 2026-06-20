@@ -280,6 +280,9 @@ impl Camera for OpenCvCamera {
 
     fn get_roi(&self) -> MmResult<ImageRoi> { Ok(self.roi) }
     fn set_roi(&mut self, roi: ImageRoi) -> MmResult<()> {
+        if roi.width == 0 && roi.height == 0 {
+            return self.clear_roi();
+        }
         // Validate against sensor size
         if roi.x + roi.width > self.width || roi.y + roi.height > self.height {
             return Err(MmError::LocallyDefined(
@@ -309,4 +312,21 @@ impl Camera for OpenCvCamera {
     }
 
     fn is_capturing(&self) -> bool { self.capturing }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_sized_roi_clears_to_full_frame() {
+        let mut cam = OpenCvCamera::new(0);
+        cam.width = 640;
+        cam.height = 480;
+        cam.roi = ImageRoi::new(10, 20, 100, 80);
+
+        cam.set_roi(ImageRoi::new(0, 0, 0, 0)).unwrap();
+
+        assert_eq!(cam.get_roi().unwrap(), ImageRoi::new(0, 0, 640, 480));
+    }
 }

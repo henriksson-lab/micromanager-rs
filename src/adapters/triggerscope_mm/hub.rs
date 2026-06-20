@@ -20,7 +20,9 @@ pub struct TriggerScopeMMHub {
 impl TriggerScopeMMHub {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -49,8 +51,12 @@ impl TriggerScopeMMHub {
         self.call_transport(|t| Ok(t.send_recv(cmd)?.trim().to_string()))
     }
 
-    pub fn is_ts16(&self) -> bool { self.is_ts16 }
-    pub fn firmware_version(&self) -> &str { &self.firmware_version }
+    pub fn is_ts16(&self) -> bool {
+        self.is_ts16
+    }
+    pub fn firmware_version(&self) -> &str {
+        &self.firmware_version
+    }
 
     /// Send a command and receive one-line response (used by sub-devices).
     pub fn send_and_receive(&mut self, cmd: &str) -> MmResult<String> {
@@ -59,12 +65,18 @@ impl TriggerScopeMMHub {
 }
 
 impl Default for TriggerScopeMMHub {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for TriggerScopeMMHub {
-    fn name(&self) -> &str { "TriggerScopeMM-Hub" }
-    fn description(&self) -> &str { "ARC TriggerScope MM hub" }
+    fn name(&self) -> &str {
+        "TriggerScopeMM-Hub"
+    }
+    fn description(&self) -> &str {
+        "ARC TriggerScope MM hub"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -72,6 +84,9 @@ impl Device for TriggerScopeMMHub {
         }
         let banner = self.send_recv("*\n")?;
         if !banner.contains("ARC TRIGGERSCOPE") && !banner.contains("ARC_LED") {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        if !banner.ends_with("MM") {
             return Err(MmError::SerialInvalidResponse);
         }
         self.is_ts16 = banner.contains("ARC TRIGGERSCOPE 16") || banner.contains("ARC_LED 16");
@@ -97,13 +112,21 @@ impl Device for TriggerScopeMMHub {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Hub }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Hub
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Hub for TriggerScopeMMHub {
@@ -125,8 +148,7 @@ mod tests {
 
     #[test]
     fn hub_initialize_ts16() {
-        let t = MockTransport::new()
-            .expect("*\n", "ARC TRIGGERSCOPE 16 v1.0-MM");
+        let t = MockTransport::new().expect("*\n", "ARC TRIGGERSCOPE 16 v1.0-MM");
         let mut hub = TriggerScopeMMHub::new().with_transport(Box::new(t));
         hub.initialize().unwrap();
         assert!(hub.is_ts16());
@@ -134,8 +156,7 @@ mod tests {
 
     #[test]
     fn hub_initialize_ts12() {
-        let t = MockTransport::new()
-            .expect("*\n", "ARC TRIGGERSCOPE v1.0-MM");
+        let t = MockTransport::new().expect("*\n", "ARC TRIGGERSCOPE v1.0-MM");
         let mut hub = TriggerScopeMMHub::new().with_transport(Box::new(t));
         hub.initialize().unwrap();
         assert!(!hub.is_ts16());
@@ -144,6 +165,13 @@ mod tests {
     #[test]
     fn no_transport_error() {
         let mut hub = TriggerScopeMMHub::new();
+        assert!(hub.initialize().is_err());
+    }
+
+    #[test]
+    fn rejects_non_mm_firmware() {
+        let t = MockTransport::new().expect("*\n", "ARC TRIGGERSCOPE 16 v1.0");
+        let mut hub = TriggerScopeMMHub::new().with_transport(Box::new(t));
         assert!(hub.initialize().is_err());
     }
 }

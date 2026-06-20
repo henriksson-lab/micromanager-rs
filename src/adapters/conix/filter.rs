@@ -32,14 +32,33 @@ pub struct ConixQuadFilter {
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
     position: u64,
+    labels: Vec<String>,
     gate_open: bool,
 }
 
 impl ConixQuadFilter {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, transport: None, initialized: false, position: 0, gate_open: true }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .set_allowed_values("State", &["0", "1", "2", "3"])
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String(String::new()), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            position: 0,
+            labels: (0..4).map(|i| format!("Position: {}", i)).collect(),
+            gate_open: true,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -48,7 +67,9 @@ impl ConixQuadFilter {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -57,63 +78,167 @@ impl ConixQuadFilter {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 }
 
-impl Default for ConixQuadFilter { fn default() -> Self { Self::new() } }
+impl Default for ConixQuadFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for ConixQuadFilter {
-    fn name(&self) -> &str { "ConixQuadFilter" }
-    fn description(&self) -> &str { "Conix QuadFluor 4-position filter changer" }
+    fn name(&self) -> &str {
+        "ConixQuadFilter"
+    }
+    fn description(&self) -> &str {
+        "Conix Motorized Qud-Filter changer for Nikon TE200/300"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Query with trailing space: "Quad "
         let r = self.cmd("Quad ")?;
         let body = check_a(&r)?;
-        let pos1: u64 = body.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(1);
+        let pos1: u64 = body
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
         self.position = pos1.saturating_sub(1);
+        self.props
+            .set("State", PropertyValue::Integer(self.position as i64))?;
+        self.props.set(
+            "Label",
+            PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )?;
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        match name {
+            "State" => Ok(PropertyValue::Integer(self.position as i64)),
+            "Label" => Ok(PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            )),
+            _ => self.props.get(name).cloned(),
+        }
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        match name {
+            "State" => {
+                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if pos < 0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.set_position(pos as u64)
+            }
+            "Label" => {
+                let label = val.as_str().to_string();
+                self.set_position_by_label(&label)
+            }
+            _ => self.props.set(name, val),
+        }
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for ConixQuadFilter {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
         if pos >= 4 {
-            return Err(MmError::LocallyDefined(format!("Position {} out of range (0-3)", pos)));
+            return Err(MmError::LocallyDefined(format!(
+                "Position {} out of range (0-3)",
+                pos
+            )));
         }
         let r = self.cmd(&format!("Quad {}", pos + 1))?;
         check_a(&r)?;
         self.position = pos;
+        self.props
+            .set("State", PropertyValue::Integer(self.position as i64))?;
+        self.props.set(
+            "Label",
+            PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )?;
         Ok(())
     }
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
-    fn get_number_of_positions(&self) -> u64 { 4 }
-    fn get_position_label(&self, pos: u64) -> MmResult<String> { Ok(format!("Position-{}", pos + 1)) }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        4
+    }
+    fn get_position_label(&self, pos: u64) -> MmResult<String> {
+        self.labels
+            .get(pos as usize)
+            .cloned()
+            .ok_or(MmError::UnknownPosition)
+    }
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos: u64 = label.strip_prefix("Position-")
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(|p| p.saturating_sub(1))
-            .ok_or_else(|| MmError::UnknownLabel(label.to_string()))?;
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
+            .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
-    fn set_position_label(&mut self, _pos: u64, _label: &str) -> MmResult<()> { Ok(()) }
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.gate_open = open; Ok(()) }
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
+        if pos >= 4 {
+            return Err(MmError::UnknownPosition);
+        }
+        self.labels[pos as usize] = label.to_string();
+        if pos == self.position {
+            self.props
+                .set("Label", PropertyValue::String(label.to_string()))?;
+        }
+        Ok(())
+    }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.gate_open = open;
+        Ok(())
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 // ── HexaFluor ─────────────────────────────────────────────────────────────────
@@ -124,15 +249,34 @@ pub struct ConixHexFilter {
     initialized: bool,
     position: u64,
     num_positions: u64,
+    labels: Vec<String>,
     gate_open: bool,
 }
 
 impl ConixHexFilter {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("NumPositions", PropertyValue::Integer(6), false).unwrap();
-        Self { props, transport: None, initialized: false, position: 0, num_positions: 6, gate_open: true }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .set_allowed_values("State", &["0", "1", "2", "3", "4", "5"])
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String(String::new()), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            position: 0,
+            num_positions: 6,
+            labels: (0..6).map(|i| format!("Position: {}", i)).collect(),
+            gate_open: true,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -141,7 +285,9 @@ impl ConixHexFilter {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -150,67 +296,166 @@ impl ConixHexFilter {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 }
 
-impl Default for ConixHexFilter { fn default() -> Self { Self::new() } }
+impl Default for ConixHexFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for ConixHexFilter {
-    fn name(&self) -> &str { "ConixHexFilter" }
-    fn description(&self) -> &str { "Conix HexaFluor 6-position filter changer" }
+    fn name(&self) -> &str {
+        "ConixHexFilter"
+    }
+    fn description(&self) -> &str {
+        "Conix Motorized 6-Filter changer for Nikon TE200/300"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         let r = self.cmd("Cube ")?;
         let body = check_a(&r)?;
-        let pos1: u64 = body.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(1);
+        let pos1: u64 = body
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
         self.position = pos1.saturating_sub(1);
+        self.props
+            .set("State", PropertyValue::Integer(self.position as i64))?;
+        self.props.set(
+            "Label",
+            PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )?;
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
-
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        if name == "NumPositions" {
-            self.num_positions = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
-        }
-        self.props.set(name, val)
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
     }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        match name {
+            "State" => Ok(PropertyValue::Integer(self.position as i64)),
+            "Label" => Ok(PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            )),
+            _ => self.props.get(name).cloned(),
+        }
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        match name {
+            "State" => {
+                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if pos < 0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.set_position(pos as u64)
+            }
+            "Label" => {
+                let label = val.as_str().to_string();
+                self.set_position_by_label(&label)
+            }
+            _ => self.props.set(name, val),
+        }
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl StateDevice for ConixHexFilter {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!("Position {} out of range", pos)));
+            return Err(MmError::LocallyDefined(format!(
+                "Position {} out of range",
+                pos
+            )));
         }
         let r = self.cmd(&format!("Cube {}", pos + 1))?;
         check_a(&r)?;
         self.position = pos;
+        self.props
+            .set("State", PropertyValue::Integer(self.position as i64))?;
+        self.props.set(
+            "Label",
+            PropertyValue::String(
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+        )?;
         Ok(())
     }
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
-    fn get_number_of_positions(&self) -> u64 { self.num_positions }
-    fn get_position_label(&self, pos: u64) -> MmResult<String> { Ok(format!("Position-{}", pos + 1)) }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions
+    }
+    fn get_position_label(&self, pos: u64) -> MmResult<String> {
+        self.labels
+            .get(pos as usize)
+            .cloned()
+            .ok_or(MmError::UnknownPosition)
+    }
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos: u64 = label.strip_prefix("Position-")
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(|p| p.saturating_sub(1))
-            .ok_or_else(|| MmError::UnknownLabel(label.to_string()))?;
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
+            .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
-    fn set_position_label(&mut self, _pos: u64, _label: &str) -> MmResult<()> { Ok(()) }
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.gate_open = open; Ok(()) }
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
+        if pos >= self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
+        self.labels[pos as usize] = label.to_string();
+        if pos == self.position {
+            self.props
+                .set("Label", PropertyValue::String(label.to_string()))?;
+        }
+        Ok(())
+    }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.gate_open = open;
+        Ok(())
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 #[cfg(test)]

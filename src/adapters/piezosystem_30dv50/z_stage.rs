@@ -6,13 +6,12 @@
 ///   `cloop\r`         → get loop mode; response: `cloop,<0|1>`
 ///   `cloop,0\r`       → set open loop
 ///   `cloop,1\r`       → set close loop
-///   `rd\r`            → read current value (voltage in open loop, µm in closed)
-///   `wr,<val>\r`      → write set-point value (no response)
+///   `mess\r`          → read current value (voltage in open loop, µm in closed)
 ///   `set,<val>\r`     → set position (closed loop); no response
 ///   `rohm\r`          → query resistance
 ///   (limits from pre-init properties: min_V_, max_V_, min_um_, max_um_)
 ///
-/// The C++ adapter (Piezosystem_30DV50.cpp) uses `rd`/`wr` commands,
+/// The C++ adapter (Piezosystem_30DV50.cpp) uses `mess`/`set` commands,
 /// and converts between voltage and position using linear interpolation.
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
@@ -35,11 +34,21 @@ pub struct Psj30DV50Stage {
 impl Psj30DV50Stage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("MinVoltage", PropertyValue::Float(-20.0), false).unwrap();
-        props.define_property("MaxVoltage", PropertyValue::Float(130.0), false).unwrap();
-        props.define_property("MinPosition_um", PropertyValue::Float(0.0), false).unwrap();
-        props.define_property("MaxPosition_um", PropertyValue::Float(80.0), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("MinVoltage", PropertyValue::Float(-20.0), false)
+            .unwrap();
+        props
+            .define_property("MaxVoltage", PropertyValue::Float(130.0), false)
+            .unwrap();
+        props
+            .define_property("MinPosition_um", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("MaxPosition_um", PropertyValue::Float(80.0), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -75,7 +84,10 @@ impl Psj30DV50Stage {
 
     fn send_only(&mut self, command: &str) -> MmResult<()> {
         let cmd = command.to_string();
-        self.call_transport(|t| { t.send(&cmd)?; Ok(()) })
+        self.call_transport(|t| {
+            t.send(&cmd)?;
+            Ok(())
+        })
     }
 
     /// Parse `<key>,<value>` response → value as f64.
@@ -85,7 +97,9 @@ impl Psj30DV50Stage {
         if parts.len() < 2 {
             return Err(MmError::LocallyDefined(format!("Cannot parse: {}", resp)));
         }
-        parts[1].trim().parse::<f64>()
+        parts[1]
+            .trim()
+            .parse::<f64>()
             .map_err(|_| MmError::LocallyDefined(format!("Non-numeric value: {}", parts[1])))
     }
 
@@ -95,12 +109,18 @@ impl Psj30DV50Stage {
 }
 
 impl Default for Psj30DV50Stage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for Psj30DV50Stage {
-    fn name(&self) -> &str { "PSJ-30DV50-Stage" }
-    fn description(&self) -> &str { "Piezosystem Jena 30DV50 piezo Z stage" }
+    fn name(&self) -> &str {
+        "PSJ-30DV50-Stage"
+    }
+    fn description(&self) -> &str {
+        "Piezosystem Jena 30DV50 piezo Z stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -120,7 +140,7 @@ impl Device for Psj30DV50Stage {
         }
 
         // Read current position
-        let rd_resp = self.cmd("rd")?;
+        let rd_resp = self.cmd("mess")?;
         if let Ok(raw) = Self::parse_value(&rd_resp) {
             if self.loop_closed {
                 self.position_um = raw;
@@ -146,13 +166,21 @@ impl Device for Psj30DV50Stage {
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for Psj30DV50Stage {
@@ -161,15 +189,18 @@ impl Stage for Psj30DV50Stage {
             pos
         } else {
             // convert µm to voltage
-            (self.max_v - self.min_v) * (pos - self.min_um) / (self.max_um - self.min_um) + self.min_v
+            (self.max_v - self.min_v) * (pos - self.min_um) / (self.max_um - self.min_um)
+                + self.min_v
         };
-        let cmd = format!("wr,{:.3}", set_value);
+        let cmd = format!("set,{:.3}", set_value);
         self.send_only(&cmd)?;
         self.position_um = pos;
         Ok(())
     }
 
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.position_um) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.position_um)
+    }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
         let new_pos = self.position_um + d;
@@ -180,11 +211,19 @@ impl Stage for Psj30DV50Stage {
         self.set_position_um(0.0)
     }
 
-    fn stop(&mut self) -> MmResult<()> { Ok(()) }
+    fn stop(&mut self) -> MmResult<()> {
+        Ok(())
+    }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((self.min_um, self.max_um)) }
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((self.min_um, self.max_um))
+    }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -194,9 +233,9 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("",       "30DV50 V1.0>")
-            .expect("cloop",  "cloop,0")      // open loop
-            .expect("rd",     "rd,65.0")      // raw voltage
+            .expect("", "30DV50 V1.0>")
+            .expect("cloop", "cloop,0") // open loop
+            .expect("mess", "mess,65.0") // raw voltage
     }
 
     #[test]
@@ -210,8 +249,7 @@ mod tests {
 
     #[test]
     fn move_absolute_open_loop() {
-        let t = make_transport()
-            .any(""); // wr command has no response
+        let t = make_transport().any(""); // wr command has no response
         let mut stage = Psj30DV50Stage::new().with_transport(Box::new(t));
         stage.initialize().unwrap();
         stage.set_position_um(40.0).unwrap();
