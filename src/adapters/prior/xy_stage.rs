@@ -18,12 +18,14 @@ use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::RefCell;
 
-const STEPS_PER_UM: f64 = 10.0;
+const DEFAULT_STEPS_PER_UM: f64 = 10.0;
 
 pub struct PriorXYStage {
     props: PropertyMap,
     transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
+    steps_per_um_x: f64,
+    steps_per_um_y: f64,
     x_um: f64,
     y_um: f64,
 }
@@ -32,15 +34,37 @@ impl PriorXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
         props
             .define_property("Version", PropertyValue::String(String::new()), true)
             .unwrap();
+        props
+            .define_property("StepSizeX_um", PropertyValue::Float(0.1), true)
+            .unwrap();
+        props
+            .define_property("StepSizeY_um", PropertyValue::Float(0.1), true)
+            .unwrap();
+        props
+            .define_property("MaxSpeed", PropertyValue::Integer(20), false)
+            .unwrap();
+        props.set_property_limits("MaxSpeed", 1.0, 100.0).unwrap();
+        props
+            .define_property("Acceleration", PropertyValue::Integer(20), false)
+            .unwrap();
+        props
+            .set_property_limits("Acceleration", 1.0, 100.0)
+            .unwrap();
+        props
+            .define_property("SCurve", PropertyValue::Integer(20), false)
+            .unwrap();
+        props.set_property_limits("SCurve", 1.0, 100.0).unwrap();
         Self {
             props,
             transport: RefCell::new(None),
             initialized: false,
+            steps_per_um_x: DEFAULT_STEPS_PER_UM,
+            steps_per_um_y: DEFAULT_STEPS_PER_UM,
             x_um: 0.0,
             y_um: 0.0,
         }
@@ -69,6 +93,10 @@ impl PriorXYStage {
         })
     }
 
+    fn clear_port(&self) -> MmResult<()> {
+        self.call_transport(|t| t.purge())
+    }
+
     fn check_r(resp: &str) -> MmResult<()> {
         let s = resp.trim();
         if s == "R" {
@@ -78,12 +106,57 @@ impl PriorXYStage {
         }
     }
 
+    fn check_zero(resp: &str, context: &str) -> MmResult<()> {
+        let s = resp.trim();
+        if s.starts_with('0') {
+            Ok(())
+        } else {
+            Err(MmError::LocallyDefined(format!(
+                "Prior {} error: {}",
+                context, s
+            )))
+        }
+    }
+
+    fn query_bounded_i64_property(&self, command: &str) -> MmResult<PropertyValue> {
+        self.clear_port()?;
+        let value = self
+            .cmd(command)?
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        if !(1..=100).contains(&value) {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        Ok(PropertyValue::Integer(value))
+    }
+
     fn read_xy(&self) -> MmResult<(f64, f64)> {
         let rx = self.cmd("PX")?;
         let ry = self.cmd("PY")?;
         let xs: i64 = rx.trim().parse().unwrap_or(0);
         let ys: i64 = ry.trim().parse().unwrap_or(0);
-        Ok((xs as f64 / STEPS_PER_UM, ys as f64 / STEPS_PER_UM))
+        Ok((
+            xs as f64 / self.steps_per_um_x,
+            ys as f64 / self.steps_per_um_y,
+        ))
+    }
+
+    fn discover_resolution(&mut self) {
+        if let Ok(resp) = self.cmd("RES,s") {
+            if let Ok(res) = resp.trim().parse::<f64>() {
+                if res > 0.0 {
+                    self.steps_per_um_x = 1.0 / res;
+                    self.steps_per_um_y = 1.0 / res;
+                    if let Some(e) = self.props.entry_mut("StepSizeX_um") {
+                        e.value = PropertyValue::Float(res);
+                    }
+                    if let Some(e) = self.props.entry_mut("StepSizeY_um") {
+                        e.value = PropertyValue::Float(res);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -105,11 +178,13 @@ impl Device for PriorXYStage {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
+        self.clear_port()?;
         self.cmd("COMP 0")?;
         let ver = self.cmd("DATE")?;
         self.props
             .entry_mut("Version")
             .map(|e| e.value = PropertyValue::String(ver));
+        self.discover_resolution();
         let (x, y) = self.read_xy()?;
         self.x_um = x;
         self.y_um = y;
@@ -123,10 +198,39 @@ impl Device for PriorXYStage {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if self.initialized {
+            match name {
+                "MaxSpeed" => return self.query_bounded_i64_property("SMS"),
+                "Acceleration" => return self.query_bounded_i64_property("SAS"),
+                "SCurve" => return self.query_bounded_i64_property("SCS"),
+                _ => {}
+            }
+        }
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            "MaxSpeed" if self.initialized => {
+                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(v))?;
+                self.clear_port()?;
+                Self::check_zero(&self.cmd(&format!("SMS,{}", v))?, name)
+            }
+            "Acceleration" if self.initialized => {
+                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(v))?;
+                self.clear_port()?;
+                Self::check_zero(&self.cmd(&format!("SAS,{}", v))?, name)
+            }
+            "SCurve" if self.initialized => {
+                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(v))?;
+                self.clear_port()?;
+                Self::check_zero(&self.cmd(&format!("SCS,{}", v))?, name)
+            }
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -151,8 +255,9 @@ impl Device for PriorXYStage {
 
 impl XYStage for PriorXYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
-        let xs = (x * STEPS_PER_UM).round() as i64;
-        let ys = (y * STEPS_PER_UM).round() as i64;
+        let xs = (x * self.steps_per_um_x).round() as i64;
+        let ys = (y * self.steps_per_um_y).round() as i64;
+        self.clear_port()?;
         let r = self.cmd(&format!("G,{},{}", xs, ys))?;
         Self::check_r(&r)?;
         self.x_um = x;
@@ -163,8 +268,9 @@ impl XYStage for PriorXYStage {
         self.read_xy()
     }
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
-        let dxs = (dx * STEPS_PER_UM).round() as i64;
-        let dys = (dy * STEPS_PER_UM).round() as i64;
+        let dxs = (dx * self.steps_per_um_x).round() as i64;
+        let dys = (dy * self.steps_per_um_y).round() as i64;
+        self.clear_port()?;
         let r = self.cmd(&format!("GR,{},{}", dxs, dys))?;
         Self::check_r(&r)?;
         self.x_um += dx;
@@ -188,7 +294,7 @@ impl XYStage for PriorXYStage {
         Err(MmError::UnsupportedCommand)
     }
     fn get_step_size_um(&self) -> (f64, f64) {
-        (0.1, 0.1)
+        (1.0 / self.steps_per_um_x, 1.0 / self.steps_per_um_y)
     }
     fn set_origin(&mut self) -> MmResult<()> {
         let r = self.cmd("PS,0,0")?;
@@ -213,6 +319,7 @@ mod tests {
         MockTransport::new()
             .expect("COMP 0\r", "0")
             .any("Prior ProScan v3.01") // DATE
+            .expect("RES,s\r", "0.1")
             .expect("PX\r", "1000") // PX -> 100 µm
             .expect("PY\r", "2000") // PY -> 200 µm
     }
@@ -288,9 +395,40 @@ mod tests {
     }
 
     #[test]
-    fn limits_unsupported() {
+    fn limits_are_unsupported_like_upstream() {
         let s = PriorXYStage::new();
         assert_eq!(s.get_limits_um().unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn motion_properties_use_zero_ack_and_live_reads() {
+        let t = make_transport()
+            .expect("SMS,42\r", "0")
+            .expect("SMS\r", "42")
+            .expect("SAS,43\r", "0")
+            .expect("SAS\r", "43")
+            .expect("SCS,44\r", "0")
+            .expect("SCS\r", "44");
+        let mut s = PriorXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_property("MaxSpeed", PropertyValue::Integer(42))
+            .unwrap();
+        assert_eq!(
+            s.get_property("MaxSpeed").unwrap(),
+            PropertyValue::Integer(42)
+        );
+        s.set_property("Acceleration", PropertyValue::Integer(43))
+            .unwrap();
+        assert_eq!(
+            s.get_property("Acceleration").unwrap(),
+            PropertyValue::Integer(43)
+        );
+        s.set_property("SCurve", PropertyValue::Integer(44))
+            .unwrap();
+        assert_eq!(
+            s.get_property("SCurve").unwrap(),
+            PropertyValue::Integer(44)
+        );
     }
 
     #[test]

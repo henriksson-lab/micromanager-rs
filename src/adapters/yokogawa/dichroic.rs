@@ -10,6 +10,7 @@ use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::{Cell, RefCell};
+use std::{thread, time::Duration};
 
 pub struct CsuXDichroic {
     props: PropertyMap,
@@ -100,6 +101,27 @@ impl CsuXDichroic {
         self.position.set(pos);
         Ok(pos)
     }
+
+    fn set_position_wire_with_retry(&self, wire_pos: u64) -> MmResult<()> {
+        let command = format!("DM_POS, {}\r", wire_pos);
+        let mut last_ack_error = MmError::SerialInvalidResponse;
+        for attempt in 0..10 {
+            let resp = self.call_transport(|t| {
+                t.send(&command)?;
+                Ok(t.receive_line()?.trim().to_string())
+            })?;
+            match Self::check_ack(&resp) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_ack_error = err;
+                    if attempt < 9 {
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+        }
+        Err(last_ack_error)
+    }
 }
 
 impl Default for CsuXDichroic {
@@ -183,9 +205,8 @@ impl StateDevice for CsuXDichroic {
         if pos >= self.num_positions {
             return Err(MmError::UnknownPosition);
         }
-        if self.initialized {
-            let resp = self.cmd(&format!("DM_POS, {}", pos + 1))?;
-            Self::check_ack(&resp)?;
+        if self.initialized && pos != self.position.get() {
+            self.set_position_wire_with_retry(pos + 1)?;
         }
         self.position.set(pos);
         self.props
@@ -278,6 +299,14 @@ mod tests {
     }
 
     #[test]
+    fn set_position_skips_command_when_unchanged() {
+        let t = MockTransport::new().expect("DM_POS, ?\r", "2\rA");
+        let mut d = CsuXDichroic::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        d.set_position(1).unwrap();
+    }
+
+    #[test]
     fn labels_and_position_count_match_csux() {
         let d = CsuXDichroic::new();
         assert!(d.has_property("State"));
@@ -311,14 +340,29 @@ mod tests {
 
     #[test]
     fn set_rejects_malformed_ack() {
-        let t = MockTransport::new()
-            .expect("DM_POS, ?\r", "1\rA")
-            .expect("DM_POS, 2\r", "bad");
+        let mut t = MockTransport::new().expect("DM_POS, ?\r", "1\rA");
+        for _ in 0..10 {
+            t = t.expect("DM_POS, 2\r", "bad");
+        }
         let mut d = CsuXDichroic::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         assert_eq!(
             d.set_position(1).unwrap_err(),
             MmError::SerialInvalidResponse
         );
+    }
+
+    #[test]
+    fn set_retries_ack_failures() {
+        let t = MockTransport::new()
+            .expect("DM_POS, ?\r", "1\rA")
+            .expect("DM_POS, 2\r", "bad")
+            .expect("DM_POS, 2\r", "2\rN")
+            .expect("DM_POS, 2\r", "A")
+            .expect("DM_POS, ?\r", "2\rA");
+        let mut d = CsuXDichroic::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        d.set_position(1).unwrap();
+        assert_eq!(d.get_position().unwrap(), 1);
     }
 }

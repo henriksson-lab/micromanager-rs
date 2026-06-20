@@ -17,13 +17,17 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 pub struct CorvusXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
-    x_um: f64,
-    y_um: f64,
+    x_um: Cell<f64>,
+    y_um: Cell<f64>,
+    speed_mm_s: Cell<f64>,
+    accel_m_s2: Cell<f64>,
+    joystick_enabled: Cell<bool>,
 }
 
 impl CorvusXYStage {
@@ -35,32 +39,57 @@ impl CorvusXYStage {
         props
             .define_property("Version", PropertyValue::String(String::new()), true)
             .unwrap();
+        props
+            .define_property("Speed [mm/s]", PropertyValue::Float(40.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Speed [mm/s]", 0.001, 100.0)
+            .unwrap();
+        props
+            .define_property("Acceleration [m/s^2]", PropertyValue::Float(0.2), false)
+            .unwrap();
+        props
+            .set_property_limits("Acceleration [m/s^2]", 0.01, 2.0)
+            .unwrap();
+        props
+            .define_property(
+                "Enable joystick?",
+                PropertyValue::String("False".to_string()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("Enable joystick?", &["True", "False"])
+            .unwrap();
         Self {
             props,
             transport: None,
             initialized: false,
-            x_um: 0.0,
-            y_um: 0.0,
+            x_um: Cell::new(0.0),
+            y_um: Cell::new(0.0),
+            speed_mm_s: Cell::new(40.0),
+            accel_m_s2: Cell::new(0.2),
+            joystick_enabled: Cell::new(false),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
     /// Send command with trailing space (Corvus TX terminator).
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let cmd = format!("{} ", command);
         self.call_transport(|t| {
             let r = t.send_recv(&cmd)?;
@@ -87,6 +116,44 @@ impl CorvusXYStage {
         self.cmd("1 1 setaxis")?;
         self.cmd("1 2 setaxis")?;
         Ok(())
+    }
+
+    fn query_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        let pos = self.cmd("p")?;
+        let (x, y) = Self::parse_xy(&pos)?;
+        self.x_um.set(x);
+        self.y_um.set(y);
+        Ok((x, y))
+    }
+
+    fn query_busy(&self) -> MmResult<bool> {
+        let resp = self.cmd("st")?;
+        let status: i64 = resp
+            .trim()
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        Ok(status & 1 != 0)
+    }
+
+    fn query_speed_mm_s(&self) -> MmResult<f64> {
+        let resp = self.cmd("getvel")?;
+        let speed_um_s: f64 = resp
+            .trim()
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        let speed = speed_um_s / 1000.0;
+        self.speed_mm_s.set(speed);
+        Ok(speed)
+    }
+
+    fn query_accel_m_s2(&self) -> MmResult<f64> {
+        let resp = self.cmd("getaccel")?;
+        let accel: f64 = resp
+            .trim()
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        self.accel_m_s2.set(accel);
+        Ok(accel)
     }
 }
 
@@ -119,8 +186,8 @@ impl Device for CorvusXYStage {
         self.select_xy_axes()?;
         let pos = self.cmd("p")?;
         let (x, y) = Self::parse_xy(&pos)?;
-        self.x_um = x;
-        self.y_um = y;
+        self.x_um.set(x);
+        self.y_um.set(y);
         self.initialized = true;
         Ok(())
     }
@@ -131,10 +198,65 @@ impl Device for CorvusXYStage {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "Speed [mm/s]" if self.initialized => {
+                Ok(PropertyValue::Float(self.query_speed_mm_s()?))
+            }
+            "Speed [mm/s]" => Ok(PropertyValue::Float(self.speed_mm_s.get())),
+            "Acceleration [m/s^2]" if self.initialized => {
+                Ok(PropertyValue::Float(self.query_accel_m_s2()?))
+            }
+            "Acceleration [m/s^2]" => Ok(PropertyValue::Float(self.accel_m_s2.get())),
+            "Enable joystick?" => Ok(PropertyValue::String(
+                if self.joystick_enabled.get() {
+                    "True"
+                } else {
+                    "False"
+                }
+                .to_string(),
+            )),
+            _ => self.props.get(name).cloned(),
+        }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Speed [mm/s]" => {
+                let speed = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.001..=100.0).contains(&speed) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.cmd(&format!("{} setvel", speed * 1000.0))?;
+                self.speed_mm_s.set(speed);
+                self.props.set(name, PropertyValue::Float(speed))
+            }
+            "Acceleration [m/s^2]" => {
+                let accel = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.01..=2.0).contains(&accel) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.cmd(&format!("{} setaccel", accel))?;
+                self.accel_m_s2.set(accel);
+                self.props.set(name, PropertyValue::Float(accel))
+            }
+            "Enable joystick?" => {
+                let state = val.as_str();
+                let toggle = match state {
+                    "True" => {
+                        self.joystick_enabled.set(true);
+                        1
+                    }
+                    "False" => {
+                        self.joystick_enabled.set(false);
+                        0
+                    }
+                    _ => return Err(MmError::InvalidPropertyValue),
+                };
+                self.cmd(&format!("{} j", toggle))?;
+                self.props
+                    .set(name, PropertyValue::String(state.to_string()))
+            }
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -149,7 +271,7 @@ impl Device for CorvusXYStage {
         DeviceType::XYStage
     }
     fn busy(&self) -> bool {
-        false
+        self.query_busy().unwrap_or(false)
     }
 }
 
@@ -157,24 +279,24 @@ impl XYStage for CorvusXYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
         self.select_xy_axes()?;
         self.cmd(&format!("{:.4} {:.4} move", x, y))?;
-        self.x_um = x;
-        self.y_um = y;
+        self.x_um.set(x);
+        self.y_um.set(y);
         Ok(())
     }
     fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
-        Ok((self.x_um, self.y_um))
+        self.query_xy_position_um()
     }
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         self.select_xy_axes()?;
         self.cmd(&format!("{:.4} {:.4} rmove", dx, dy))?;
-        self.x_um += dx;
-        self.y_um += dy;
+        self.x_um.set(self.x_um.get() + dx);
+        self.y_um.set(self.y_um.get() + dy);
         Ok(())
     }
     fn home(&mut self) -> MmResult<()> {
         self.cmd("cal")?;
-        self.x_um = 0.0;
-        self.y_um = 0.0;
+        self.x_um.set(0.0);
+        self.y_um.set(0.0);
         Ok(())
     }
     fn stop(&mut self) -> MmResult<()> {
@@ -182,7 +304,7 @@ impl XYStage for CorvusXYStage {
         Ok(())
     }
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Err(MmError::NotSupported)
+        Err(MmError::UnknownPosition)
     }
     fn get_step_size_um(&self) -> (f64, f64) {
         (0.1, 0.1)
@@ -190,8 +312,8 @@ impl XYStage for CorvusXYStage {
     fn set_origin(&mut self) -> MmResult<()> {
         self.select_xy_axes()?;
         self.cmd("0 0 setpos")?;
-        self.x_um = 0.0;
-        self.y_um = 0.0;
+        self.x_um.set(0.0);
+        self.y_um.set(0.0);
         Ok(())
     }
 }
@@ -216,7 +338,8 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let mut s = CorvusXYStage::new().with_transport(Box::new(make_transport()));
+        let t = make_transport().expect("p ", "100.0 200.0");
+        let mut s = CorvusXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert_eq!(s.get_xy_position_um().unwrap(), (100.0, 200.0));
     }
@@ -227,7 +350,8 @@ mod tests {
             .expect("2 setdim ", "OK")
             .expect("1 1 setaxis ", "OK")
             .expect("1 2 setaxis ", "OK")
-            .any("OK");
+            .any("OK")
+            .expect("p ", "300.0 400.0");
         let mut s = CorvusXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_xy_position_um(300.0, 400.0).unwrap();
@@ -240,7 +364,8 @@ mod tests {
             .expect("2 setdim ", "OK")
             .expect("1 1 setaxis ", "OK")
             .expect("1 2 setaxis ", "OK")
-            .any("OK");
+            .any("OK")
+            .expect("p ", "110.0 220.0");
         let mut s = CorvusXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_xy_position_um(10.0, 20.0).unwrap();
@@ -257,6 +382,71 @@ mod tests {
     #[test]
     fn limits_are_not_fabricated() {
         let s = CorvusXYStage::new();
-        assert_eq!(s.get_limits_um().unwrap_err(), MmError::NotSupported);
+        assert_eq!(s.get_limits_um().unwrap_err(), MmError::UnknownPosition);
+    }
+
+    #[test]
+    fn speed_accel_and_joystick_properties_send_controller_commands() {
+        let t = make_transport()
+            .expect("42000 setvel ", "OK")
+            .expect("0.5 setaccel ", "OK")
+            .expect("1 j ", "OK");
+        let mut s = CorvusXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_property("Speed [mm/s]", PropertyValue::Float(42.0))
+            .unwrap();
+        s.set_property("Acceleration [m/s^2]", PropertyValue::Float(0.5))
+            .unwrap();
+        s.set_property(
+            "Enable joystick?",
+            PropertyValue::String("True".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            s.get_property("Enable joystick?").unwrap(),
+            PropertyValue::String("True".to_string())
+        );
+    }
+
+    #[test]
+    fn acceleration_property_uses_upstream_user_limits() {
+        let mut s = CorvusXYStage::new();
+        assert_eq!(
+            s.set_property("Acceleration [m/s^2]", PropertyValue::Float(2.5))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            s.set_property("Acceleration [m/s^2]", PropertyValue::Float(0.005))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+    }
+
+    #[test]
+    fn busy_polls_status_bit() {
+        let t = make_transport().expect("st ", "1");
+        let mut s = CorvusXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
+    }
+
+    #[test]
+    fn live_position_speed_and_accel_queries() {
+        let t = make_transport()
+            .expect("p ", "12.5 34.5")
+            .expect("getvel ", "45000")
+            .expect("getaccel ", "0.75");
+        let mut s = CorvusXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (12.5, 34.5));
+        assert_eq!(
+            s.get_property("Speed [mm/s]").unwrap(),
+            PropertyValue::Float(45.0)
+        );
+        assert_eq!(
+            s.get_property("Acceleration [m/s^2]").unwrap(),
+            PropertyValue::Float(0.75)
+        );
     }
 }

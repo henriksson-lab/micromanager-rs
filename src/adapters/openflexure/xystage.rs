@@ -43,7 +43,7 @@ impl OfXYStage {
         c(cmd)
     }
 
-    fn sync_state(&mut self) -> MmResult<()> {
+    pub fn sync_state(&mut self) -> MmResult<()> {
         let resp = self.send("p")?;
         let mut parts = resp.split_whitespace();
         let x: i64 = parts
@@ -168,6 +168,7 @@ impl XYStage for OfXYStage {
 
     fn set_origin(&mut self) -> MmResult<()> {
         self.send("zero")?;
+        self.sync_state()?;
         Ok(())
     }
 }
@@ -210,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn set_origin_sends_zero_without_changing_cached_position() {
+    fn set_origin_sends_zero_and_resyncs_cached_position() {
         let (mut stage, log) = make_stage();
         stage.initialize().unwrap();
         stage.set_relative_xy_position_um(70.0, 140.0).unwrap();
@@ -218,8 +219,9 @@ mod tests {
         stage.set_origin().unwrap();
 
         let (x, y) = stage.get_xy_position_um().unwrap();
-        assert!((x - 70.0).abs() < 0.1);
-        assert!((y - 140.0).abs() < 0.1);
+        assert!(x.abs() < 0.1);
+        assert!(y.abs() < 0.1);
         assert!(log.lock().unwrap().iter().any(|cmd| cmd == "zero"));
+        assert!(log.lock().unwrap().iter().filter(|cmd| *cmd == "p").count() >= 2);
     }
 }

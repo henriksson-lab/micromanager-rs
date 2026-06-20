@@ -83,18 +83,22 @@ impl SangaBoardHub {
     }
 
     fn query_busy(&self) -> MmResult<bool> {
-        self.call_transport(|t| {
-            t.purge()?;
-            Ok(t.send_recv("moving?")?.contains("true"))
-        })
+        self.call_transport(Self::query_busy_on)
+    }
+
+    fn query_busy_on(t: &mut dyn Transport) -> MmResult<bool> {
+        t.purge()?;
+        Ok(t.send_recv("moving?")?.contains("true"))
     }
 
     /// Send a command and read the response line.
     pub fn send_command(&mut self, cmd: &str) -> MmResult<String> {
-        if self.query_busy()? && cmd.contains("mr") {
-            return Err(MmError::LocallyDefined(STAGE_STILL_MOVING.into()));
-        }
-        let response = self.call_transport(|t| Ok(t.send_recv(cmd)?.trim().to_string()))?;
+        let response = self.call_transport(|t| {
+            if Self::query_busy_on(t)? && cmd.contains("mr") {
+                return Err(MmError::LocallyDefined(STAGE_STILL_MOVING.into()));
+            }
+            Ok(t.send_recv(cmd)?.trim().to_string())
+        })?;
         self.serial_response = response.clone();
         if let Some(entry) = self.props.entry_mut("SerialResponse") {
             entry.value = PropertyValue::String(response.clone());

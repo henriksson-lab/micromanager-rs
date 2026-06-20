@@ -24,15 +24,17 @@
 /// This adapter implements `Stage` (treating the rotation angle in degrees as
 /// the stage position).  For mm-device's `Stage`, position is in µm — we store
 /// degrees and satisfy the trait; limits are [0, 360).
+use crate::adapters::elliptec::status;
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Device, Stage};
+use crate::traits::{Device, Generic, Stage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, FocusDirection, PropertyValue};
+use std::sync::Mutex;
 
 pub struct ThorlabsEll14 {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<Mutex<Box<dyn Transport>>>,
     initialized: bool,
     /// Channel address character ('0'–'F')
     channel: char,
@@ -40,6 +42,11 @@ pub struct ThorlabsEll14 {
     pulses_per_rev: f64,
     /// Current position in degrees [0, 360)
     position_deg: f64,
+    offset_deg: f64,
+    jog_step_deg: f64,
+    relative_move_deg: f64,
+    home_dir: &'static str,
+    jog_dir: &'static str,
 }
 
 impl ThorlabsEll14 {
@@ -51,6 +58,17 @@ impl ThorlabsEll14 {
         props
             .define_property("Channel", PropertyValue::String("0".into()), false)
             .unwrap();
+        props
+            .set_allowed_values(
+                "Channel",
+                &[
+                    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F",
+                ],
+            )
+            .unwrap();
+        props
+            .define_property("Name", PropertyValue::String(" ELL14".into()), true)
+            .unwrap();
 
         Self {
             props,
@@ -59,25 +77,35 @@ impl ThorlabsEll14 {
             channel: '0',
             pulses_per_rev: 143360.0, // ELL14 default
             position_deg: 0.0,
+            offset_deg: 0.0,
+            jog_step_deg: 90.0,
+            relative_move_deg: 90.0,
+            home_dir: "Clockwise",
+            jog_dir: "Clockwise",
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(Mutex::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => {
+                let mut guard = t
+                    .lock()
+                    .map_err(|_| MmError::LocallyDefined("ELL14 transport lock poisoned".into()))?;
+                f(guard.as_mut())
+            }
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let cmd = command.to_string();
         self.call_transport(|t| Ok(t.send_recv(&cmd)?.trim().to_string()))
     }
@@ -106,11 +134,7 @@ impl ThorlabsEll14 {
         let msg = resp.trim_start_matches('\n');
         // Check for status reply {ch}GS{code}
         if msg.len() >= 3 && &msg[1..3] == "GS" {
-            let code = &msg[3..];
-            return Err(MmError::LocallyDefined(format!(
-                "ELL14 status error: {}",
-                code
-            )));
+            return Err(Self::status_to_error(&msg[3..]));
         }
         if msg.len() < 11 || &msg[1..3] != "PO" {
             return Err(MmError::SerialInvalidResponse);
@@ -119,14 +143,14 @@ impl ThorlabsEll14 {
     }
 
     /// Query current position from the device.
-    fn query_position(&mut self) -> MmResult<f64> {
+    fn query_position(&self) -> MmResult<f64> {
         let cmd = self.channel_cmd("gp");
         let resp = self.cmd(&cmd)?;
         self.parse_position_reply(&resp)
     }
 
     /// Query device info and extract pulsesPerRev.
-    fn query_info(&mut self) -> MmResult<f64> {
+    fn query_info(&self) -> MmResult<(String, f64)> {
         let cmd = self.channel_cmd("in");
         let resp = self.cmd(&cmd)?;
         let msg = resp.trim_start_matches('\n');
@@ -146,7 +170,96 @@ impl ThorlabsEll14 {
         let ppr_str = &msg[25..33];
         let ppr = i32::from_str_radix(ppr_str, 16)
             .map_err(|_| MmError::LocallyDefined(format!("Bad ppr hex: {}", ppr_str)))?;
-        Ok(ppr as f64)
+        Ok((msg[3..18].to_string(), ppr as f64))
+    }
+
+    fn query_status_busy(&self) -> MmResult<bool> {
+        let resp = self.cmd(&self.channel_cmd("gs"))?;
+        let msg = resp.trim_start_matches('\n');
+        if msg.len() < 5 || &msg[1..3] != "GS" {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        Ok(&msg[3..5] != "00")
+    }
+
+    fn query_offset(&self) -> MmResult<f64> {
+        let resp = self.cmd(&self.channel_cmd("go"))?;
+        self.parse_value_reply(&resp, "HO")
+    }
+
+    fn query_jog_step(&self) -> MmResult<f64> {
+        let resp = self.cmd(&self.channel_cmd("gj"))?;
+        self.parse_value_reply(&resp, "GJ")
+    }
+
+    fn parse_value_reply(&self, resp: &str, code: &str) -> MmResult<f64> {
+        let msg = resp.trim_start_matches('\n');
+        if msg.len() >= 3 && &msg[1..3] == "GS" {
+            return Err(Self::status_to_error(&msg[3..]));
+        }
+        if msg.len() < 11 || &msg[1..3] != code {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        self.pulses_to_deg(&msg[3..11])
+    }
+
+    fn expect_status_ok(&self, resp: &str) -> MmResult<()> {
+        let msg = resp.trim_start_matches('\n');
+        if msg.len() < 5 || &msg[1..3] != "GS" {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        match &msg[3..5] {
+            "00" => Ok(()),
+            code => Err(Self::status_to_error(code)),
+        }
+    }
+
+    fn status_to_error(code: &str) -> MmError {
+        status::status_code_to_error(code, "ELL14")
+    }
+
+    fn ensure_runtime_properties(&mut self, id: String) -> MmResult<()> {
+        let definitions = [
+            ("ID", PropertyValue::String(id), true),
+            ("Position", PropertyValue::Float(self.position_deg), false),
+            ("Home offset", PropertyValue::Float(self.offset_deg), false),
+            ("Home", PropertyValue::String(self.home_dir.into()), false),
+            (
+                "Relative Move",
+                PropertyValue::Float(self.relative_move_deg),
+                false,
+            ),
+            ("Jog Step", PropertyValue::Float(self.jog_step_deg), false),
+            ("Jog", PropertyValue::String(self.jog_dir.into()), false),
+            (
+                "Frequencies Optimization",
+                PropertyValue::String("No Action".into()),
+                false,
+            ),
+        ];
+        for (name, value, read_only) in definitions {
+            if self.props.has_property(name) {
+                if let Some(entry) = self.props.entry_mut(name) {
+                    entry.value = value;
+                }
+            } else {
+                self.props.define_property(name, value, read_only)?;
+            }
+        }
+        for name in ["Home", "Jog"] {
+            self.props
+                .set_allowed_values(name, &["Clockwise", "Counterclockwise"])?;
+        }
+        self.props.set_property_limits("Position", 0.0, 359.99)?;
+        self.props.set_property_limits("Home offset", 0.0, 359.99)?;
+        self.props
+            .set_property_limits("Relative Move", -359.99, 359.99)?;
+        self.props.set_property_limits("Jog Step", 0.0, 359.99)?;
+        self.props.set_allowed_values(
+            "Frequencies Optimization",
+            &["No Action", "Launch Research"],
+        )?;
+        Ok(())
     }
 }
 
@@ -186,10 +299,12 @@ impl Device for ThorlabsEll14 {
         };
         self.channel = channel_char;
 
-        // Get device info to read pulsesPerRev
-        self.pulses_per_rev = self.query_info()?;
-        // Read current position
+        let (id, ppr) = self.query_info()?;
+        self.pulses_per_rev = ppr;
         self.position_deg = self.query_position()?;
+        self.offset_deg = self.query_offset()?;
+        self.jog_step_deg = self.query_jog_step()?;
+        self.ensure_runtime_properties(id)?;
         self.initialized = true;
         Ok(())
     }
@@ -201,7 +316,7 @@ impl Device for ThorlabsEll14 {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "Position" => Ok(PropertyValue::Float(self.position_deg)),
+            "Position" => Ok(PropertyValue::Float(self.query_position()?)),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -210,7 +325,99 @@ impl Device for ThorlabsEll14 {
         match name {
             "Position" => {
                 let deg = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.0..=359.99).contains(&deg) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 self.set_position_um(deg)
+            }
+            "Home offset" => {
+                let deg = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.0..=359.99).contains(&deg) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let resp =
+                    self.cmd(&self.channel_cmd(&format!("so{}", self.deg_to_pulses_hex(deg))))?;
+                self.expect_status_ok(&resp)?;
+                self.offset_deg = deg;
+                self.props.set(name, PropertyValue::Float(deg))
+            }
+            "Home" => {
+                let dir = val.as_str().to_string();
+                let suffix = match dir.as_str() {
+                    "Clockwise" => "ho0",
+                    "Counterclockwise" => "ho1",
+                    _ => return Err(MmError::InvalidPropertyValue),
+                };
+                let resp = self.cmd(&self.channel_cmd(suffix))?;
+                self.position_deg = self.parse_position_reply(&resp)?;
+                self.home_dir = if dir == "Clockwise" {
+                    "Clockwise"
+                } else {
+                    "Counterclockwise"
+                };
+                self.props.set(name, PropertyValue::String(dir))
+            }
+            "Relative Move" => {
+                let deg = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(-359.99..=359.99).contains(&deg) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.set_relative_position_um(deg)?;
+                self.relative_move_deg = deg;
+                self.props.set(name, PropertyValue::Float(deg))
+            }
+            "Jog Step" => {
+                let deg = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.0..=359.99).contains(&deg) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let resp =
+                    self.cmd(&self.channel_cmd(&format!("sj{}", self.deg_to_pulses_hex(deg))))?;
+                self.expect_status_ok(&resp)?;
+                self.jog_step_deg = deg;
+                self.props.set(name, PropertyValue::Float(deg))
+            }
+            "Jog" => {
+                let dir = val.as_str().to_string();
+                let suffix = match dir.as_str() {
+                    "Clockwise" => "fw",
+                    "Counterclockwise" => "bw",
+                    _ => return Err(MmError::InvalidPropertyValue),
+                };
+                let resp = self.cmd(&self.channel_cmd(suffix))?;
+                self.position_deg = self.parse_position_reply(&resp)?;
+                self.jog_dir = if dir == "Clockwise" {
+                    "Clockwise"
+                } else {
+                    "Counterclockwise"
+                };
+                self.props.set(name, PropertyValue::String(dir))
+            }
+            "Frequencies Optimization" => {
+                let action = val.as_str().to_string();
+                if action == "No Action" {
+                    return self.props.set(name, PropertyValue::String(action));
+                }
+                if action != "Launch Research" {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let resp1 = self.cmd(&self.channel_cmd("s1"))?;
+                self.expect_status_ok(&resp1)?;
+                let resp2 = self.cmd(&self.channel_cmd("s2"))?;
+                self.expect_status_ok(&resp2)?;
+                self.props
+                    .set(name, PropertyValue::String("No Action".into()))
+            }
+            "Port" | "Channel" if self.initialized => Err(MmError::InvalidPropertyValue),
+            "Channel" => {
+                let s = val.as_str().to_string();
+                let ch = s.chars().next().ok_or(MmError::InvalidPropertyValue)?;
+                if !ch.is_ascii_hexdigit() {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.channel = ch.to_ascii_uppercase();
+                self.props
+                    .set(name, PropertyValue::String(self.channel.to_string()))
             }
             _ => self.props.set(name, val),
         }
@@ -229,13 +436,15 @@ impl Device for ThorlabsEll14 {
     }
 
     fn device_type(&self) -> DeviceType {
-        DeviceType::Stage
+        DeviceType::Generic
     }
 
     fn busy(&self) -> bool {
-        false
+        self.query_status_busy().unwrap_or(true)
     }
 }
+
+impl Generic for ThorlabsEll14 {}
 
 impl Stage for ThorlabsEll14 {
     /// `pos` is treated as degrees (mapped to [0, 360)).
@@ -249,7 +458,7 @@ impl Stage for ThorlabsEll14 {
     }
 
     fn get_position_um(&self) -> MmResult<f64> {
-        Ok(self.position_deg)
+        self.query_position()
     }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
@@ -269,8 +478,7 @@ impl Stage for ThorlabsEll14 {
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        // ELL14 has no explicit stop command — not supported
-        Ok(())
+        Err(MmError::UnsupportedCommand)
     }
 
     fn get_limits(&self) -> MmResult<(f64, f64)> {
@@ -317,7 +525,9 @@ mod tests {
     fn make_initialized() -> ThorlabsEll14 {
         let t = MockTransport::new()
             .expect("0in", idn_resp())
-            .expect("0gp", po_resp_0());
+            .expect("0gp", po_resp_0())
+            .expect("0go", "0HO00000000")
+            .expect("0gj", "0GJ00008C00");
         let mut d = ThorlabsEll14::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         d
@@ -329,6 +539,10 @@ mod tests {
         assert!(d.initialized);
         assert!((d.pulses_per_rev - 0x23000 as f64).abs() < 1.0);
         assert!((d.position_deg - 0.0).abs() < 0.01);
+        assert!(d.has_property("ID"));
+        assert!(d.has_property("Home offset"));
+        assert!(d.has_property("Relative Move"));
+        assert!(d.has_property("Frequencies Optimization"));
     }
 
     #[test]
@@ -349,7 +563,10 @@ mod tests {
         let t = MockTransport::new()
             .expect("0in", idn_resp())
             .expect("0gp", po_resp_0())
-            .expect("0ma00008C00", "0PO00008C00");
+            .expect("0go", "0HO00000000")
+            .expect("0gj", "0GJ00008C00")
+            .expect("0ma00008C00", "0PO00008C00")
+            .expect("0gp", "0PO00008C00");
         let mut d = ThorlabsEll14::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         d.set_position_um(90.0).unwrap();
@@ -376,6 +593,8 @@ mod tests {
         let t = MockTransport::new()
             .expect("0in", idn_resp())
             .expect("0gp", po_resp_0())
+            .expect("0go", "0HO00000000")
+            .expect("0gj", "0GJ00008C00")
             .expect("0ho0", "0PO00000000");
         let mut d = ThorlabsEll14::new().with_transport(Box::new(t));
         d.initialize().unwrap();
@@ -385,6 +604,113 @@ mod tests {
 
     #[test]
     fn device_type_is_stage() {
-        assert_eq!(ThorlabsEll14::new().device_type(), DeviceType::Stage);
+        assert_eq!(ThorlabsEll14::new().device_type(), DeviceType::Generic);
+    }
+
+    #[test]
+    fn channel_property_updates_before_init_and_is_locked_after_init() {
+        let t = MockTransport::new()
+            .expect("Ain", "AIN0E1234567822001000000000023000")
+            .expect("Agp", "APO00000000")
+            .expect("Ago", "AHO00000000")
+            .expect("Agj", "AGJ00008C00");
+        let mut d = ThorlabsEll14::new().with_transport(Box::new(t));
+        d.set_property("Channel", PropertyValue::String("A".into()))
+            .unwrap();
+        d.initialize().unwrap();
+        assert_eq!(
+            d.set_property("Channel", PropertyValue::String("1".into()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            d.set_property("Port", PropertyValue::String("COM2".into()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+    }
+
+    #[test]
+    fn busy_polls_gs() {
+        let t = MockTransport::new()
+            .expect("0in", idn_resp())
+            .expect("0gp", po_resp_0())
+            .expect("0go", "0HO00000000")
+            .expect("0gj", "0GJ00008C00")
+            .expect("0gs", "0GS09");
+        let mut d = ThorlabsEll14::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert!(d.busy());
+    }
+
+    #[test]
+    fn property_actions_send_upstream_commands() {
+        let t = MockTransport::new()
+            .expect("0in", idn_resp())
+            .expect("0gp", po_resp_0())
+            .expect("0go", "0HO00000000")
+            .expect("0gj", "0GJ00008C00")
+            .expect("0so00004600", "0GS00")
+            .expect("0sj00004600", "0GS00")
+            .expect("0bw", "0PO00000000")
+            .expect("0s1", "0GS00")
+            .expect("0s2", "0GS00");
+        let mut d = ThorlabsEll14::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        d.set_property("Home offset", PropertyValue::Float(45.0))
+            .unwrap();
+        d.set_property("Jog Step", PropertyValue::Float(45.0))
+            .unwrap();
+        d.set_property("Jog", PropertyValue::String("Counterclockwise".into()))
+            .unwrap();
+        d.set_property(
+            "Frequencies Optimization",
+            PropertyValue::String("Launch Research".into()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn bounded_properties_reject_out_of_range_values() {
+        let t = MockTransport::new()
+            .expect("0in", idn_resp())
+            .expect("0gp", po_resp_0())
+            .expect("0go", "0HO00000000")
+            .expect("0gj", "0GJ00008C00");
+        let mut d = ThorlabsEll14::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(
+            d.set_property("Position", PropertyValue::Float(360.0))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            d.set_property("Home offset", PropertyValue::Float(-1.0))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            d.set_property("Relative Move", PropertyValue::Float(360.0))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            d.set_property("Jog Step", PropertyValue::Float(360.0))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+    }
+
+    #[test]
+    fn maps_extended_status_codes() {
+        assert_eq!(ThorlabsEll14::status_to_error("01"), MmError::SerialTimeout);
+        assert_eq!(
+            ThorlabsEll14::status_to_error("0B"),
+            MmError::LocallyDefined("ELL14 motor error".into())
+        );
+        assert_eq!(
+            ThorlabsEll14::status_to_error("0C"),
+            MmError::InvalidPropertyValue
+        );
     }
 }

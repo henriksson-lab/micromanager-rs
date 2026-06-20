@@ -6,17 +6,23 @@
 ///   Get TTL:      `"TTL<ch>?\n"`   → `"TTL<ch> <0|1>\n"`
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Device, StateDevice};
+use crate::traits::{Device, Shutter, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
+use super::hub::SharedTriggerScopeTransport;
+
 pub struct TriggerScopeTTL {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<SharedTriggerScopeTransport>,
     initialized: bool,
     channel: u8,
+    name: String,
     state: bool,
+    position: u64,
     gate_open: bool,
+    sequence_on: bool,
+    sequence: Vec<u8>,
 }
 
 impl TriggerScopeTTL {
@@ -28,18 +34,42 @@ impl TriggerScopeTTL {
         props
             .define_property("State", PropertyValue::Integer(0), false)
             .unwrap();
+        props
+            .define_property("Label", PropertyValue::String(String::new()), false)
+            .unwrap();
+        if channel == 0 {
+            props
+                .define_property("Sequence", PropertyValue::String("On".into()), false)
+                .unwrap();
+            props
+                .set_allowed_values("Sequence", &["On", "Off"])
+                .unwrap();
+        }
         Self {
             props,
             transport: None,
             initialized: false,
             channel,
+            name: if channel == 0 {
+                "TriggerScope-TTL-Master".to_string()
+            } else {
+                format!("TriggerScope-TTL{:02}", channel)
+            },
             state: false,
+            position: 0,
             gate_open: true,
+            sequence_on: true,
+            sequence: Vec::new(),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(std::sync::Arc::new(std::sync::Mutex::new(t)));
+        self
+    }
+
+    pub fn with_shared_transport(mut self, transport: SharedTriggerScopeTransport) -> Self {
+        self.transport = Some(transport);
         self
     }
 
@@ -48,13 +78,27 @@ impl TriggerScopeTTL {
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
         match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+            Some(t) => {
+                let mut guard = t.lock().map_err(|_| {
+                    MmError::LocallyDefined("TriggerScope transport lock poisoned".into())
+                })?;
+                f(guard.as_mut())
+            }
             None => Err(MmError::NotConnected),
         }
     }
 
     fn send_recv(&mut self, cmd: &str) -> MmResult<String> {
-        self.call_transport(|t| Ok(t.send_recv(cmd)?.trim().to_string()))
+        self.call_transport(|t| {
+            t.purge()?;
+            match t.send_recv(cmd) {
+                Ok(resp) if !resp.trim().is_empty() => Ok(resp.trim().to_string()),
+                _ => {
+                    t.purge()?;
+                    Ok(t.send_recv(cmd)?.trim().to_string())
+                }
+            }
+        })
     }
 
     fn send_state(&mut self, high: bool) -> MmResult<()> {
@@ -64,11 +108,40 @@ impl TriggerScopeTTL {
         let _ = self.send_recv(&cmd)?;
         Ok(())
     }
+
+    pub fn clear_sequence(&mut self) -> MmResult<()> {
+        self.sequence.clear();
+        Ok(())
+    }
+
+    pub fn add_to_sequence(&mut self, value: u8) -> MmResult<()> {
+        self.sequence.push(value);
+        Ok(())
+    }
+
+    pub fn load_sequence(&mut self) -> MmResult<()> {
+        let ch = self.channel;
+        self.send_recv(&format!("CLEAR_TTL,{}\n", ch))?;
+        let sequence = self.sequence.clone();
+        for (idx, value) in sequence.into_iter().enumerate() {
+            self.send_recv(&format!("PROG_TTL,{},{},{}\n", idx + 1, ch, value))?;
+        }
+        Ok(())
+    }
+
+    pub fn start_sequence(&mut self) -> MmResult<()> {
+        self.send_recv("ARM\n")?;
+        Ok(())
+    }
+
+    pub fn stop_sequence(&mut self) -> MmResult<()> {
+        Ok(())
+    }
 }
 
 impl Device for TriggerScopeTTL {
     fn name(&self) -> &str {
-        "TriggerScopeTTL"
+        &self.name
     }
     fn description(&self) -> &str {
         "ARC TriggerScope TTL channel"
@@ -89,7 +162,13 @@ impl Device for TriggerScopeTTL {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(if self.state { 1 } else { 0 })),
+            "State" => Ok(PropertyValue::Integer(self.position as i64)),
+            "Label" => self
+                .get_position_label(self.position)
+                .map(PropertyValue::String),
+            "Sequence" => Ok(PropertyValue::String(
+                if self.sequence_on { "On" } else { "Off" }.into(),
+            )),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -99,6 +178,15 @@ impl Device for TriggerScopeTTL {
             "State" => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 self.set_position(v as u64)
+            }
+            "Sequence" => {
+                let s = val.to_string();
+                match s.as_str() {
+                    "On" => self.sequence_on = true,
+                    "Off" => self.sequence_on = false,
+                    _ => return Err(MmError::InvalidPropertyValue),
+                }
+                self.props.set(name, PropertyValue::String(s))
             }
             _ => self.props.set(name, val),
         }
@@ -123,36 +211,57 @@ impl Device for TriggerScopeTTL {
 
 impl StateDevice for TriggerScopeTTL {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
-        if pos > 1 {
+        let max_pos = if self.channel == 0 { 16 } else { 1 };
+        if pos > max_pos {
             return Err(MmError::UnknownPosition);
         }
-        let high = pos == 1;
+        let high = pos > 0;
         if self.initialized {
             self.send_state(high)?;
         }
         self.state = high;
+        self.position = pos;
+        self.gate_open = high;
         Ok(())
     }
 
     fn get_position(&self) -> MmResult<u64> {
-        Ok(if self.state { 1 } else { 0 })
+        Ok(self.position)
     }
     fn get_number_of_positions(&self) -> u64 {
-        2
+        if self.channel == 0 {
+            17
+        } else {
+            2
+        }
     }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        match pos {
-            0 => Ok("Low".to_string()),
-            1 => Ok("High".to_string()),
-            _ => Err(MmError::UnknownPosition),
+        if self.channel == 0 {
+            match pos {
+                0 => Ok("Closed".to_string()),
+                1..=16 => Ok(format!("TTL{:02}", pos)),
+                _ => Err(MmError::UnknownPosition),
+            }
+        } else {
+            match pos {
+                0 => Ok("Closed".to_string()),
+                1 => Ok("Open".to_string()),
+                _ => Err(MmError::UnknownPosition),
+            }
         }
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
         match label {
-            "Low" => self.set_position(0),
-            "High" => self.set_position(1),
+            "Closed" | "Low" => self.set_position(0),
+            "Open" | "High" => self.set_position(1),
+            _ if self.channel == 0 && label.starts_with("TTL") => {
+                let pos = label[3..]
+                    .parse::<u64>()
+                    .map_err(|_| MmError::UnknownLabel(label.to_string()))?;
+                self.set_position(pos)
+            }
             _ => Err(MmError::UnknownLabel(label.to_string())),
         }
     }
@@ -162,12 +271,25 @@ impl StateDevice for TriggerScopeTTL {
     }
 
     fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
-        self.gate_open = open;
-        Ok(())
+        self.set_position(if open { 1 } else { 0 })
     }
 
     fn get_gate_open(&self) -> MmResult<bool> {
         Ok(self.gate_open)
+    }
+}
+
+impl Shutter for TriggerScopeTTL {
+    fn set_open(&mut self, open: bool) -> MmResult<()> {
+        self.set_gate_open(open)
+    }
+
+    fn get_open(&self) -> MmResult<bool> {
+        self.get_gate_open()
+    }
+
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+        Err(MmError::NotSupported)
     }
 }
 
@@ -212,5 +334,24 @@ mod tests {
         ttl.initialize().unwrap();
         ttl.set_position(1).unwrap();
         assert_eq!(ttl.get_position().unwrap(), 1);
+    }
+
+    #[test]
+    fn ttl_master_exposes_positions_labels_and_sequences() {
+        let t = MockTransport::new()
+            .expect("CLEAR_TTL,0\n", "CLEAR_TTL,0")
+            .expect("PROG_TTL,1,0,4\n", "PROG_TTL,1,0,4")
+            .expect("PROG_TTL,2,0,8\n", "PROG_TTL,2,0,8")
+            .expect("ARM\n", "ARM");
+        let mut ttl = TriggerScopeTTL::new(0).with_transport(Box::new(t));
+        ttl.initialize().unwrap();
+        assert_eq!(ttl.name(), "TriggerScope-TTL-Master");
+        assert_eq!(ttl.get_number_of_positions(), 17);
+        assert_eq!(ttl.get_position_label(0).unwrap(), "Closed");
+        assert_eq!(ttl.get_position_label(16).unwrap(), "TTL16");
+        ttl.add_to_sequence(4).unwrap();
+        ttl.add_to_sequence(8).unwrap();
+        ttl.load_sequence().unwrap();
+        ttl.start_sequence().unwrap();
     }
 }

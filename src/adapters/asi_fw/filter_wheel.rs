@@ -34,7 +34,7 @@ impl AsiFW1000 {
         let labels: Vec<String> = (0..num_positions).map(|i| format!("State-{}", i)).collect();
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
         props
             .define_property("State", PropertyValue::Integer(0), false)
@@ -208,6 +208,7 @@ impl Device for AsiFW1000 {
                 }
                 Ok(())
             }
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             _ => self.props.set(name, val),
         }
     }
@@ -364,5 +365,17 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(AsiFW1000::new().initialize().is_err());
+    }
+
+    #[test]
+    fn port_is_pre_init_and_locked_after_initialize() {
+        let mut fw = AsiFW1000::new().with_transport(Box::new(make_transport()));
+        assert!(fw.props.entry("Port").unwrap().pre_init);
+        fw.initialize().unwrap();
+        assert_eq!(
+            fw.set_property("Port", PropertyValue::String("COM2".into()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
     }
 }

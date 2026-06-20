@@ -144,9 +144,34 @@ impl TeensyPulseGenerator {
         self.get_response(cmd)
     }
 
+    fn get_running_status(&mut self) -> MmResult<bool> {
+        Ok(self.get_param(CMD_START)? != 0)
+    }
+
     fn set_param(&mut self, cmd: u8, val: u32) -> MmResult<u32> {
         self.send_command(cmd, val)?;
         self.get_response(cmd)
+    }
+
+    fn poll_finished_finite_train(&mut self) -> MmResult<()> {
+        if self.run_until_stopped || !self.running {
+            return Ok(());
+        }
+        if !self.get_running_status()? {
+            self.send_command(CMD_STOP, 0)?;
+            self.nr_pulses_counted = self.get_response(CMD_STOP)?;
+            self.running = false;
+            self.props
+                .entry_mut("Number_of_Actual_Pulses")
+                .map(|e| e.value = PropertyValue::Integer(self.nr_pulses_counted as i64));
+            self.props
+                .entry_mut("Status")
+                .map(|e| e.value = PropertyValue::String("Idle".into()));
+            self.props
+                .entry_mut("State")
+                .map(|e| e.value = PropertyValue::String("Stop".into()));
+        }
+        Ok(())
     }
 }
 
@@ -284,6 +309,9 @@ impl Device for TeensyPulseGenerator {
                         return Err(MmError::SerialInvalidResponse);
                     }
                     self.running = true;
+                    if !self.run_until_stopped {
+                        self.poll_finished_finite_train()?;
+                    }
                 } else if val.as_str() == "Stop" && self.running {
                     self.send_command(CMD_STOP, 0)?;
                     self.nr_pulses_counted = self.get_response(CMD_STOP)?;
@@ -347,5 +375,31 @@ mod tests {
         assert_eq!(dev.version, 42);
         assert!((dev.interval_ms - 100.0).abs() < 1e-6);
         assert!(dev.run_until_stopped);
+    }
+
+    #[test]
+    fn finite_start_polls_status_and_updates_actual_count_when_done() {
+        let t = MockTransport::new()
+            .expect_binary(&resp(CMD_VERSION, 42))
+            .expect_binary(&resp(CMD_INTERVAL, 100_000))
+            .expect_binary(&resp(CMD_PULSE_DUR, 10_000))
+            .expect_binary(&resp(CMD_TRIGGER, 0))
+            .expect_binary(&resp(CMD_NR_PULSES, 3))
+            .expect_binary(&resp(CMD_START, 1))
+            .expect_binary(&resp(CMD_START, 0))
+            .expect_binary(&resp(CMD_STOP, 3));
+        let mut dev = TeensyPulseGenerator::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        assert!(!dev.run_until_stopped);
+        dev.set_property("State", PropertyValue::String("Start".into()))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("Status").unwrap(),
+            PropertyValue::String("Idle".into())
+        );
+        assert_eq!(
+            dev.get_property("Number_of_Actual_Pulses").unwrap(),
+            PropertyValue::Integer(3)
+        );
     }
 }

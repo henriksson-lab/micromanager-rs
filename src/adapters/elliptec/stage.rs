@@ -12,19 +12,21 @@
 /// The `info` response contains a 4-byte (8-hex) travel range and 4-byte pulses-per-mm.
 ///
 /// Error: response last char 'N' or status code indicates fault.
+use crate::adapters::elliptec::status;
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
 use crate::traits::{Device, Stage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, FocusDirection, PropertyValue};
+use std::sync::Mutex;
 
 pub struct ElliptecStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<Mutex<Box<dyn Transport>>>,
     initialized: bool,
     channel: char,
     pulses_per_mm: u32,
-    position_um: f64,
+    travel_range_mm: u32,
 }
 
 impl ElliptecStage {
@@ -37,6 +39,14 @@ impl ElliptecStage {
             .define_property("Channel", PropertyValue::String(channel.to_string()), false)
             .unwrap();
         props
+            .set_allowed_values(
+                "Channel",
+                &[
+                    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F",
+                ],
+            )
+            .unwrap();
+        props
             .define_property("PulsesPerMm", PropertyValue::Integer(0), true)
             .unwrap();
         Self {
@@ -45,31 +55,44 @@ impl ElliptecStage {
             initialized: false,
             channel,
             pulses_per_mm: 10000, // default
-            position_um: 0.0,
+            travel_range_mm: 0,
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(Mutex::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => {
+                let mut guard = t.lock().map_err(|_| {
+                    MmError::LocallyDefined("Elliptec transport lock poisoned".into())
+                })?;
+                f(guard.as_mut())
+            }
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let full = format!("{}{}\r", self.channel, command);
         self.call_transport(|t| {
             let r = t.send_recv(&full)?;
-            Ok(r.trim().to_string())
+            Ok(Self::remove_line_feed(r.trim()).to_string())
         })
+    }
+
+    fn remove_line_feed(answer: &str) -> &str {
+        answer.strip_prefix('\n').unwrap_or(answer)
+    }
+
+    fn status_error(message: &str) -> Option<MmError> {
+        status::status_error(message, "Elliptec")
     }
 
     /// Parse 8-char hex as signed i32 position in pulses.
@@ -86,6 +109,49 @@ impl ElliptecStage {
 
     fn um_to_pulses(&self, um: f64) -> i32 {
         ((um * self.pulses_per_mm as f64) / 1000.0).round() as i32
+    }
+
+    fn parse_info(&mut self, info: &str) -> MmResult<String> {
+        if let Some(err) = Self::status_error(info) {
+            return Err(err);
+        }
+        if info.len() < 33 || &info[1..3] != "IN" {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        let module = &info[3..5];
+        if module != "14" && module != "11" {
+            return Err(MmError::WrongDeviceType);
+        }
+        let id = info[3..18].to_string();
+        self.travel_range_mm =
+            u32::from_str_radix(&info[21..25], 16).map_err(|_| MmError::SerialInvalidResponse)?;
+        self.pulses_per_mm =
+            u32::from_str_radix(&info[25..33], 16).map_err(|_| MmError::SerialInvalidResponse)?;
+        Ok(id)
+    }
+
+    fn parse_position_response(&self, gp: &str) -> MmResult<f64> {
+        if let Some(err) = Self::status_error(gp) {
+            return Err(err);
+        }
+        if gp.len() < 11 || &gp[1..3] != "PO" {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        let pulses = Self::parse_pos_hex(&gp[3..11]);
+        Ok(self.pulses_to_um(pulses).round())
+    }
+
+    fn query_position_um(&self) -> MmResult<f64> {
+        let gp = self.cmd("gp")?;
+        self.parse_position_response(&gp)
+    }
+
+    fn query_busy(&self) -> MmResult<bool> {
+        let gs = self.cmd("gs")?;
+        if gs.len() < 5 || &gs[1..3] != "GS" {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        Ok(&gs[3..5] != "00")
     }
 }
 
@@ -107,25 +173,18 @@ impl Device for ElliptecStage {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        // Get device info to read pulses-per-mm (last 8 hex chars = pulses field)
         let info = self.cmd("in")?;
-        // Response: "<ch>IN<id (4)><travel (8)><pulses (8)>" — skip prefix
-        let prefix = format!("{}IN", self.channel);
-        let data = info.strip_prefix(&prefix).unwrap_or(&info);
-        // data: id(4 chars) + travel(8 chars) + pulses(8 chars)
-        if data.len() >= 20 {
-            let pulses_hex = &data[12..20];
-            self.pulses_per_mm = u32::from_str_radix(pulses_hex, 16).unwrap_or(10000);
+        let id = self.parse_info(&info)?;
+        if !self.props.has_property("ID") {
+            self.props
+                .define_property("ID", PropertyValue::String(id), true)
+                .unwrap();
+        } else if let Some(entry) = self.props.entry_mut("ID") {
+            entry.value = PropertyValue::String(id);
         }
         self.props
             .entry_mut("PulsesPerMm")
             .map(|e| e.value = PropertyValue::Integer(self.pulses_per_mm as i64));
-        // Query current position
-        let gp = self.cmd("gp")?;
-        let prefix = format!("{}PO", self.channel);
-        let hex = gp.strip_prefix(&prefix).unwrap_or(&gp);
-        let pulses = Self::parse_pos_hex(hex);
-        self.position_um = self.pulses_to_um(pulses);
         self.initialized = true;
         Ok(())
     }
@@ -139,7 +198,20 @@ impl Device for ElliptecStage {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" | "Channel" if self.initialized => Err(MmError::InvalidPropertyValue),
+            "Channel" => {
+                let s = val.as_str().to_string();
+                let ch = s.chars().next().ok_or(MmError::InvalidPropertyValue)?;
+                if !ch.is_ascii_hexdigit() {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.channel = ch.to_ascii_uppercase();
+                self.props
+                    .set(name, PropertyValue::String(self.channel.to_string()))
+            }
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -154,7 +226,7 @@ impl Device for ElliptecStage {
         DeviceType::Stage
     }
     fn busy(&self) -> bool {
-        false
+        self.query_busy().unwrap_or(true)
     }
 }
 
@@ -162,39 +234,36 @@ impl Stage for ElliptecStage {
     fn set_position_um(&mut self, pos: f64) -> MmResult<()> {
         let pulses = self.um_to_pulses(pos);
         let cmd = format!("ma{:08X}", pulses as u32);
-        self.cmd(&cmd)?;
-        self.position_um = pos;
-        Ok(())
+        let response = self.cmd(&cmd)?;
+        if let Some(err) = Self::status_error(&response) {
+            return Err(err);
+        }
+        if response.len() >= 3 && &response[1..3] == "PO" {
+            Ok(())
+        } else {
+            Err(MmError::SerialInvalidResponse)
+        }
     }
 
     fn get_position_um(&self) -> MmResult<f64> {
-        Ok(self.position_um)
+        self.query_position_um()
     }
 
     fn home(&mut self) -> MmResult<()> {
-        self.cmd("ho0")?; // home
-        self.position_um = 0.0;
-        Ok(())
+        Err(MmError::UnsupportedCommand)
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        self.cmd("st")?;
-        Ok(())
+        Err(MmError::UnsupportedCommand)
     }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
-        let new_pos = self.position_um + d;
+        let new_pos = self.query_position_um()? + d;
         self.set_position_um(new_pos)
     }
 
     fn get_limits(&self) -> MmResult<(f64, f64)> {
-        // Max travel: 106mm for ELL17, 205mm for ELL20
-        let max = if self.pulses_per_mm > 0 {
-            106000.0
-        } else {
-            0.0
-        };
-        Ok((0.0, max))
+        Ok((0.0, 63500.0))
     }
 
     fn get_focus_direction(&self) -> FocusDirection {
@@ -211,12 +280,7 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_init_transport() -> MockTransport {
-        // "0in" → "0IN" + id(4) + travel(8) + pulses(8)
-        // id="ABCD", travel=0x00000000, pulses=0x00002710 (10000 pulses/mm)
-        // Total after "0IN": 4+8+8 = 20 chars = "ABCD0000000000002710"
-        MockTransport::new()
-            .expect("0in\r", "0INABCD0000000000002710")
-            .expect("0gp\r", "0PO00000000")
+        MockTransport::new().expect("0in\r", "0IN141234567822001000003C00002710")
     }
 
     #[test]
@@ -224,14 +288,19 @@ mod tests {
         let mut s = ElliptecStage::new('0').with_transport(Box::new(make_init_transport()));
         s.initialize().unwrap();
         assert_eq!(s.pulses_per_mm, 10000);
-        assert!((s.position_um - 0.0).abs() < 0.001);
+        assert_eq!(s.travel_range_mm, 60);
+        assert_eq!(
+            s.get_property("ID").unwrap(),
+            PropertyValue::String("141234567822001".into())
+        );
     }
 
     #[test]
     fn set_position() {
         let t = make_init_transport()
             // move to 1000 µm = 1.0 mm = 10000 pulses = 0x00002710
-            .expect("0ma00002710\r", "0MA00002710");
+            .expect("0ma00002710\r", "0PO00002710")
+            .expect("0gp\r", "0PO00002710");
         let mut s = ElliptecStage::new('0').with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_position_um(1000.0).unwrap();
@@ -239,16 +308,52 @@ mod tests {
     }
 
     #[test]
-    fn home() {
-        let t = make_init_transport().expect("0ho0\r", "0HO");
+    fn home_and_stop_are_unsupported_like_upstream() {
+        let t = make_init_transport();
         let mut s = ElliptecStage::new('0').with_transport(Box::new(t));
         s.initialize().unwrap();
-        s.home().unwrap();
-        assert!((s.get_position_um().unwrap()).abs() < 0.01);
+        assert_eq!(s.home().unwrap_err(), MmError::UnsupportedCommand);
+        assert_eq!(s.stop().unwrap_err(), MmError::UnsupportedCommand);
     }
 
     #[test]
     fn no_transport_error() {
         assert!(ElliptecStage::new('0').initialize().is_err());
+    }
+
+    #[test]
+    fn channel_property_updates_before_init_and_is_locked_after_init() {
+        let t = MockTransport::new().expect("Ain\r", "AIN141234567822001000003C00002710");
+        let mut s = ElliptecStage::new('0').with_transport(Box::new(t));
+        s.set_property("Channel", PropertyValue::String("A".into()))
+            .unwrap();
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_property("Channel", PropertyValue::String("1".into()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            s.set_property("Port", PropertyValue::String("COM2".into()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+    }
+
+    #[test]
+    fn busy_polls_gs() {
+        let t = MockTransport::new()
+            .expect("0in\r", "0IN141234567822001000003C00002710")
+            .expect("0gs\r", "0GS09");
+        let mut s = ElliptecStage::new('0').with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
+    }
+
+    #[test]
+    fn rejects_wrong_stage_module_code() {
+        let t = MockTransport::new().expect("0in\r", "0IN091234567822001000003C00002710");
+        let mut s = ElliptecStage::new('0').with_transport(Box::new(t));
+        assert_eq!(s.initialize().unwrap_err(), MmError::WrongDeviceType);
     }
 }

@@ -41,8 +41,9 @@ fn upstream_supported_pixel_types<'a>(available: &'a [String]) -> Vec<&'a str> {
 
 fn pixel_format_bpp(fmt: &str) -> u32 {
     match fmt {
-        "Mono8" | "BayerRG8" | "BayerBG8" | "BayerGB8" | "BayerGR8" => 1,
+        "Mono8" => 1,
         "Mono10" | "Mono10p" | "Mono12" | "Mono12p" | "Mono16" => 2,
+        "BayerRG8" | "BayerBG8" | "BayerGB8" | "BayerGR8" => 4,
         "RGB8" | "BGR8" => 4,
         "RGB16" | "BGR16" => 6,
         _ => 1,
@@ -60,7 +61,7 @@ fn pixel_format_depth(fmt: &str) -> u32 {
 
 fn pixel_format_components(fmt: &str) -> u32 {
     match fmt {
-        "RGB8" | "BGR8" => 4,
+        "RGB8" | "BGR8" | "BayerRG8" | "BayerBG8" | "BayerGB8" | "BayerGR8" => 4,
         "RGB16" | "BGR16" => 3,
         _ => 1,
     }
@@ -81,6 +82,74 @@ fn packed_rgb_to_rgba(src: &[u8], width: u32, height: u32, bgr: bool) -> Vec<u8>
             out[2] = px[2];
         }
         out[3] = 255;
+    }
+    dst
+}
+
+fn is_bayer8(fmt: &str) -> bool {
+    matches!(fmt, "BayerRG8" | "BayerBG8" | "BayerGB8" | "BayerGR8")
+}
+
+fn bayer_channel(fmt: &str, x: usize, y: usize) -> usize {
+    let even_x = x % 2 == 0;
+    let even_y = y % 2 == 0;
+    match fmt {
+        "BayerRG8" => match (even_x, even_y) {
+            (true, true) => 0,
+            (false, false) => 2,
+            _ => 1,
+        },
+        "BayerBG8" => match (even_x, even_y) {
+            (true, true) => 2,
+            (false, false) => 0,
+            _ => 1,
+        },
+        "BayerGB8" => match (even_x, even_y) {
+            (false, true) => 2,
+            (true, false) => 0,
+            _ => 1,
+        },
+        "BayerGR8" => match (even_x, even_y) {
+            (false, true) => 0,
+            (true, false) => 2,
+            _ => 1,
+        },
+        _ => 1,
+    }
+}
+
+fn bayer8_to_rgba(src: &[u8], width: u32, height: u32, fmt: &str) -> Vec<u8> {
+    let w = width as usize;
+    let h = height as usize;
+    let mut dst = vec![0u8; w.saturating_mul(h).saturating_mul(4)];
+    for y in 0..h {
+        for x in 0..w {
+            let mut sums = [0u32; 3];
+            let mut counts = [0u32; 3];
+            let y0 = y.saturating_sub(1);
+            let y1 = (y + 1).min(h.saturating_sub(1));
+            let x0 = x.saturating_sub(1);
+            let x1 = (x + 1).min(w.saturating_sub(1));
+            for yy in y0..=y1 {
+                for xx in x0..=x1 {
+                    let Some(&v) = src.get(yy * w + xx) else {
+                        continue;
+                    };
+                    let ch = bayer_channel(fmt, xx, yy);
+                    sums[ch] += v as u32;
+                    counts[ch] += 1;
+                }
+            }
+            let out = &mut dst[(y * w + x) * 4..(y * w + x) * 4 + 4];
+            for ch in 0..3 {
+                out[ch] = if counts[ch] == 0 {
+                    src.get(y * w + x).copied().unwrap_or_default()
+                } else {
+                    (sums[ch] / counts[ch]) as u8
+                };
+            }
+            out[3] = 255;
+        }
     }
     dst
 }
@@ -174,38 +243,73 @@ impl BaslerCamera {
         MmError::LocallyDefined(format!("Pylon: {}", e))
     }
 
+    fn require_not_capturing(&self) -> MmResult<()> {
+        if self.capturing {
+            Err(MmError::CameraBusyAcquiring)
+        } else {
+            Ok(())
+        }
+    }
+
     // ── Write helpers (take shared ref to avoid borrow conflicts) ───────────
 
-    fn write_exposure(camera: &InstantCamera<'_>, ms: f64) {
-        let us = ms * 1000.0;
+    fn write_exposure(camera: &InstantCamera<'_>, ms: f64) -> f64 {
+        let mut us = ms * 1000.0;
         if let Ok(nm) = camera.node_map() {
             if let Ok(mut p) = nm.float_node("ExposureTime") {
+                if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                    us = us.clamp(min, max);
+                }
                 let _ = p.set_value(us);
+                return us / 1000.0;
             } else if let Ok(mut p) = nm.float_node("ExposureTimeAbs") {
+                if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                    us = us.clamp(min, max);
+                }
                 let _ = p.set_value(us);
+                return us / 1000.0;
             }
         }
+        ms
     }
 
-    fn write_gain(camera: &InstantCamera<'_>, gain: f64) {
+    fn write_gain(camera: &InstantCamera<'_>, gain: f64) -> f64 {
+        let mut actual = gain;
         if let Ok(nm) = camera.node_map() {
             if let Ok(mut p) = nm.float_node("Gain") {
-                let _ = p.set_value(gain);
+                if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                    actual = actual.clamp(min, max);
+                }
+                let _ = p.set_value(actual);
+                return actual;
             } else if let Ok(mut p) = nm.integer_node("GainRaw") {
-                let _ = p.set_value(gain as i64);
+                let mut raw = gain.round() as i64;
+                if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                    raw = raw.clamp(min, max);
+                }
+                let _ = p.set_value(raw);
+                return raw as f64;
             }
         }
+        gain
     }
 
-    fn write_binning(camera: &InstantCamera<'_>, bin: i32) {
+    fn write_binning(camera: &InstantCamera<'_>, bin: i32) -> i32 {
+        let mut actual = bin.max(1) as i64;
         if let Ok(nm) = camera.node_map() {
+            if let Ok(p) = nm.integer_node("BinningHorizontal") {
+                if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                    actual = actual.clamp(min, max);
+                }
+            }
             if let Ok(mut p) = nm.integer_node("BinningHorizontal") {
-                let _ = p.set_value(bin as i64);
+                let _ = p.set_value(actual);
             }
             if let Ok(mut p) = nm.integer_node("BinningVertical") {
-                let _ = p.set_value(bin as i64);
+                let _ = p.set_value(actual);
             }
         }
+        actual as i32
     }
 
     fn write_pixel_format(camera: &InstantCamera<'_>, fmt: &str) {
@@ -270,7 +374,9 @@ impl BaslerCamera {
         if let Ok(h) = result.height() {
             self.height = h;
         }
-        if self.pixel_format == "RGB8" {
+        if is_bayer8(&self.pixel_format) {
+            self.image_buf = bayer8_to_rgba(buf, self.width, self.height, &self.pixel_format);
+        } else if self.pixel_format == "RGB8" {
             self.image_buf = packed_rgb_to_rgba(buf, self.width, self.height, false);
         } else if self.pixel_format == "BGR8" {
             self.image_buf = packed_rgb_to_rgba(buf, self.width, self.height, true);
@@ -359,9 +465,9 @@ impl Device for BaslerCamera {
 
         // Apply pre-init settings to hardware.
         let cam = self.camera.as_ref().unwrap();
-        Self::write_exposure(cam, self.exposure_ms);
-        Self::write_gain(cam, self.gain);
-        Self::write_binning(cam, self.binning);
+        self.exposure_ms = Self::write_exposure(cam, self.exposure_ms);
+        self.gain = Self::write_gain(cam, self.gain);
+        self.binning = Self::write_binning(cam, self.binning);
         if self.pixel_format_selected {
             let fmt = self.pixel_format.clone();
             Self::write_pixel_format(cam, &fmt);
@@ -418,23 +524,29 @@ impl Device for BaslerCamera {
                 self.props.set(name, val)
             }
             "Exposure" => {
+                self.require_not_capturing()?;
                 self.exposure_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props
                     .set(name, PropertyValue::Float(self.exposure_ms))?;
                 if let Some(cam) = self.camera.as_ref() {
-                    Self::write_exposure(cam, self.exposure_ms);
+                    self.exposure_ms = Self::write_exposure(cam, self.exposure_ms);
+                    self.props
+                        .set(name, PropertyValue::Float(self.exposure_ms))?;
                 }
                 Ok(())
             }
             "Gain" => {
+                self.require_not_capturing()?;
                 self.gain = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, PropertyValue::Float(self.gain))?;
                 if let Some(cam) = self.camera.as_ref() {
-                    Self::write_gain(cam, self.gain);
+                    self.gain = Self::write_gain(cam, self.gain);
+                    self.props.set(name, PropertyValue::Float(self.gain))?;
                 }
                 Ok(())
             }
             "PixelType" => {
+                self.require_not_capturing()?;
                 self.pixel_format = val.as_str().to_string();
                 self.pixel_format_configured = true;
                 self.pixel_format_selected = true;
@@ -447,11 +559,14 @@ impl Device for BaslerCamera {
                 Ok(())
             }
             "Binning" => {
+                self.require_not_capturing()?;
                 self.binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
                 self.props
                     .set(name, PropertyValue::Integer(self.binning as i64))?;
                 if let Some(cam) = self.camera.as_ref() {
-                    Self::write_binning(cam, self.binning);
+                    self.binning = Self::write_binning(cam, self.binning);
+                    self.props
+                        .set(name, PropertyValue::Integer(self.binning as i64))?;
                 }
                 self.sync_dimensions();
                 Ok(())
@@ -526,12 +641,18 @@ impl Camera for BaslerCamera {
     }
 
     fn set_exposure(&mut self, exp_ms: f64) {
+        if self.capturing {
+            return;
+        }
         self.exposure_ms = exp_ms;
         self.props
             .set("Exposure", PropertyValue::Float(exp_ms))
             .ok();
         if let Some(cam) = self.camera.as_ref() {
-            Self::write_exposure(cam, exp_ms);
+            self.exposure_ms = Self::write_exposure(cam, exp_ms);
+            self.props
+                .set("Exposure", PropertyValue::Float(self.exposure_ms))
+                .ok();
         }
     }
 
@@ -540,11 +661,14 @@ impl Camera for BaslerCamera {
     }
 
     fn set_binning(&mut self, bin: i32) -> MmResult<()> {
+        self.require_not_capturing()?;
         self.binning = bin;
         self.props
             .set("Binning", PropertyValue::Integer(bin as i64))?;
         if let Some(cam) = self.camera.as_ref() {
-            Self::write_binning(cam, bin);
+            self.binning = Self::write_binning(cam, bin);
+            self.props
+                .set("Binning", PropertyValue::Integer(self.binning as i64))?;
         }
         self.sync_dimensions();
         Ok(())
@@ -556,19 +680,51 @@ impl Camera for BaslerCamera {
 
     fn set_roi(&mut self, roi: ImageRoi) -> MmResult<()> {
         let cam = self.camera.as_ref().ok_or(MmError::NotConnected)?;
+        let was_capturing = self.capturing;
+        if was_capturing {
+            let _ = cam.stop_grabbing();
+        }
         let nm = cam.node_map().map_err(Self::pylon_err)?;
+        let mut x = roi.x as i64;
+        let mut y = roi.y as i64;
+        let mut width = roi.width as i64;
+        let mut height = roi.height as i64;
+        if let Ok(p) = nm.integer_node("Width") {
+            if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                width = width.clamp(min, max);
+            }
+        }
+        if let Ok(p) = nm.integer_node("Height") {
+            if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                height = height.clamp(min, max);
+            }
+        }
+        if let Ok(p) = nm.integer_node("OffsetX") {
+            if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                x = x.clamp(min, max);
+            }
+        }
+        if let Ok(p) = nm.integer_node("OffsetY") {
+            if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                y = y.clamp(min, max);
+            }
+        }
         // Width/Height before OffsetX/Y (Basler requirement).
         if let Ok(mut p) = nm.integer_node("Width") {
-            let _ = p.set_value(roi.width as i64);
+            let _ = p.set_value(width);
         }
         if let Ok(mut p) = nm.integer_node("Height") {
-            let _ = p.set_value(roi.height as i64);
+            let _ = p.set_value(height);
         }
         if let Ok(mut p) = nm.integer_node("OffsetX") {
-            let _ = p.set_value(roi.x as i64);
+            let _ = p.set_value(x);
         }
         if let Ok(mut p) = nm.integer_node("OffsetY") {
-            let _ = p.set_value(roi.y as i64);
+            let _ = p.set_value(y);
+        }
+        if was_capturing {
+            cam.start_grabbing(&GrabOptions::default())
+                .map_err(Self::pylon_err)?;
         }
         self.sync_dimensions();
         Ok(())
@@ -711,8 +867,8 @@ mod tests {
         assert_eq!(pixel_format_bpp("BGR8"), 4);
         assert_eq!(pixel_format_components("RGB8"), 4);
         assert_eq!(pixel_format_components("BGR8"), 4);
-        assert_eq!(pixel_format_bpp("BayerRG8"), 1);
-        assert_eq!(pixel_format_components("BayerRG8"), 1);
+        assert_eq!(pixel_format_bpp("BayerRG8"), 4);
+        assert_eq!(pixel_format_components("BayerRG8"), 4);
 
         assert_eq!(
             packed_rgb_to_rgba(&[1, 2, 3], 1, 1, false),
@@ -722,5 +878,43 @@ mod tests {
             packed_rgb_to_rgba(&[1, 2, 3], 1, 1, true),
             vec![3, 2, 1, 255]
         );
+    }
+
+    #[test]
+    fn bayer8_pixel_types_expand_to_rgba() {
+        let rgba = bayer8_to_rgba(&[10, 20, 30, 40], 2, 2, "BayerRG8");
+        assert_eq!(rgba.len(), 2 * 2 * 4);
+        assert_eq!(&rgba[0..4], &[10, 25, 40, 255]);
+        assert_eq!(pixel_format_depth("BayerRG8"), 8);
+    }
+
+    #[test]
+    fn acquisition_rejects_mutating_settings_before_state_changes() {
+        let mut d = BaslerCamera::new();
+        d.capturing = true;
+
+        assert_eq!(
+            d.set_property("Exposure", PropertyValue::Float(25.0))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.get_exposure(), 10.0);
+        assert_eq!(
+            d.set_property("Gain", PropertyValue::Float(2.0))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.gain, 0.0);
+        assert_eq!(
+            d.set_property("PixelType", PropertyValue::String("RGB8".into()))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.pixel_format, "Mono8");
+        assert_eq!(d.set_binning(2).unwrap_err(), MmError::CameraBusyAcquiring);
+        assert_eq!(d.get_binning(), 1);
+
+        d.set_exposure(50.0);
+        assert_eq!(d.get_exposure(), 10.0);
     }
 }

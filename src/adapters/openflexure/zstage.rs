@@ -40,7 +40,7 @@ impl OfZStage {
         c(cmd)
     }
 
-    fn sync_state(&mut self) -> MmResult<()> {
+    pub fn sync_state(&mut self) -> MmResult<()> {
         let resp = self.send("p")?;
         let mut parts = resp.split_whitespace();
         let _x: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -50,6 +50,12 @@ impl OfZStage {
             .and_then(|s| s.parse().ok())
             .unwrap_or(self.steps_z);
         self.steps_z = z;
+        Ok(())
+    }
+
+    pub fn set_origin(&mut self) -> MmResult<()> {
+        self.send("zero")?;
+        self.sync_state()?;
         Ok(())
     }
 }
@@ -159,8 +165,9 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    fn make_stage() -> OfZStage {
+    fn make_stage() -> (OfZStage, Arc<Mutex<Vec<String>>>) {
         let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let log_for_return = Arc::clone(&log);
         let commander: Commander = Arc::new(move |cmd| {
             log.lock().unwrap().push(cmd.to_string());
             if cmd == "blocking_moves false" {
@@ -171,15 +178,29 @@ mod tests {
                 Ok("ok".to_string())
             }
         });
-        OfZStage::new().with_commander(commander)
+        (OfZStage::new().with_commander(commander), log_for_return)
     }
 
     #[test]
     fn relative_move() {
-        let mut stage = make_stage();
+        let (mut stage, _) = make_stage();
         stage.initialize().unwrap();
         stage.set_relative_position_um(10.0).unwrap();
         let pos = stage.get_position_um().unwrap();
         assert!((pos - 10.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn set_origin_sends_zero_and_resyncs_cached_position() {
+        let (mut stage, log) = make_stage();
+        stage.initialize().unwrap();
+        stage.set_relative_position_um(10.0).unwrap();
+
+        stage.set_origin().unwrap();
+
+        let pos = stage.get_position_um().unwrap();
+        assert!(pos.abs() < 0.1);
+        assert!(log.lock().unwrap().iter().any(|cmd| cmd == "zero"));
+        assert!(log.lock().unwrap().iter().filter(|cmd| *cmd == "p").count() >= 2);
     }
 }

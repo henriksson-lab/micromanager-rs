@@ -33,11 +33,18 @@ pub struct SpotCamera {
     binning: i32,
     auto_exposure: bool,
     auto_exp_image_type: String,
+    trigger_mode: String,
+    chip_defect_correction: bool,
+    clearing_mode: String,
+    noise_filter_threshold: i32,
+    temperature_setpoint_c: f64,
+    multishot_exposures_ms: [f64; 3],
 
     // Post-init read-only
     img_width: u32,
     img_height: u32,
     bit_depth: u32,
+    image_buf: Vec<u8>,
 
     capturing: bool,
 }
@@ -80,16 +87,63 @@ impl SpotCamera {
             .set_allowed_values("AutoExpImageType", &["BRIGHTFIELD", "DARKFIELD"])
             .unwrap();
         props
+            .define_property("TriggerMode", PropertyValue::String("NONE".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("TriggerMode", &["NONE", "EDGE", "BULB"])
+            .unwrap();
+        props
+            .define_property(
+                "ChipDefectCorrection",
+                PropertyValue::String("ON".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("ChipDefectCorrection", &["ON", "OFF"])
+            .unwrap();
+        props
+            .define_property(
+                "ClearingMode",
+                PropertyValue::String("CONTINUOUS".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("ClearingMode", &["CONTINUOUS", "PREEMPTABLE", "NEVER"])
+            .unwrap();
+        props
+            .define_property("NoiseFilterThreshold%", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .set_property_limits("NoiseFilterThreshold%", 0.0, 100.0)
+            .unwrap();
+        for color in ["R", "G", "B"] {
+            props
+                .define_property(
+                    format!("ExposureTime for {color}"),
+                    PropertyValue::Float(0.0),
+                    false,
+                )
+                .unwrap();
+        }
+        props
             .define_property("Width", PropertyValue::Integer(0), true)
             .unwrap();
         props
             .define_property("Height", PropertyValue::Integer(0), true)
             .unwrap();
         props
-            .define_property("BitDepth", PropertyValue::Integer(16), true)
+            .define_property("BitDepth", PropertyValue::Integer(16), false)
+            .unwrap();
+        props
+            .set_allowed_values("BitDepth", &["8", "16", "24", "48"])
             .unwrap();
         props
             .define_property("Temperature", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("TemperatureSetpoint", PropertyValue::Float(0.0), true)
             .unwrap();
         props
             .define_property("SerialNumber", PropertyValue::String("".into()), true)
@@ -107,9 +161,16 @@ impl SpotCamera {
             binning: 1,
             auto_exposure: false,
             auto_exp_image_type: "BRIGHTFIELD".into(),
+            trigger_mode: "NONE".into(),
+            chip_defect_correction: true,
+            clearing_mode: "CONTINUOUS".into(),
+            noise_filter_threshold: 0,
+            temperature_setpoint_c: 0.0,
+            multishot_exposures_ms: [0.0; 3],
             img_width: 0,
             img_height: 0,
             bit_depth: 16,
+            image_buf: Vec::new(),
             capturing: false,
         }
     }
@@ -138,6 +199,20 @@ impl SpotCamera {
 
     fn snap_timeout_ms(&self) -> i32 {
         (self.exposure_ms as i32 + 10_000).max(10_000)
+    }
+
+    fn copy_frame_from_ctx(&mut self) -> MmResult<()> {
+        let ptr = unsafe { ffi::spot_get_frame_ptr(self.ctx) };
+        if ptr.is_null() {
+            return Err(MmError::LocallyDefined("No image captured yet".into()));
+        }
+        let bytes = unsafe { ffi::spot_get_frame_bytes(self.ctx) } as usize;
+        if bytes == 0 {
+            return Err(MmError::LocallyDefined("No image captured yet".into()));
+        }
+        self.image_buf.resize(bytes, 0);
+        unsafe { std::ptr::copy_nonoverlapping(ptr, self.image_buf.as_mut_ptr(), bytes) };
+        Ok(())
     }
 }
 
@@ -261,6 +336,20 @@ impl Device for SpotCamera {
                 if self.auto_exposure { "ON" } else { "OFF" }.into(),
             )),
             "AutoExpImageType" => Ok(PropertyValue::String(self.auto_exp_image_type.clone())),
+            "TriggerMode" => Ok(PropertyValue::String(self.trigger_mode.clone())),
+            "ChipDefectCorrection" => {
+                let mode = if self.chip_defect_correction {
+                    "ON"
+                } else {
+                    "OFF"
+                };
+                Ok(PropertyValue::String(mode.into()))
+            }
+            "ClearingMode" => Ok(PropertyValue::String(self.clearing_mode.clone())),
+            "NoiseFilterThreshold%" => {
+                Ok(PropertyValue::Integer(self.noise_filter_threshold as i64))
+            }
+            "BitDepth" => Ok(PropertyValue::Integer(self.bit_depth as i64)),
             "Temperature" => {
                 let t = if self.ctx.is_null() {
                     0.0f64
@@ -269,6 +358,10 @@ impl Device for SpotCamera {
                 };
                 Ok(PropertyValue::Float(t))
             }
+            "TemperatureSetpoint" => Ok(PropertyValue::Float(self.temperature_setpoint_c)),
+            "ExposureTime for R" => Ok(PropertyValue::Float(self.multishot_exposures_ms[0])),
+            "ExposureTime for G" => Ok(PropertyValue::Float(self.multishot_exposures_ms[1])),
+            "ExposureTime for B" => Ok(PropertyValue::Float(self.multishot_exposures_ms[2])),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -326,6 +419,49 @@ impl Device for SpotCamera {
                 self.auto_exp_image_type = image_type;
                 Ok(())
             }
+            "TriggerMode" => {
+                let mode = val.as_str().to_string();
+                self.props.set(name, PropertyValue::String(mode.clone()))?;
+                self.trigger_mode = mode;
+                Ok(())
+            }
+            "ChipDefectCorrection" => {
+                let mode = val.as_str().to_string();
+                self.props.set(name, PropertyValue::String(mode.clone()))?;
+                self.chip_defect_correction = mode == "ON";
+                Ok(())
+            }
+            "ClearingMode" => {
+                let mode = val.as_str().to_string();
+                self.props.set(name, PropertyValue::String(mode.clone()))?;
+                self.clearing_mode = mode;
+                Ok(())
+            }
+            "NoiseFilterThreshold%" => {
+                self.noise_filter_threshold =
+                    val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
+                self.props.set(
+                    name,
+                    PropertyValue::Integer(self.noise_filter_threshold as i64),
+                )
+            }
+            "BitDepth" => {
+                let depth = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u32;
+                self.props.set(name, PropertyValue::Integer(depth as i64))?;
+                self.bit_depth = depth;
+                Ok(())
+            }
+            "ExposureTime for R" | "ExposureTime for G" | "ExposureTime for B" => {
+                let exposure = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                let idx = match name {
+                    "ExposureTime for R" => 0,
+                    "ExposureTime for G" => 1,
+                    "ExposureTime for B" => 2,
+                    _ => unreachable!(),
+                };
+                self.multishot_exposures_ms[idx] = exposure;
+                self.props.set(name, PropertyValue::Float(exposure))
+            }
             _ => self.props.set(name, val),
         }
     }
@@ -360,19 +496,11 @@ impl Camera for SpotCamera {
     }
 
     fn get_image_buffer(&self) -> MmResult<&[u8]> {
-        if self.ctx.is_null() {
-            return Err(MmError::NotConnected);
+        if self.image_buf.is_empty() {
+            Err(MmError::LocallyDefined("No image captured yet".into()))
+        } else {
+            Ok(&self.image_buf)
         }
-        let ptr = unsafe { ffi::spot_get_frame_ptr(self.ctx) };
-        if ptr.is_null() {
-            return Err(MmError::LocallyDefined("No image captured yet".into()));
-        }
-        let bytes = unsafe { ffi::spot_get_frame_bytes(self.ctx) } as usize;
-        if bytes == 0 {
-            return Err(MmError::LocallyDefined("No image captured yet".into()));
-        }
-        // SAFETY: ptr points into the shim's internal buffer for the lifetime of ctx.
-        Ok(unsafe { std::slice::from_raw_parts(ptr, bytes) })
     }
 
     fn get_image_width(&self) -> u32 {
@@ -488,6 +616,7 @@ impl SpotCamera {
             return Err(MmError::SnapImageFailed);
         }
         self.sync_dims();
+        self.copy_frame_from_ctx()?;
         Ok(())
     }
 }
@@ -565,10 +694,11 @@ mod tests {
         let d = SpotCamera::new();
         assert!(d.is_property_read_only("Width"));
         assert!(d.is_property_read_only("Height"));
-        assert!(d.is_property_read_only("BitDepth"));
+        assert!(!d.is_property_read_only("BitDepth"));
         assert!(d.is_property_read_only("PixelSize"));
         assert!(d.is_property_read_only("ActualGain"));
         assert!(d.is_property_read_only("Temperature"));
+        assert!(d.is_property_read_only("TemperatureSetpoint"));
         assert!(d.is_property_read_only("SerialNumber"));
         assert!(d.is_property_read_only("ModelName"));
         assert!(!d.is_property_read_only("Exposure"));
@@ -576,6 +706,10 @@ mod tests {
         assert!(!d.is_property_read_only("Binning"));
         assert!(!d.is_property_read_only("AutoExposure"));
         assert!(!d.is_property_read_only("AutoExpImageType"));
+        assert!(!d.is_property_read_only("TriggerMode"));
+        assert!(!d.is_property_read_only("ChipDefectCorrection"));
+        assert!(!d.is_property_read_only("ClearingMode"));
+        assert!(!d.is_property_read_only("NoiseFilterThreshold%"));
     }
 
     #[test]
@@ -643,6 +777,67 @@ mod tests {
         assert_eq!(
             d.get_property("ActualGain").unwrap(),
             PropertyValue::Float(0.0)
+        );
+    }
+
+    #[test]
+    fn upstream_spot_control_surface() {
+        let mut d = SpotCamera::new();
+        for name in [
+            "TriggerMode",
+            "ChipDefectCorrection",
+            "ClearingMode",
+            "NoiseFilterThreshold%",
+            "TemperatureSetpoint",
+            "ExposureTime for R",
+            "ExposureTime for G",
+            "ExposureTime for B",
+        ] {
+            assert!(d.has_property(name), "missing {name}");
+        }
+
+        d.set_property("TriggerMode", PropertyValue::String("EDGE".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("TriggerMode").unwrap(),
+            PropertyValue::String("EDGE".into())
+        );
+        assert!(d
+            .set_property("TriggerMode", PropertyValue::String("LEVEL".into()))
+            .is_err());
+
+        d.set_property("ChipDefectCorrection", PropertyValue::String("OFF".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("ChipDefectCorrection").unwrap(),
+            PropertyValue::String("OFF".into())
+        );
+
+        d.set_property("ClearingMode", PropertyValue::String("NEVER".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("ClearingMode").unwrap(),
+            PropertyValue::String("NEVER".into())
+        );
+
+        d.set_property("NoiseFilterThreshold%", PropertyValue::Integer(100))
+            .unwrap();
+        assert!(d
+            .set_property("NoiseFilterThreshold%", PropertyValue::Integer(101))
+            .is_err());
+
+        d.set_property("BitDepth", PropertyValue::Integer(24))
+            .unwrap();
+        assert_eq!(d.get_bit_depth(), 24);
+        assert!(d
+            .set_property("BitDepth", PropertyValue::Integer(32))
+            .is_err());
+
+        d.set_property("ExposureTime for G", PropertyValue::Float(12.5))
+            .unwrap();
+        assert_eq!(
+            d.get_property("ExposureTime for G").unwrap(),
+            PropertyValue::Float(12.5)
         );
     }
 }

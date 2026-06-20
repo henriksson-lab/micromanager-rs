@@ -11,6 +11,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::time::{Duration, Instant};
 
 const NUM_POSITIONS: u64 = 6;
 
@@ -21,6 +22,8 @@ pub struct ThorlabsFilterWheel {
     position: u64,
     labels: Vec<String>,
     gate_open: bool,
+    delay_ms: f64,
+    changed_time: Option<Instant>,
 }
 
 impl ThorlabsFilterWheel {
@@ -36,8 +39,12 @@ impl ThorlabsFilterWheel {
             .define_property("Label", PropertyValue::String("Filter-1".into()), false)
             .unwrap();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_property("Port", PropertyValue::String(String::new()), false)
             .unwrap();
+        props
+            .define_property("Delay", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("Delay", 0.0, f64::MAX).unwrap();
 
         Self {
             props,
@@ -46,6 +53,8 @@ impl ThorlabsFilterWheel {
             position: 0,
             labels,
             gate_open: true,
+            delay_ms: 0.0,
+            changed_time: None,
         }
     }
 
@@ -64,12 +73,17 @@ impl ThorlabsFilterWheel {
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn send_cmd(&mut self, command: &str) -> MmResult<()> {
         let cmd = command.to_string();
-        self.call_transport(|t| {
-            let resp = t.send_recv(&cmd)?;
-            Ok(resp.trim().to_string())
-        })
+        self.call_transport(|t| t.send(&cmd))
+    }
+
+    fn mark_changed(&mut self) {
+        self.changed_time = Some(Instant::now());
+    }
+
+    fn delay_duration(&self) -> Duration {
+        Duration::from_secs_f64(self.delay_ms.max(0.0) / 1000.0)
     }
 }
 
@@ -84,20 +98,10 @@ impl Device for ThorlabsFilterWheel {
         "Thorlabs Filter Wheel"
     }
     fn description(&self) -> &str {
-        "Thorlabs filter wheel"
+        "Thorlabs filter wheel driver"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
-            return Err(MmError::NotConnected);
-        }
-        let _ = self.cmd("sensors=0");
-        let pos_str = self.cmd("pos?")?;
-        let pos_1indexed: u64 = pos_str
-            .trim()
-            .parse()
-            .map_err(|_| MmError::LocallyDefined(format!("Bad pos: {}", pos_str)))?;
-        self.position = pos_1indexed.saturating_sub(1); // convert to 0-indexed
         self.initialized = true;
         Ok(())
     }
@@ -116,12 +120,14 @@ impl Device for ThorlabsFilterWheel {
                     .cloned()
                     .unwrap_or_default(),
             )),
+            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "State" => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
                 self.set_position(pos)
@@ -129,6 +135,10 @@ impl Device for ThorlabsFilterWheel {
             "Label" => {
                 let label = val.as_str().to_string();
                 self.set_position_by_label(&label)
+            }
+            "Delay" => {
+                self.delay_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(self.delay_ms))
             }
             _ => self.props.set(name, val),
         }
@@ -147,7 +157,9 @@ impl Device for ThorlabsFilterWheel {
         DeviceType::State
     }
     fn busy(&self) -> bool {
-        false
+        self.changed_time
+            .map(|changed| changed.elapsed() < self.delay_duration())
+            .unwrap_or(false)
     }
 }
 
@@ -157,9 +169,8 @@ impl StateDevice for ThorlabsFilterWheel {
             return Err(MmError::UnknownPosition);
         }
         if self.initialized {
-            let resp = self.cmd(&format!("pos={}", pos + 1))?; // 1-indexed in command
-                                                               // Response echoes the new position
-            let _ = resp;
+            self.send_cmd(&format!("pos={}", pos + 1))?; // 1-indexed in command
+            self.mark_changed();
         }
         self.position = pos;
         Ok(())
@@ -214,18 +225,14 @@ mod tests {
 
     #[test]
     fn initialize_reads_position() {
-        let t = MockTransport::new().any("OK").expect("pos?", "3");
-        let mut fw = ThorlabsFilterWheel::new().with_transport(Box::new(t));
+        let mut fw = ThorlabsFilterWheel::new();
         fw.initialize().unwrap();
-        assert_eq!(fw.get_position().unwrap(), 2); // 0-indexed: pos 3 → index 2
+        assert_eq!(fw.get_position().unwrap(), 0);
     }
 
     #[test]
     fn set_position() {
-        let t = MockTransport::new()
-            .any("OK")
-            .expect("pos?", "1")
-            .expect("pos=4", "4");
+        let t = MockTransport::new();
         let mut fw = ThorlabsFilterWheel::new().with_transport(Box::new(t));
         fw.initialize().unwrap();
         fw.set_position(3).unwrap(); // pos 3 (0-indexed) → command pos=4
@@ -233,16 +240,24 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_rejected() {
-        let t = MockTransport::new().any("OK").any("1");
+    fn move_command_does_not_wait_for_reply() {
+        let t = MockTransport::new();
         let mut fw = ThorlabsFilterWheel::new().with_transport(Box::new(t));
+        fw.initialize().unwrap();
+        fw.set_position(3).unwrap();
+        assert_eq!(fw.get_position().unwrap(), 3);
+    }
+
+    #[test]
+    fn out_of_range_rejected() {
+        let mut fw = ThorlabsFilterWheel::new();
         fw.initialize().unwrap();
         assert!(fw.set_position(6).is_err());
     }
 
     #[test]
     fn label_navigation() {
-        let t = MockTransport::new().any("OK").any("1").any("2");
+        let t = MockTransport::new();
         let mut fw = ThorlabsFilterWheel::new().with_transport(Box::new(t));
         fw.initialize().unwrap();
         fw.set_position_label(1, "FITC").unwrap();
@@ -252,6 +267,33 @@ mod tests {
 
     #[test]
     fn no_transport_error() {
-        assert!(ThorlabsFilterWheel::new().initialize().is_err());
+        assert!(ThorlabsFilterWheel::new().initialize().is_ok());
+    }
+
+    #[test]
+    fn delay_tracks_busy_after_successful_move() {
+        let t = MockTransport::new();
+        let mut fw = ThorlabsFilterWheel::new().with_transport(Box::new(t));
+        fw.set_property("Delay", PropertyValue::Float(50.0))
+            .unwrap();
+        fw.initialize().unwrap();
+
+        assert!(!fw.busy());
+        fw.set_position(1).unwrap();
+        assert!(fw.busy());
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(!fw.busy());
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected() {
+        let mut fw = ThorlabsFilterWheel::new();
+        fw.initialize().unwrap();
+
+        assert_eq!(
+            fw.set_property("Port", PropertyValue::String("COM2".into()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
     }
 }

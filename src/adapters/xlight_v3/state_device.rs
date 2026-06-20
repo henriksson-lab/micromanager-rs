@@ -13,12 +13,14 @@ use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
+const MAX_COMMAND_ATTEMPTS: usize = 10;
+
 pub struct XLightV3StateDevice {
     name: &'static str,
     description: &'static str,
     prefix: &'static str,
     label_prefix: &'static str,
-    one_based: bool,    // true for filter wheels
+    one_based: bool, // true for filter wheels
     props: PropertyMap,
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
@@ -26,6 +28,7 @@ pub struct XLightV3StateDevice {
     num_positions: u64,
     labels: Vec<String>,
     gate_open: bool,
+    busy: bool,
 }
 
 impl XLightV3StateDevice {
@@ -38,14 +41,43 @@ impl XLightV3StateDevice {
         num_positions: u64,
     ) -> Self {
         let labels = (0..num_positions)
-            .map(|i| format!("{}{}", label_prefix, i))
+            .map(|i| label_for(label_prefix, one_based, num_positions, i))
             .collect();
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Name", PropertyValue::String(name.into()), true)
+            .unwrap();
+        props
+            .define_property(
+                "Description",
+                PropertyValue::String(description.into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        set_state_allowed_values(&mut props, num_positions);
         Self {
-            name, description, prefix, label_prefix, one_based,
-            props, transport: None, initialized: false,
-            position: 0, num_positions, labels, gate_open: true,
+            name,
+            description,
+            prefix,
+            label_prefix,
+            one_based,
+            props,
+            transport: None,
+            initialized: false,
+            position: 0,
+            num_positions,
+            labels,
+            gate_open: true,
+            busy: false,
         }
     }
 
@@ -55,7 +87,9 @@ impl XLightV3StateDevice {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -64,7 +98,22 @@ impl XLightV3StateDevice {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let full = format!("{}\r", command);
-        self.call_transport(|t| Ok(t.send_recv(&full)?.trim().to_string()))
+        let mut last_timeout = None;
+        for _ in 0..MAX_COMMAND_ATTEMPTS {
+            self.call_transport(|t| t.purge())?;
+            self.busy = true;
+            let attempt = self.call_transport(|t| {
+                t.send(&full)?;
+                Ok(t.receive_line()?.trim().to_string())
+            });
+            self.busy = false;
+            match attempt {
+                Ok(response) => return Ok(response),
+                Err(MmError::SerialTimeout) => last_timeout = Some(MmError::SerialTimeout),
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_timeout.unwrap_or(MmError::SerialTimeout))
     }
 
     /// Parse the integer that follows the command echo prefix in a response.
@@ -78,17 +127,56 @@ impl XLightV3StateDevice {
 
     fn rebuild_labels(&mut self) {
         self.labels = (0..self.num_positions)
-            .map(|i| format!("{}{}", self.label_prefix, i))
+            .map(|i| label_for(self.label_prefix, self.one_based, self.num_positions, i))
             .collect();
+        set_state_allowed_values(&mut self.props, self.num_positions);
     }
 }
 
+fn label_for(prefix: &str, one_based: bool, num_positions: u64, pos: u64) -> String {
+    if prefix == "Motor" {
+        if pos == 0 {
+            "OFF".into()
+        } else {
+            "ON".into()
+        }
+    } else if prefix == "Spinning pos." {
+        if pos == 0 {
+            "Spinning pos. out".into()
+        } else {
+            format!("Spinning pos.{}", pos)
+        }
+    } else if prefix == "Slider pos." {
+        if pos + 1 == num_positions {
+            "Slider pos. out".into()
+        } else {
+            format!("Slider pos.{}", pos)
+        }
+    } else if one_based {
+        format!("{}{}", prefix, pos + 1)
+    } else {
+        format!("{}{}", prefix, pos)
+    }
+}
+
+fn set_state_allowed_values(props: &mut PropertyMap, num_positions: u64) {
+    let allowed: Vec<String> = (0..num_positions).map(|i| i.to_string()).collect();
+    let refs: Vec<&str> = allowed.iter().map(String::as_str).collect();
+    let _ = props.set_allowed_values("State", &refs);
+}
+
 impl Device for XLightV3StateDevice {
-    fn name(&self) -> &str { self.name }
-    fn description(&self) -> &str { self.description }
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        self.description
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
 
         // Query number of positions
         let num_cmd = format!("r{}N", self.prefix);
@@ -111,19 +199,28 @@ impl Device for XLightV3StateDevice {
             } else {
                 wire_pos as u64
             };
+            if let Some(entry) = self.props.entry_mut("State") {
+                entry.value = PropertyValue::Integer(self.position as i64);
+            }
         }
 
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "State" => Ok(PropertyValue::Integer(self.position as i64)),
             "Label" => Ok(PropertyValue::String(
-                self.labels.get(self.position as usize).cloned().unwrap_or_default()
+                self.labels
+                    .get(self.position as usize)
+                    .cloned()
+                    .unwrap_or_default(),
             )),
             _ => self.props.get(name).cloned(),
         }
@@ -132,8 +229,11 @@ impl Device for XLightV3StateDevice {
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "State" => {
-                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
-                self.set_position(pos)
+                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if pos < 0 {
+                    return Err(MmError::UnknownPosition);
+                }
+                self.set_position(pos as u64)
             }
             "Label" => {
                 let label = val.as_str().to_string();
@@ -143,52 +243,85 @@ impl Device for XLightV3StateDevice {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::State }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::State
+    }
+    fn busy(&self) -> bool {
+        self.busy
+    }
 }
 
 impl StateDevice for XLightV3StateDevice {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
-        if pos >= self.num_positions { return Err(MmError::UnknownPosition); }
+        if pos >= self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
         if self.initialized {
             let wire = if self.one_based { pos + 1 } else { pos };
             let cmd = format!("{}{}", self.prefix, wire);
             let resp = self.cmd(&cmd)?;
-            // Verify echo matches
-            if !resp.starts_with(&cmd[..cmd.len().min(resp.len())]) {
-                return Err(MmError::LocallyDefined("XLight V3 command echo mismatch".into()));
+            let echoed = Self::parse_after_prefix(&resp, self.prefix)
+                .ok_or_else(|| MmError::LocallyDefined("XLight V3 command echo mismatch".into()))?;
+            if echoed < 0 || echoed as u64 != wire {
+                return Err(MmError::LocallyDefined(
+                    "XLight V3 command echo mismatch".into(),
+                ));
             }
         }
         self.position = pos;
+        if let Some(entry) = self.props.entry_mut("State") {
+            entry.value = PropertyValue::Integer(pos as i64);
+        }
         Ok(())
     }
 
-    fn get_position(&self) -> MmResult<u64> { Ok(self.position) }
-    fn get_number_of_positions(&self) -> u64 { self.num_positions }
+    fn get_position(&self) -> MmResult<u64> {
+        Ok(self.position)
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.num_positions
+    }
 
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels.get(pos as usize).cloned().ok_or(MmError::UnknownPosition)
+        self.labels
+            .get(pos as usize)
+            .cloned()
+            .ok_or(MmError::UnknownPosition)
     }
 
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self.labels.iter().position(|l| l == label)
+        let pos = self
+            .labels
+            .iter()
+            .position(|l| l == label)
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
         self.set_position(pos)
     }
 
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
-        if pos >= self.num_positions { return Err(MmError::UnknownPosition); }
+        if pos >= self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
         self.labels[pos as usize] = label.to_string();
         Ok(())
     }
 
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.gate_open = open; Ok(()) }
-    fn get_gate_open(&self) -> MmResult<bool> { Ok(self.gate_open) }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.gate_open = open;
+        Ok(())
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        Ok(self.gate_open)
+    }
 }
 
 // --- Public type aliases ---
@@ -197,216 +330,504 @@ pub struct XLightV3EmissionWheel(XLightV3StateDevice);
 impl XLightV3EmissionWheel {
     pub fn new() -> Self {
         Self(XLightV3StateDevice::new(
-            "XLightV3-Emission", "X-Light V3 emission filter wheel", "B", "Emission-", true, 8,
+            "Emission wheel",
+            "Emission filter wheel",
+            "B",
+            "Emission pos.",
+            true,
+            8,
         ))
     }
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.0 = self.0.with_transport(t); self
+        self.0 = self.0.with_transport(t);
+        self
     }
 }
-impl Default for XLightV3EmissionWheel { fn default() -> Self { Self::new() } }
+impl Default for XLightV3EmissionWheel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Device for XLightV3EmissionWheel {
-    fn name(&self) -> &str { self.0.name() }
-    fn description(&self) -> &str { self.0.description() }
-    fn initialize(&mut self) -> MmResult<()> { self.0.initialize() }
-    fn shutdown(&mut self) -> MmResult<()> { self.0.shutdown() }
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.0.get_property(name) }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.0.set_property(name, val) }
-    fn property_names(&self) -> Vec<String> { self.0.property_names() }
-    fn has_property(&self, name: &str) -> bool { self.0.has_property(name) }
-    fn is_property_read_only(&self, name: &str) -> bool { self.0.is_property_read_only(name) }
-    fn device_type(&self) -> DeviceType { self.0.device_type() }
-    fn busy(&self) -> bool { self.0.busy() }
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+    fn initialize(&mut self) -> MmResult<()> {
+        self.0.initialize()
+    }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.0.shutdown()
+    }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.0.get_property(name)
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.0.set_property(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.0.property_names()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.0.has_property(name)
+    }
+    fn is_property_read_only(&self, name: &str) -> bool {
+        self.0.is_property_read_only(name)
+    }
+    fn device_type(&self) -> DeviceType {
+        self.0.device_type()
+    }
+    fn busy(&self) -> bool {
+        self.0.busy()
+    }
 }
 impl StateDevice for XLightV3EmissionWheel {
-    fn set_position(&mut self, pos: u64) -> MmResult<()> { self.0.set_position(pos) }
-    fn get_position(&self) -> MmResult<u64> { self.0.get_position() }
-    fn get_number_of_positions(&self) -> u64 { self.0.get_number_of_positions() }
-    fn get_position_label(&self, pos: u64) -> MmResult<String> { self.0.get_position_label(pos) }
-    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> { self.0.set_position_by_label(label) }
-    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> { self.0.set_position_label(pos, label) }
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.0.set_gate_open(open) }
-    fn get_gate_open(&self) -> MmResult<bool> { self.0.get_gate_open() }
+    fn set_position(&mut self, pos: u64) -> MmResult<()> {
+        self.0.set_position(pos)
+    }
+    fn get_position(&self) -> MmResult<u64> {
+        self.0.get_position()
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.0.get_number_of_positions()
+    }
+    fn get_position_label(&self, pos: u64) -> MmResult<String> {
+        self.0.get_position_label(pos)
+    }
+    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
+        self.0.set_position_by_label(label)
+    }
+    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
+        self.0.set_position_label(pos, label)
+    }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.0.set_gate_open(open)
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        self.0.get_gate_open()
+    }
 }
 
 pub struct XLightV3DichroicWheel(XLightV3StateDevice);
 impl XLightV3DichroicWheel {
     pub fn new() -> Self {
         Self(XLightV3StateDevice::new(
-            "XLightV3-Dichroic", "X-Light V3 dichroic filter wheel", "C", "Dichroic-", true, 5,
+            "Dichroic wheel",
+            "Dichroic filter wheel",
+            "C",
+            "Dichroic pos.",
+            true,
+            5,
         ))
     }
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.0 = self.0.with_transport(t); self
+        self.0 = self.0.with_transport(t);
+        self
     }
 }
-impl Default for XLightV3DichroicWheel { fn default() -> Self { Self::new() } }
+impl Default for XLightV3DichroicWheel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Device for XLightV3DichroicWheel {
-    fn name(&self) -> &str { self.0.name() }
-    fn description(&self) -> &str { self.0.description() }
-    fn initialize(&mut self) -> MmResult<()> { self.0.initialize() }
-    fn shutdown(&mut self) -> MmResult<()> { self.0.shutdown() }
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.0.get_property(name) }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.0.set_property(name, val) }
-    fn property_names(&self) -> Vec<String> { self.0.property_names() }
-    fn has_property(&self, name: &str) -> bool { self.0.has_property(name) }
-    fn is_property_read_only(&self, name: &str) -> bool { self.0.is_property_read_only(name) }
-    fn device_type(&self) -> DeviceType { self.0.device_type() }
-    fn busy(&self) -> bool { self.0.busy() }
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+    fn initialize(&mut self) -> MmResult<()> {
+        self.0.initialize()
+    }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.0.shutdown()
+    }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.0.get_property(name)
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.0.set_property(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.0.property_names()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.0.has_property(name)
+    }
+    fn is_property_read_only(&self, name: &str) -> bool {
+        self.0.is_property_read_only(name)
+    }
+    fn device_type(&self) -> DeviceType {
+        self.0.device_type()
+    }
+    fn busy(&self) -> bool {
+        self.0.busy()
+    }
 }
 impl StateDevice for XLightV3DichroicWheel {
-    fn set_position(&mut self, pos: u64) -> MmResult<()> { self.0.set_position(pos) }
-    fn get_position(&self) -> MmResult<u64> { self.0.get_position() }
-    fn get_number_of_positions(&self) -> u64 { self.0.get_number_of_positions() }
-    fn get_position_label(&self, pos: u64) -> MmResult<String> { self.0.get_position_label(pos) }
-    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> { self.0.set_position_by_label(label) }
-    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> { self.0.set_position_label(pos, label) }
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.0.set_gate_open(open) }
-    fn get_gate_open(&self) -> MmResult<bool> { self.0.get_gate_open() }
+    fn set_position(&mut self, pos: u64) -> MmResult<()> {
+        self.0.set_position(pos)
+    }
+    fn get_position(&self) -> MmResult<u64> {
+        self.0.get_position()
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.0.get_number_of_positions()
+    }
+    fn get_position_label(&self, pos: u64) -> MmResult<String> {
+        self.0.get_position_label(pos)
+    }
+    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
+        self.0.set_position_by_label(label)
+    }
+    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
+        self.0.set_position_label(pos, label)
+    }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.0.set_gate_open(open)
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        self.0.get_gate_open()
+    }
 }
 
 pub struct XLightV3ExcitationWheel(XLightV3StateDevice);
 impl XLightV3ExcitationWheel {
     pub fn new() -> Self {
         Self(XLightV3StateDevice::new(
-            "XLightV3-Excitation", "X-Light V3 excitation filter wheel", "A", "Excitation-", true, 8,
+            "Excitation wheel",
+            "Excitation filter wheel",
+            "A",
+            "Excitation pos.",
+            true,
+            8,
         ))
     }
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.0 = self.0.with_transport(t); self
+        self.0 = self.0.with_transport(t);
+        self
     }
 }
-impl Default for XLightV3ExcitationWheel { fn default() -> Self { Self::new() } }
+impl Default for XLightV3ExcitationWheel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Device for XLightV3ExcitationWheel {
-    fn name(&self) -> &str { self.0.name() }
-    fn description(&self) -> &str { self.0.description() }
-    fn initialize(&mut self) -> MmResult<()> { self.0.initialize() }
-    fn shutdown(&mut self) -> MmResult<()> { self.0.shutdown() }
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.0.get_property(name) }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.0.set_property(name, val) }
-    fn property_names(&self) -> Vec<String> { self.0.property_names() }
-    fn has_property(&self, name: &str) -> bool { self.0.has_property(name) }
-    fn is_property_read_only(&self, name: &str) -> bool { self.0.is_property_read_only(name) }
-    fn device_type(&self) -> DeviceType { self.0.device_type() }
-    fn busy(&self) -> bool { self.0.busy() }
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+    fn initialize(&mut self) -> MmResult<()> {
+        self.0.initialize()
+    }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.0.shutdown()
+    }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.0.get_property(name)
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.0.set_property(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.0.property_names()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.0.has_property(name)
+    }
+    fn is_property_read_only(&self, name: &str) -> bool {
+        self.0.is_property_read_only(name)
+    }
+    fn device_type(&self) -> DeviceType {
+        self.0.device_type()
+    }
+    fn busy(&self) -> bool {
+        self.0.busy()
+    }
 }
 impl StateDevice for XLightV3ExcitationWheel {
-    fn set_position(&mut self, pos: u64) -> MmResult<()> { self.0.set_position(pos) }
-    fn get_position(&self) -> MmResult<u64> { self.0.get_position() }
-    fn get_number_of_positions(&self) -> u64 { self.0.get_number_of_positions() }
-    fn get_position_label(&self, pos: u64) -> MmResult<String> { self.0.get_position_label(pos) }
-    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> { self.0.set_position_by_label(label) }
-    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> { self.0.set_position_label(pos, label) }
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.0.set_gate_open(open) }
-    fn get_gate_open(&self) -> MmResult<bool> { self.0.get_gate_open() }
+    fn set_position(&mut self, pos: u64) -> MmResult<()> {
+        self.0.set_position(pos)
+    }
+    fn get_position(&self) -> MmResult<u64> {
+        self.0.get_position()
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.0.get_number_of_positions()
+    }
+    fn get_position_label(&self, pos: u64) -> MmResult<String> {
+        self.0.get_position_label(pos)
+    }
+    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
+        self.0.set_position_by_label(label)
+    }
+    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
+        self.0.set_position_label(pos, label)
+    }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.0.set_gate_open(open)
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        self.0.get_gate_open()
+    }
 }
 
 pub struct XLightV3SpinningSlider(XLightV3StateDevice);
 impl XLightV3SpinningSlider {
     pub fn new() -> Self {
         Self(XLightV3StateDevice::new(
-            "XLightV3-SpinningSlider", "X-Light V3 spinning disk slider", "D", "Slider-", false, 3,
+            "Spinning slider",
+            "Spinning slider",
+            "D",
+            "Spinning pos.",
+            false,
+            3,
         ))
     }
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.0 = self.0.with_transport(t); self
+        self.0 = self.0.with_transport(t);
+        self
     }
 }
-impl Default for XLightV3SpinningSlider { fn default() -> Self { Self::new() } }
+impl Default for XLightV3SpinningSlider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Device for XLightV3SpinningSlider {
-    fn name(&self) -> &str { self.0.name() }
-    fn description(&self) -> &str { self.0.description() }
-    fn initialize(&mut self) -> MmResult<()> { self.0.initialize() }
-    fn shutdown(&mut self) -> MmResult<()> { self.0.shutdown() }
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.0.get_property(name) }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.0.set_property(name, val) }
-    fn property_names(&self) -> Vec<String> { self.0.property_names() }
-    fn has_property(&self, name: &str) -> bool { self.0.has_property(name) }
-    fn is_property_read_only(&self, name: &str) -> bool { self.0.is_property_read_only(name) }
-    fn device_type(&self) -> DeviceType { self.0.device_type() }
-    fn busy(&self) -> bool { self.0.busy() }
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+    fn initialize(&mut self) -> MmResult<()> {
+        self.0.initialize()
+    }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.0.shutdown()
+    }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.0.get_property(name)
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.0.set_property(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.0.property_names()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.0.has_property(name)
+    }
+    fn is_property_read_only(&self, name: &str) -> bool {
+        self.0.is_property_read_only(name)
+    }
+    fn device_type(&self) -> DeviceType {
+        self.0.device_type()
+    }
+    fn busy(&self) -> bool {
+        self.0.busy()
+    }
 }
 impl StateDevice for XLightV3SpinningSlider {
-    fn set_position(&mut self, pos: u64) -> MmResult<()> { self.0.set_position(pos) }
-    fn get_position(&self) -> MmResult<u64> { self.0.get_position() }
-    fn get_number_of_positions(&self) -> u64 { self.0.get_number_of_positions() }
-    fn get_position_label(&self, pos: u64) -> MmResult<String> { self.0.get_position_label(pos) }
-    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> { self.0.set_position_by_label(label) }
-    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> { self.0.set_position_label(pos, label) }
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.0.set_gate_open(open) }
-    fn get_gate_open(&self) -> MmResult<bool> { self.0.get_gate_open() }
+    fn set_position(&mut self, pos: u64) -> MmResult<()> {
+        self.0.set_position(pos)
+    }
+    fn get_position(&self) -> MmResult<u64> {
+        self.0.get_position()
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.0.get_number_of_positions()
+    }
+    fn get_position_label(&self, pos: u64) -> MmResult<String> {
+        self.0.get_position_label(pos)
+    }
+    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
+        self.0.set_position_by_label(label)
+    }
+    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
+        self.0.set_position_label(pos, label)
+    }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.0.set_gate_open(open)
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        self.0.get_gate_open()
+    }
 }
 
 pub struct XLightV3CameraSlider(XLightV3StateDevice);
 impl XLightV3CameraSlider {
     pub fn new() -> Self {
         Self(XLightV3StateDevice::new(
-            "XLightV3-CameraSlider", "X-Light V3 dual-camera slider", "P", "Slider-", false, 2,
+            "Camera slider",
+            "Dual camera slider",
+            "P",
+            "Slider pos.",
+            false,
+            2,
         ))
     }
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.0 = self.0.with_transport(t); self
+        self.0 = self.0.with_transport(t);
+        self
     }
 }
-impl Default for XLightV3CameraSlider { fn default() -> Self { Self::new() } }
+impl Default for XLightV3CameraSlider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Device for XLightV3CameraSlider {
-    fn name(&self) -> &str { self.0.name() }
-    fn description(&self) -> &str { self.0.description() }
-    fn initialize(&mut self) -> MmResult<()> { self.0.initialize() }
-    fn shutdown(&mut self) -> MmResult<()> { self.0.shutdown() }
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.0.get_property(name) }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.0.set_property(name, val) }
-    fn property_names(&self) -> Vec<String> { self.0.property_names() }
-    fn has_property(&self, name: &str) -> bool { self.0.has_property(name) }
-    fn is_property_read_only(&self, name: &str) -> bool { self.0.is_property_read_only(name) }
-    fn device_type(&self) -> DeviceType { self.0.device_type() }
-    fn busy(&self) -> bool { self.0.busy() }
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+    fn initialize(&mut self) -> MmResult<()> {
+        self.0.initialize()
+    }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.0.shutdown()
+    }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.0.get_property(name)
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.0.set_property(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.0.property_names()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.0.has_property(name)
+    }
+    fn is_property_read_only(&self, name: &str) -> bool {
+        self.0.is_property_read_only(name)
+    }
+    fn device_type(&self) -> DeviceType {
+        self.0.device_type()
+    }
+    fn busy(&self) -> bool {
+        self.0.busy()
+    }
 }
 impl StateDevice for XLightV3CameraSlider {
-    fn set_position(&mut self, pos: u64) -> MmResult<()> { self.0.set_position(pos) }
-    fn get_position(&self) -> MmResult<u64> { self.0.get_position() }
-    fn get_number_of_positions(&self) -> u64 { self.0.get_number_of_positions() }
-    fn get_position_label(&self, pos: u64) -> MmResult<String> { self.0.get_position_label(pos) }
-    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> { self.0.set_position_by_label(label) }
-    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> { self.0.set_position_label(pos, label) }
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.0.set_gate_open(open) }
-    fn get_gate_open(&self) -> MmResult<bool> { self.0.get_gate_open() }
+    fn set_position(&mut self, pos: u64) -> MmResult<()> {
+        self.0.set_position(pos)
+    }
+    fn get_position(&self) -> MmResult<u64> {
+        self.0.get_position()
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.0.get_number_of_positions()
+    }
+    fn get_position_label(&self, pos: u64) -> MmResult<String> {
+        self.0.get_position_label(pos)
+    }
+    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
+        self.0.set_position_by_label(label)
+    }
+    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
+        self.0.set_position_label(pos, label)
+    }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.0.set_gate_open(open)
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        self.0.get_gate_open()
+    }
 }
 
 pub struct XLightV3SpinningMotor(XLightV3StateDevice);
 impl XLightV3SpinningMotor {
     pub fn new() -> Self {
         Self(XLightV3StateDevice::new(
-            "XLightV3-SpinningMotor", "X-Light V3 spinning disk motor", "N", "Motor-", false, 2,
+            "Spinning motor",
+            "Spinning motor",
+            "N",
+            "Motor",
+            false,
+            2,
         ))
     }
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.0 = self.0.with_transport(t); self
+        self.0 = self.0.with_transport(t);
+        self
     }
 }
-impl Default for XLightV3SpinningMotor { fn default() -> Self { Self::new() } }
+impl Default for XLightV3SpinningMotor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl Device for XLightV3SpinningMotor {
-    fn name(&self) -> &str { self.0.name() }
-    fn description(&self) -> &str { self.0.description() }
-    fn initialize(&mut self) -> MmResult<()> { self.0.initialize() }
-    fn shutdown(&mut self) -> MmResult<()> { self.0.shutdown() }
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.0.get_property(name) }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.0.set_property(name, val) }
-    fn property_names(&self) -> Vec<String> { self.0.property_names() }
-    fn has_property(&self, name: &str) -> bool { self.0.has_property(name) }
-    fn is_property_read_only(&self, name: &str) -> bool { self.0.is_property_read_only(name) }
-    fn device_type(&self) -> DeviceType { self.0.device_type() }
-    fn busy(&self) -> bool { self.0.busy() }
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+    fn initialize(&mut self) -> MmResult<()> {
+        self.0.initialize()
+    }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.0.shutdown()
+    }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.0.get_property(name)
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.0.set_property(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.0.property_names()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.0.has_property(name)
+    }
+    fn is_property_read_only(&self, name: &str) -> bool {
+        self.0.is_property_read_only(name)
+    }
+    fn device_type(&self) -> DeviceType {
+        self.0.device_type()
+    }
+    fn busy(&self) -> bool {
+        self.0.busy()
+    }
 }
 impl StateDevice for XLightV3SpinningMotor {
-    fn set_position(&mut self, pos: u64) -> MmResult<()> { self.0.set_position(pos) }
-    fn get_position(&self) -> MmResult<u64> { self.0.get_position() }
-    fn get_number_of_positions(&self) -> u64 { self.0.get_number_of_positions() }
-    fn get_position_label(&self, pos: u64) -> MmResult<String> { self.0.get_position_label(pos) }
-    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> { self.0.set_position_by_label(label) }
-    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> { self.0.set_position_label(pos, label) }
-    fn set_gate_open(&mut self, open: bool) -> MmResult<()> { self.0.set_gate_open(open) }
-    fn get_gate_open(&self) -> MmResult<bool> { self.0.get_gate_open() }
+    fn set_position(&mut self, pos: u64) -> MmResult<()> {
+        self.0.set_position(pos)
+    }
+    fn get_position(&self) -> MmResult<u64> {
+        self.0.get_position()
+    }
+    fn get_number_of_positions(&self) -> u64 {
+        self.0.get_number_of_positions()
+    }
+    fn get_position_label(&self, pos: u64) -> MmResult<String> {
+        self.0.get_position_label(pos)
+    }
+    fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
+        self.0.set_position_by_label(label)
+    }
+    fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
+        self.0.set_position_label(pos, label)
+    }
+    fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        self.0.set_gate_open(open)
+    }
+    fn get_gate_open(&self) -> MmResult<bool> {
+        self.0.get_gate_open()
+    }
 }
 
 #[cfg(test)]
@@ -459,6 +880,34 @@ mod tests {
         let mut d = XLightV3DichroicWheel::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         assert!(d.set_position(5).is_err());
+    }
+
+    #[test]
+    fn negative_state_property_is_rejected_without_wraparound() {
+        let t = MockTransport::new()
+            .expect("rCN\r", "rCN5")
+            .expect("rC\r", "rC1");
+        let mut d = XLightV3DichroicWheel::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+
+        assert_eq!(
+            d.set_property("State", PropertyValue::Integer(-1))
+                .unwrap_err(),
+            MmError::UnknownPosition
+        );
+        assert_eq!(d.get_position().unwrap(), 0);
+    }
+
+    #[test]
+    fn set_position_rejects_echoed_wrong_value() {
+        let t = MockTransport::new()
+            .expect("rBN\r", "rBN8")
+            .expect("rB\r", "rB1")
+            .expect("B5\r", "B4");
+        let mut d = XLightV3EmissionWheel::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert!(d.set_position(4).is_err());
+        assert_eq!(d.get_position().unwrap(), 0);
     }
 
     #[test]

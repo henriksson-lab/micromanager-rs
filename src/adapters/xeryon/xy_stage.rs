@@ -241,8 +241,8 @@ impl XYStage for XeryonXYStage {
     }
 
     fn home(&mut self) -> MmResult<()> {
-        self.axis_cmd('X', "ZERO", 0)?;
-        self.axis_cmd('Y', "ZERO", 0)?;
+        self.axis_cmd('X', "INDX", 0)?;
+        self.axis_cmd('Y', "INDX", 0)?;
         self.x_um = 0.0;
         self.y_um = 0.0;
         Ok(())
@@ -322,8 +322,8 @@ mod tests {
     #[test]
     fn home() {
         let t = make_init_transport()
-            .expect("X:ZERO=0\n", "X:ZERO=OK")
-            .expect("Y:ZERO=0\n", "Y:ZERO=OK");
+            .expect("X:INDX=0\n", "X:INDX=OK")
+            .expect("Y:INDX=0\n", "Y:INDX=OK");
         let mut s = XeryonXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.home().unwrap();

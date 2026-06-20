@@ -35,16 +35,29 @@ fn sensor_type_name(t: i32) -> &'static str {
     }
 }
 
+fn pixel_type_bytes_and_depth(pixel_type: &str, default_bit_depth: u32) -> Option<(u32, u32)> {
+    match pixel_type {
+        "Mono16" => Some((2, default_bit_depth.max(1))),
+        "RGBA32" => Some((4, 8)),
+        "RGBA64" => Some((8, default_bit_depth.max(1))),
+        _ => None,
+    }
+}
+
 // ── Camera struct ─────────────────────────────────────────────────────────────
 
 pub struct TSICamera {
     props: PropertyMap,
     ctx: *mut ffi::TsiCtx,
+    img_buf: Vec<u8>,
 
     // Pre-init / cached
     camera_id: String, // TSI camera ID string; empty = first found
     exposure_ms: f64,
     binning: i32,
+    trigger_mode: String,
+    trigger_polarity: String,
+    pixel_type: String,
 
     // Post-init read-only
     img_width: u32,
@@ -67,6 +80,32 @@ impl TSICamera {
             .unwrap();
         props
             .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property(
+                "TriggerMode",
+                PropertyValue::String("Software".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values(
+                "TriggerMode",
+                &["Software", "HardwareStandard", "HardwareBulb"],
+            )
+            .unwrap();
+        props
+            .define_property(
+                "TriggerPolarity",
+                PropertyValue::String("Positive".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("TriggerPolarity", &["Positive", "Negative"])
+            .unwrap();
+        props
+            .define_property("PixelType", PropertyValue::String("Mono16".into()), false)
             .unwrap();
         props
             .define_property("Width", PropertyValue::Integer(0), true)
@@ -94,9 +133,13 @@ impl TSICamera {
         Self {
             props,
             ctx: std::ptr::null_mut(),
+            img_buf: Vec::new(),
             camera_id: String::new(),
             exposure_ms: 2.0,
             binning: 1,
+            trigger_mode: "Software".into(),
+            trigger_polarity: "Positive".into(),
+            pixel_type: "Mono16".into(),
             img_width: 0,
             img_height: 0,
             bit_depth: 16,
@@ -143,6 +186,21 @@ impl TSICamera {
     /// Snap timeout: exposure + generous readout overhead, minimum 5 s.
     fn snap_timeout_ms(&self) -> i32 {
         (self.exposure_ms as i32 + 5_000).max(5_000)
+    }
+
+    fn copy_frame_from_shim(&mut self) -> MmResult<()> {
+        let ptr = unsafe { ffi::tsi_get_frame_ptr(self.ctx) };
+        if ptr.is_null() {
+            return Err(MmError::LocallyDefined("No image captured yet".into()));
+        }
+        let bytes = unsafe { ffi::tsi_get_frame_bytes(self.ctx) } as usize;
+        if bytes == 0 {
+            return Err(MmError::LocallyDefined("No image captured yet".into()));
+        }
+        let src = unsafe { std::slice::from_raw_parts(ptr as *const u8, bytes) };
+        self.img_buf.clear();
+        self.img_buf.extend_from_slice(src);
+        Ok(())
     }
 }
 
@@ -239,6 +297,21 @@ impl Device for TSICamera {
         self.props
             .entry_mut("SensorType")
             .map(|e| e.value = PropertyValue::String(sensor_type_name(self.sensor_type).into()));
+        self.pixel_type = if self.sensor_type == 1 {
+            self.bytes_per_pixel = 4;
+            self.bit_depth = 8;
+            "RGBA32".into()
+        } else {
+            "Mono16".into()
+        };
+        self.props
+            .entry_mut("PixelType")
+            .map(|e| e.value = PropertyValue::String(self.pixel_type.clone()));
+        if self.sensor_type == 1 {
+            self.props.set_allowed_values("PixelType", &["RGBA32"]).ok();
+        } else {
+            self.props.set_allowed_values("PixelType", &["Mono16"]).ok();
+        }
 
         if let Some(sn) = read_str(|b, l| unsafe { ffi::tsi_get_serial_number(ctx, b, l) }) {
             self.props
@@ -288,6 +361,9 @@ impl Device for TSICamera {
             "CameraID" => Ok(PropertyValue::String(self.camera_id.clone())),
             "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
             "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
+            "TriggerMode" => Ok(PropertyValue::String(self.trigger_mode.clone())),
+            "TriggerPolarity" => Ok(PropertyValue::String(self.trigger_polarity.clone())),
+            "PixelType" => Ok(PropertyValue::String(self.pixel_type.clone())),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -320,10 +396,43 @@ impl Device for TSICamera {
                 if self.capturing {
                     return Err(MmError::CameraBusyAcquiring);
                 }
-                self.binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
+                let binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
                 self.props
-                    .set(name, PropertyValue::Integer(self.binning as i64))?;
+                    .set(name, PropertyValue::Integer(binning as i64))?;
+                self.binning = binning;
                 self.apply_binning();
+                Ok(())
+            }
+            "TriggerMode" => {
+                if self.capturing {
+                    return Err(MmError::CameraBusyAcquiring);
+                }
+                let trigger_mode = val.as_str().to_string();
+                self.props.set(name, val)?;
+                self.trigger_mode = trigger_mode;
+                Ok(())
+            }
+            "TriggerPolarity" => {
+                if self.capturing {
+                    return Err(MmError::CameraBusyAcquiring);
+                }
+                let trigger_polarity = val.as_str().to_string();
+                self.props.set(name, val)?;
+                self.trigger_polarity = trigger_polarity;
+                Ok(())
+            }
+            "PixelType" => {
+                if self.capturing {
+                    return Err(MmError::CameraBusyAcquiring);
+                }
+                let pixel_type = val.as_str().to_string();
+                let (bytes_per_pixel, bit_depth) =
+                    pixel_type_bytes_and_depth(&pixel_type, self.bit_depth)
+                        .ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, val)?;
+                self.pixel_type = pixel_type;
+                self.bytes_per_pixel = bytes_per_pixel;
+                self.bit_depth = bit_depth;
                 Ok(())
             }
             _ => self.props.set(name, val),
@@ -360,6 +469,7 @@ impl Camera for TSICamera {
             if rc != 0 {
                 return Err(MmError::SnapImageFailed);
             }
+            self.copy_frame_from_shim()?;
             return Ok(());
         }
 
@@ -378,24 +488,16 @@ impl Camera for TSICamera {
         self.props
             .entry_mut("Height")
             .map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
+        self.copy_frame_from_shim()?;
         Ok(())
     }
 
     fn get_image_buffer(&self) -> MmResult<&[u8]> {
-        if self.ctx.is_null() {
-            return Err(MmError::NotConnected);
+        if self.img_buf.is_empty() {
+            Err(MmError::LocallyDefined("No image captured yet".into()))
+        } else {
+            Ok(&self.img_buf)
         }
-        let ptr = unsafe { ffi::tsi_get_frame_ptr(self.ctx) };
-        if ptr.is_null() {
-            return Err(MmError::LocallyDefined("No image captured yet".into()));
-        }
-        let bytes = unsafe { ffi::tsi_get_frame_bytes(self.ctx) } as usize;
-        if bytes == 0 {
-            return Err(MmError::LocallyDefined("No image captured yet".into()));
-        }
-        // SAFETY: ptr points into the shim's internal buffer which lives for
-        // the duration of ctx; we borrow it with the same lifetime as &self.
-        Ok(unsafe { std::slice::from_raw_parts(ptr as *const u8, bytes) })
     }
 
     fn get_image_width(&self) -> u32 {
@@ -411,7 +513,10 @@ impl Camera for TSICamera {
         self.bit_depth
     }
     fn get_number_of_components(&self) -> u32 {
-        1
+        match self.pixel_type.as_str() {
+            "RGBA32" | "RGBA64" => 4,
+            _ => 1,
+        }
     }
     fn get_number_of_channels(&self) -> u32 {
         1
@@ -563,6 +668,72 @@ mod tests {
     }
 
     #[test]
+    fn upstream_trigger_and_pixel_properties_are_present() {
+        let d = TSICamera::new();
+        assert_eq!(
+            d.get_property("TriggerMode").unwrap(),
+            PropertyValue::String("Software".into())
+        );
+        assert_eq!(
+            d.get_property("TriggerPolarity").unwrap(),
+            PropertyValue::String("Positive".into())
+        );
+        assert_eq!(
+            d.get_property("PixelType").unwrap(),
+            PropertyValue::String("Mono16".into())
+        );
+    }
+
+    #[test]
+    fn upstream_color_pixel_type_uses_rgba_names_and_components() {
+        let mut d = TSICamera::new();
+        d.props
+            .set_allowed_values("PixelType", &["RGBA32"])
+            .unwrap();
+
+        d.set_property("PixelType", PropertyValue::String("RGBA32".into()))
+            .unwrap();
+
+        assert_eq!(
+            d.get_property("PixelType").unwrap(),
+            PropertyValue::String("RGBA32".into())
+        );
+        assert_eq!(d.get_image_bytes_per_pixel(), 4);
+        assert_eq!(d.get_bit_depth(), 8);
+        assert_eq!(d.get_number_of_components(), 4);
+    }
+
+    #[test]
+    fn invalid_allowed_values_do_not_mutate_cached_state() {
+        let mut d = TSICamera::new();
+        assert!(d
+            .set_property("Binning", PropertyValue::Integer(3))
+            .is_err());
+        assert_eq!(d.get_binning(), 1);
+        assert!(d
+            .set_property("TriggerMode", PropertyValue::String("External".into()))
+            .is_err());
+        assert_eq!(
+            d.get_property("TriggerMode").unwrap(),
+            PropertyValue::String("Software".into())
+        );
+        assert!(d
+            .set_property("TriggerPolarity", PropertyValue::String("Either".into()))
+            .is_err());
+        assert_eq!(
+            d.get_property("TriggerPolarity").unwrap(),
+            PropertyValue::String("Positive".into())
+        );
+        assert!(d
+            .set_property("PixelType", PropertyValue::String("Mono8".into()))
+            .is_err());
+        assert_eq!(
+            d.get_property("PixelType").unwrap(),
+            PropertyValue::String("Mono16".into())
+        );
+    }
+
+    #[test]
     fn snap_without_init_errors() {
         let mut d = TSICamera::new();
         assert!(d.snap_image().is_err());
@@ -626,6 +797,18 @@ mod tests {
             MmError::CameraBusyAcquiring
         );
         assert_eq!(d.get_binning(), 1);
+        assert_eq!(
+            d.set_property(
+                "TriggerMode",
+                PropertyValue::String("HardwareStandard".into())
+            )
+            .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(
+            d.get_property("TriggerMode").unwrap(),
+            PropertyValue::String("Software".into())
+        );
     }
 
     #[test]

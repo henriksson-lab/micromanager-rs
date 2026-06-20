@@ -33,6 +33,21 @@ impl AsiZStage {
             .define_pre_init_property("Axis", PropertyValue::String("Z".into()))
             .unwrap();
         props.set_allowed_values("Axis", &["F", "P", "Z"]).unwrap();
+        props
+            .define_property("Version", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("BuildName", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("AxisDirection", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .set_allowed_values("AxisDirection", &["1", "-1"])
+            .unwrap();
+        props
+            .define_property("StepSize_um", PropertyValue::Float(0.1), true)
+            .unwrap();
 
         Self {
             props,
@@ -61,6 +76,7 @@ impl AsiZStage {
     fn cmd(&self, command: &str) -> MmResult<String> {
         let cmd = format!("{}\r", command);
         self.call_transport(|t| {
+            t.purge()?;
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
         })
@@ -298,6 +314,14 @@ mod tests {
         assert_eq!(
             AsiZStage::new().get_limits().unwrap_err(),
             MmError::UnsupportedCommand
+        );
+    }
+
+    #[test]
+    fn step_size_property_matches_upstream_tenths_of_micron_units() {
+        assert_eq!(
+            AsiZStage::new().get_property("StepSize_um").unwrap(),
+            PropertyValue::Float(0.1)
         );
     }
 }

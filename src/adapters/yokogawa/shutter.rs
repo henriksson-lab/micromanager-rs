@@ -10,12 +10,15 @@ use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
 pub struct CsuXShutter {
     props: PropertyMap,
     transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
     open: Cell<bool>,
+    delay_ms: f64,
+    changed_time: Cell<Instant>,
 }
 
 impl CsuXShutter {
@@ -30,11 +33,17 @@ impl CsuXShutter {
         props
             .set_allowed_values("State", &["Closed", "Open"])
             .unwrap();
+        props
+            .define_property("Delay", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("Delay", 0.0, f64::MAX).unwrap();
         Self {
             props,
             transport: None,
             initialized: false,
             open: Cell::new(false),
+            delay_ms: 0.0,
+            changed_time: Cell::new(Instant::now()),
         }
     }
 
@@ -109,11 +118,13 @@ impl Device for CsuXShutter {
             "State" => Ok(PropertyValue::String(
                 if self.get_open()? { "Open" } else { "Closed" }.into(),
             )),
+            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "State" => {
                 let state = val.as_str();
                 if state == "Open" {
@@ -123,6 +134,14 @@ impl Device for CsuXShutter {
                 } else {
                     Err(MmError::InvalidPropertyValue)
                 }
+            }
+            "Delay" => {
+                let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if delay < 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.delay_ms = delay;
+                self.props.set(name, PropertyValue::Float(delay))
             }
             _ => self.props.set(name, val),
         }
@@ -140,7 +159,7 @@ impl Device for CsuXShutter {
         DeviceType::Shutter
     }
     fn busy(&self) -> bool {
-        false
+        self.changed_time.get().elapsed().as_secs_f64() * 1000.0 < self.delay_ms
     }
 }
 
@@ -155,6 +174,7 @@ impl Shutter for CsuXShutter {
             )));
         }
         self.open.set(open);
+        self.changed_time.set(Instant::now());
         self.props.set(
             "State",
             PropertyValue::String(if open { "Open" } else { "Closed" }.into()),
@@ -233,6 +253,40 @@ mod tests {
         assert_eq!(
             s.get_property("State").unwrap(),
             PropertyValue::String("Open".into())
+        );
+    }
+
+    #[test]
+    fn busy_uses_delay_timer_after_set_open() {
+        let t = MockTransport::new()
+            .expect("SH, ?\r", "CLOSED\rA")
+            .expect("SHO\r", "A");
+        let mut s = CsuXShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_property("Delay", PropertyValue::Float(40.0)).unwrap();
+        s.set_open(true).unwrap();
+        assert!(s.busy());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!s.busy());
+    }
+
+    #[test]
+    fn negative_delay_is_rejected() {
+        let mut s = CsuXShutter::new();
+        assert_eq!(
+            s.set_property("Delay", PropertyValue::Float(-1.0)),
+            Err(MmError::InvalidPropertyValue)
+        );
+    }
+
+    #[test]
+    fn port_is_locked_after_initialize() {
+        let t = MockTransport::new().expect("SH, ?\r", "CLOSED\rA");
+        let mut s = CsuXShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::InvalidPropertyValue)
         );
     }
 }

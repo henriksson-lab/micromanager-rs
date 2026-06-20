@@ -51,6 +51,31 @@ impl OfShutter {
         self.send(&format!("led_cc {}", self.brightness))?;
         Ok(())
     }
+
+    pub fn sync_state(&mut self) -> MmResult<()> {
+        if !self.initialized {
+            return Ok(());
+        }
+
+        let resp = self.send("led_cc?")?;
+        let value = resp
+            .split_once(':')
+            .and_then(|(_, value)| value.trim().parse::<f64>().ok())
+            .ok_or(MmError::SerialInvalidResponse)?;
+
+        self.open = value != 0.0;
+        if self.open {
+            self.brightness = value;
+            let _ = self
+                .props
+                .set("LED Brightness", PropertyValue::Float(self.brightness));
+        }
+        let _ = self.props.set(
+            "State",
+            PropertyValue::Integer(if self.open { 1 } else { 0 }),
+        );
+        Ok(())
+    }
 }
 
 impl Default for OfShutter {
@@ -72,6 +97,7 @@ impl Device for OfShutter {
             return Err(MmError::CommHubMissing);
         }
         self.initialized = true;
+        self.sync_state()?;
         Ok(())
     }
 
@@ -150,6 +176,7 @@ mod tests {
     #[test]
     fn open_close_uses_led_cc() {
         let commander: Commander = Arc::new(|cmd| match cmd {
+            "led_cc?" => Ok("CC LED:0.00".to_string()),
             "led_cc 1" | "led_cc 0" => Ok("ok".to_string()),
             other => Err(MmError::LocallyDefined(format!(
                 "unexpected command {other}"
@@ -173,5 +200,74 @@ mod tests {
     fn initialize_requires_hub_commander() {
         let mut s = OfShutter::new();
         assert_eq!(s.initialize().unwrap_err(), MmError::CommHubMissing);
+    }
+
+    #[test]
+    fn initialize_syncs_existing_led_state() {
+        let commander: Commander = Arc::new(|cmd| match cmd {
+            "led_cc?" => Ok("CC LED:0.35".to_string()),
+            other => Err(MmError::LocallyDefined(format!(
+                "unexpected command {other}"
+            ))),
+        });
+        let mut s = OfShutter::new().with_commander(commander);
+
+        s.initialize().unwrap();
+
+        assert!(s.get_open().unwrap());
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(1));
+        assert_eq!(
+            s.get_property("LED Brightness").unwrap(),
+            PropertyValue::Float(0.35)
+        );
+    }
+
+    #[test]
+    fn sync_state_reads_led_cc_query() {
+        let commander: Commander = Arc::new(|cmd| match cmd {
+            "led_cc?" => Ok("CC LED:0.42".to_string()),
+            other => Err(MmError::LocallyDefined(format!(
+                "unexpected command {other}"
+            ))),
+        });
+        let mut s = OfShutter::new().with_commander(commander);
+        s.initialize().unwrap();
+
+        s.sync_state().unwrap();
+
+        assert!(s.get_open().unwrap());
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(1));
+        assert_eq!(
+            s.get_property("LED Brightness").unwrap(),
+            PropertyValue::Float(0.42)
+        );
+    }
+
+    #[test]
+    fn sync_state_zero_closes_without_overwriting_brightness() {
+        let commander: Commander = Arc::new(|cmd| match cmd {
+            "led_cc 0.25" | "led_cc?" => Ok(if cmd == "led_cc?" {
+                "CC LED:0.00".to_string()
+            } else {
+                "ok".to_string()
+            }),
+            other => Err(MmError::LocallyDefined(format!(
+                "unexpected command {other}"
+            ))),
+        });
+        let mut s = OfShutter::new().with_commander(commander);
+        s.initialize().unwrap();
+        s.set_property("LED Brightness", PropertyValue::Float(0.25))
+            .unwrap();
+        s.set_open(true).unwrap();
+
+        s.sync_state().unwrap();
+
+        assert!(!s.get_open().unwrap());
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(0));
+        assert_eq!(
+            s.get_property("LED Brightness").unwrap(),
+            PropertyValue::Float(0.25)
+        );
     }
 }

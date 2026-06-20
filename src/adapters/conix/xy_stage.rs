@@ -13,6 +13,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
 
 fn check_a(resp: &str) -> MmResult<&str> {
     let s = resp.trim();
@@ -25,7 +26,7 @@ fn check_a(resp: &str) -> MmResult<&str> {
 
 pub struct ConixXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     x_um: f64,
     y_um: f64,
@@ -42,7 +43,7 @@ impl ConixXYStage {
             .unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
             x_um: 0.0,
             y_um: 0.0,
@@ -50,26 +51,37 @@ impl ConixXYStage {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        *self.transport.get_mut() = Some(t);
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        let mut transport = self.transport.borrow_mut();
+        match transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
             let r = t.send_recv(&c)?;
             Ok(r.trim().to_string())
         })
+    }
+
+    fn query_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        let pos = self.cmd("W X Y")?;
+        Self::parse_xy(&pos)
+    }
+
+    fn poll_busy(&self) -> MmResult<bool> {
+        let r = self.cmd("/")?;
+        Ok(r.trim_start().starts_with('B'))
     }
 
     fn parse_xy(resp: &str) -> MmResult<(f64, f64)> {
@@ -102,7 +114,7 @@ impl Device for ConixXYStage {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
         let ver = self.cmd("WHO")?;
@@ -131,7 +143,10 @@ impl Device for ConixXYStage {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -146,7 +161,7 @@ impl Device for ConixXYStage {
         DeviceType::XYStage
     }
     fn busy(&self) -> bool {
-        false
+        self.poll_busy().unwrap_or(false)
     }
 }
 
@@ -159,7 +174,7 @@ impl XYStage for ConixXYStage {
         Ok(())
     }
     fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
-        Ok((self.x_um, self.y_um))
+        self.query_xy_position_um()
     }
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         self.set_xy_position_um(self.x_um + dx, self.y_um + dy)
@@ -208,7 +223,8 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let mut s = ConixXYStage::new().with_transport(Box::new(make_transport()));
+        let t = make_transport().expect("W X Y\r", ":A 100.5 200.3");
+        let mut s = ConixXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         let (x, y) = s.get_xy_position_um().unwrap();
         assert!((x - 100.5).abs() < 1e-6);
@@ -217,7 +233,7 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = make_transport().any(":A");
+        let t = make_transport().any(":A").expect("W X Y\r", ":A 300 400");
         let mut s = ConixXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_xy_position_um(300.0, 400.0).unwrap();
@@ -230,7 +246,7 @@ mod tests {
         let mut s = ConixXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.home().unwrap();
-        assert_eq!(s.get_xy_position_um().unwrap(), (0.0, 0.0));
+        assert_eq!((s.x_um, s.y_um), (0.0, 0.0));
     }
 
     #[test]
@@ -252,5 +268,35 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(ConixXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn busy_polls_status_shortcut() {
+        let t = make_transport().expect("/\r", "B");
+        let mut s = ConixXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
+    }
+
+    #[test]
+    fn get_position_queries_live_position() {
+        let t = make_transport().expect("W X Y\r", ":A 7 8");
+        let mut s = ConixXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (7.0, 8.0));
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected() {
+        let t = make_transport();
+        let mut s = ConixXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s
+            .set_property("Port", PropertyValue::String("COM2".to_string()))
+            .is_err());
+        assert_eq!(
+            s.get_property("Port").unwrap(),
+            PropertyValue::String("Undefined".to_string())
+        );
     }
 }

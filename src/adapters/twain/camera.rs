@@ -1,4 +1,5 @@
 use std::ffi::{CStr, CString};
+use std::ptr::NonNull;
 
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
@@ -7,9 +8,8 @@ use crate::types::{DeviceType, ImageRoi, PropertyValue};
 
 use super::ffi;
 
-// SAFETY: TwainCamera holds a raw pointer to TwainCtx.  TWAIN's Win32 message
-// routing requires all calls to happen on the same thread; `&mut self` enforces
-// single-thread access.
+// SAFETY: TWAIN's Win32 message routing requires all calls to happen on the
+// same thread; `&mut self` enforces single-thread access.
 unsafe impl Send for TwainCamera {}
 
 const BUF: usize = 4096;
@@ -22,7 +22,7 @@ fn cstr(s: &str) -> CString {
 
 pub struct TwainCamera {
     props: PropertyMap,
-    ctx: *mut ffi::TwainCtx,
+    ctx: Option<NonNull<ffi::TwainCtx>>,
 
     // Pre-init
     source_name: String, // empty = default source
@@ -35,8 +35,11 @@ pub struct TwainCamera {
     img_height: u32,
     bytes_per_pixel: u32,
     bit_depth: u32,
+    image_buf: Vec<u8>,
 
     capturing: bool,
+    sequence_count: i64,
+    sequence_interval_ms: f64,
 }
 
 impl TwainCamera {
@@ -86,7 +89,7 @@ impl TwainCamera {
 
         Self {
             props,
-            ctx: std::ptr::null_mut(),
+            ctx: None,
             source_name: String::new(),
             exposure_ms: 10.0,
             pixel_type: "32bitRGB".into(),
@@ -95,26 +98,31 @@ impl TwainCamera {
             img_height: 0,
             bytes_per_pixel: 1,
             bit_depth: 8,
+            image_buf: Vec::new(),
             capturing: false,
+            sequence_count: 0,
+            sequence_interval_ms: 0.0,
         }
     }
 
     fn check_open(&self) -> MmResult<()> {
-        if self.ctx.is_null() {
+        if self.ctx.is_none() {
             Err(MmError::NotConnected)
         } else {
             Ok(())
         }
     }
 
+    fn ctx_ptr(&self) -> MmResult<*mut ffi::TwainCtx> {
+        self.ctx.map(NonNull::as_ptr).ok_or(MmError::NotConnected)
+    }
+
     fn sync_dims(&mut self) {
-        if self.ctx.is_null() {
-            return;
-        }
-        self.img_width = unsafe { ffi::twain_get_image_width(self.ctx) } as u32;
-        self.img_height = unsafe { ffi::twain_get_image_height(self.ctx) } as u32;
-        self.bytes_per_pixel = unsafe { ffi::twain_get_bytes_per_pixel(self.ctx) } as u32;
-        self.bit_depth = unsafe { ffi::twain_get_bit_depth(self.ctx) } as u32;
+        let Ok(ctx) = self.ctx_ptr() else { return };
+        self.img_width = unsafe { ffi::twain_get_image_width(ctx) } as u32;
+        self.img_height = unsafe { ffi::twain_get_image_height(ctx) } as u32;
+        self.bytes_per_pixel = unsafe { ffi::twain_get_bytes_per_pixel(ctx) } as u32;
+        self.bit_depth = unsafe { ffi::twain_get_bit_depth(ctx) } as u32;
 
         self.props
             .entry_mut("Width")
@@ -145,9 +153,8 @@ impl Default for TwainCamera {
 
 impl Drop for TwainCamera {
     fn drop(&mut self) {
-        if !self.ctx.is_null() {
-            unsafe { ffi::twain_close(self.ctx) };
-            self.ctx = std::ptr::null_mut();
+        if let Some(ctx) = self.ctx.take() {
+            unsafe { ffi::twain_close(ctx.as_ptr()) };
         }
         unsafe { ffi::twain_close_dsm() };
     }
@@ -164,7 +171,7 @@ impl Device for TwainCamera {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if !self.ctx.is_null() {
+        if self.ctx.is_some() {
             return Ok(());
         }
 
@@ -202,21 +209,21 @@ impl Device for TwainCamera {
             unsafe { ffi::twain_open(name_cstr.as_ptr()) }
         };
 
-        if ptr.is_null() {
-            return Err(MmError::LocallyDefined(format!(
+        let ctx = NonNull::new(ptr).ok_or_else(|| {
+            MmError::LocallyDefined(format!(
                 "TWAIN: failed to open source '{}'",
                 if self.source_name.is_empty() {
                     "<default>"
                 } else {
                     &self.source_name
                 }
-            )));
-        }
-        self.ctx = ptr;
+            ))
+        })?;
+        self.ctx = Some(ctx);
 
         // Record which source was actually opened.
         let opened_name = unsafe {
-            CStr::from_ptr(ffi::twain_get_source_name(self.ctx))
+            CStr::from_ptr(ffi::twain_get_source_name(ctx.as_ptr()))
                 .to_string_lossy()
                 .into_owned()
         };
@@ -229,9 +236,8 @@ impl Device for TwainCamera {
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if !self.ctx.is_null() {
-            unsafe { ffi::twain_close(self.ctx) };
-            self.ctx = std::ptr::null_mut();
+        if let Some(ctx) = self.ctx.take() {
+            unsafe { ffi::twain_close(ctx.as_ptr()) };
         }
         unsafe { ffi::twain_close_dsm() };
         Ok(())
@@ -251,7 +257,7 @@ impl Device for TwainCamera {
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "TwainCamera" => {
-                if !self.ctx.is_null() {
+                if self.ctx.is_some() {
                     return Err(MmError::LocallyDefined(
                         "TwainCamera cannot be changed after initialize()".into(),
                     ));
@@ -278,6 +284,10 @@ impl Device for TwainCamera {
                 Ok(())
             }
             "vendor settings" => {
+                let requested = val.as_str();
+                if requested != "Show" && requested != "Hide" {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 // Upstream resets this action property to Hide after a Show request.
                 self.props.set(name, PropertyValue::String("Hide".into()))
             }
@@ -308,29 +318,34 @@ impl Camera for TwainCamera {
     fn snap_image(&mut self) -> MmResult<()> {
         self.check_open()?;
         let timeout = self.snap_timeout_ms();
-        let rc = unsafe { ffi::twain_snap(self.ctx, timeout) };
+        let ctx = self.ctx_ptr()?;
+        let rc = unsafe { ffi::twain_snap(ctx, timeout) };
         if rc != 0 {
             return Err(MmError::SnapImageFailed);
         }
         self.sync_dims();
+        let ptr = unsafe { ffi::twain_get_frame_ptr(ctx) };
+        if ptr.is_null() {
+            return Err(MmError::LocallyDefined("No image captured yet".into()));
+        }
+        let bytes = unsafe { ffi::twain_get_frame_bytes(ctx) } as usize;
+        if bytes == 0 {
+            return Err(MmError::LocallyDefined("No image captured yet".into()));
+        }
+        self.image_buf.clear();
+        self.image_buf
+            .extend_from_slice(unsafe { std::slice::from_raw_parts(ptr, bytes) });
         Ok(())
     }
 
     fn get_image_buffer(&self) -> MmResult<&[u8]> {
-        if self.ctx.is_null() {
+        if self.ctx.is_none() {
             return Err(MmError::NotConnected);
         }
-        let ptr = unsafe { ffi::twain_get_frame_ptr(self.ctx) };
-        if ptr.is_null() {
+        if self.image_buf.is_empty() {
             return Err(MmError::LocallyDefined("No image captured yet".into()));
         }
-        let bytes = unsafe { ffi::twain_get_frame_bytes(self.ctx) } as usize;
-        if bytes == 0 {
-            return Err(MmError::LocallyDefined("No image captured yet".into()));
-        }
-        // SAFETY: ptr points into the shim's internal buffer which lives for
-        // the duration of ctx; borrowed with the same lifetime as &self.
-        Ok(unsafe { std::slice::from_raw_parts(ptr, bytes) })
+        Ok(&self.image_buf)
     }
 
     fn get_image_width(&self) -> u32 {
@@ -387,16 +402,24 @@ impl Camera for TwainCamera {
         Ok(())
     }
 
-    fn start_sequence_acquisition(&mut self, _count: i64, _interval_ms: f64) -> MmResult<()> {
+    fn start_sequence_acquisition(&mut self, count: i64, interval_ms: f64) -> MmResult<()> {
         self.check_open()?;
-        // TWAIN has no native continuous mode; flag capturing and let the
-        // caller drive frame-by-frame via snap_image().
+        if self.capturing {
+            return Err(MmError::CameraBusyAcquiring);
+        }
+        // TWAIN acquisition is driven by the adapter thread upstream.  This
+        // shim does not own a Core callback, so it records the bounded sequence
+        // state and lets callers drive frames through snap_image().
+        self.sequence_count = count;
+        self.sequence_interval_ms = self.exposure_ms.max(interval_ms);
         self.capturing = true;
         Ok(())
     }
 
     fn stop_sequence_acquisition(&mut self) -> MmResult<()> {
         self.capturing = false;
+        self.sequence_count = 0;
+        self.sequence_interval_ms = 0.0;
         Ok(())
     }
 
@@ -456,6 +479,16 @@ mod tests {
     }
 
     #[test]
+    fn image_buffer_is_owned_rust_storage_after_snap_copy() {
+        let mut d = TwainCamera::new();
+        d.ctx = Some(NonNull::<ffi::TwainCtx>::dangling());
+        d.image_buf = vec![1, 2, 3, 4];
+
+        assert_eq!(d.get_image_buffer().unwrap(), &[1, 2, 3, 4]);
+        d.ctx = None;
+    }
+
+    #[test]
     fn initialize_no_dsm_fails() {
         let mut d = TwainCamera::new();
         // No TWAIN DSM present on this system — expect an error.
@@ -491,6 +524,9 @@ mod tests {
             d.get_property("vendor settings").unwrap(),
             PropertyValue::String("Hide".into())
         );
+        assert!(d
+            .set_property("vendor settings", PropertyValue::String("Maybe".into()))
+            .is_err());
     }
 
     #[test]
@@ -515,5 +551,26 @@ mod tests {
     fn timeout_at_least_30s() {
         let d = TwainCamera::new();
         assert!(d.snap_timeout_ms() >= 30_000);
+    }
+
+    #[test]
+    fn sequence_state_rejects_duplicate_start_and_records_actual_interval() {
+        let mut d = TwainCamera::new();
+        d.ctx = Some(NonNull::<ffi::TwainCtx>::dangling());
+        d.set_exposure(25.0);
+
+        d.start_sequence_acquisition(3, 10.0).unwrap();
+        assert!(d.is_capturing());
+        assert_eq!(d.sequence_count, 3);
+        assert_eq!(d.sequence_interval_ms, 25.0);
+        assert_eq!(
+            d.start_sequence_acquisition(1, 1.0).unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+
+        d.stop_sequence_acquisition().unwrap();
+        assert!(!d.is_capturing());
+        assert_eq!(d.sequence_count, 0);
+        d.ctx = None;
     }
 }

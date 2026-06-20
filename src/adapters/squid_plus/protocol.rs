@@ -26,6 +26,7 @@ pub const CMD_MOVETO_Z: u8 = 0x08;
 pub const CMD_TURN_ON_ILLUMINATION: u8 = 0x0A;
 pub const CMD_TURN_OFF_ILLUMINATION: u8 = 0x0B;
 pub const CMD_SET_ILLUMINATION: u8 = 0x0C;
+pub const CMD_SET_MAX_VELOCITY_ACCELERATION: u8 = 0x16;
 
 // Axis identifiers
 pub const AXIS_X: u8 = 0;
@@ -125,6 +126,29 @@ pub fn build_home_xy(cmd_id: u8, mode_x: u8, mode_y: u8) -> [u8; CMD_LENGTH] {
 /// Build a HOME_OR_ZERO command for the W axis (convenience wrapper).
 pub fn build_home_w(cmd_id: u8) -> [u8; CMD_LENGTH] {
     build_home(cmd_id, AXIS_W, HOME_NEGATIVE)
+}
+
+/// Build SET_MAX_VELOCITY_ACCELERATION.
+///
+/// Velocity is encoded as mm/s * 100; acceleration as mm/s^2 * 10.
+pub fn build_set_max_velocity_acceleration(
+    cmd_id: u8,
+    axis: u8,
+    max_velocity_mm_s: f64,
+    acceleration_mm_s2: f64,
+) -> [u8; CMD_LENGTH] {
+    let velocity = (max_velocity_mm_s.clamp(0.0, 655.35) * 100.0) as u16;
+    let acceleration = (acceleration_mm_s2.clamp(0.0, 6553.5) * 10.0) as u16;
+    let mut pkt = [0u8; CMD_LENGTH];
+    pkt[0] = cmd_id;
+    pkt[1] = CMD_SET_MAX_VELOCITY_ACCELERATION;
+    pkt[2] = axis;
+    pkt[3] = (velocity >> 8) as u8;
+    pkt[4] = (velocity & 0xFF) as u8;
+    pkt[5] = (acceleration >> 8) as u8;
+    pkt[6] = (acceleration & 0xFF) as u8;
+    pkt[7] = crc8(&pkt[..7]);
+    pkt
 }
 
 /// Build TURN_ON_ILLUMINATION command.
@@ -268,5 +292,18 @@ mod tests {
         let pkt = build_home(0, AXIS_X, ZERO);
         assert_eq!(pkt[2], AXIS_X);
         assert_eq!(pkt[3], ZERO);
+    }
+
+    #[test]
+    fn max_velocity_acceleration_packet() {
+        let pkt = build_set_max_velocity_acceleration(9, AXIS_X, 25.0, 500.0);
+        assert_eq!(pkt[0], 9);
+        assert_eq!(pkt[1], CMD_SET_MAX_VELOCITY_ACCELERATION);
+        assert_eq!(pkt[2], AXIS_X);
+        assert_eq!(pkt[3], 0x09);
+        assert_eq!(pkt[4], 0xC4);
+        assert_eq!(pkt[5], 0x13);
+        assert_eq!(pkt[6], 0x88);
+        assert_eq!(pkt[7], crc8(&pkt[..7]));
     }
 }

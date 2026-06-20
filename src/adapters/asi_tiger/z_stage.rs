@@ -29,7 +29,26 @@ impl AsiTigerZStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
+            .unwrap();
+        props
+            .define_property(
+                "FirmwareVersion",
+                PropertyValue::String(String::new()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("FirmwareBuild", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("HexAddress", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("AxisDirection", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .set_allowed_values("AxisDirection", &["1", "-1"])
             .unwrap();
         Self {
             props,
@@ -58,6 +77,7 @@ impl AsiTigerZStage {
     fn cmd(&self, command: &str) -> MmResult<String> {
         let full = format!("{}\r", command);
         self.call_transport(|t| {
+            t.purge()?;
             let r = t.send_recv(&full)?;
             Ok(r.trim().to_string())
         })
@@ -135,7 +155,10 @@ impl Device for AsiTigerZStage {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -188,7 +211,9 @@ impl Stage for AsiTigerZStage {
     }
 
     fn get_limits(&self) -> MmResult<(f64, f64)> {
-        Err(MmError::UnsupportedCommand)
+        let min = Self::parse_after_equals(&self.cmd_ok("SL Z?")?)? * 1000.0;
+        let max = Self::parse_after_equals(&self.cmd_ok("SU Z?")?)? * 1000.0;
+        Ok((min, max))
     }
 
     fn get_focus_direction(&self) -> FocusDirection {
@@ -270,11 +295,13 @@ mod tests {
             .expect("VB Z=1\r", ":A")
             .expect("W Z\r", ":A 0")
             .expect("! Z\r", ":A")
-            .expect("halt\r", ":A");
+            .expect("halt\r", ":A")
+            .expect("SL Z?\r", ":A Z=-0.25")
+            .expect("SU Z?\r", ":A Z=1.5");
         let mut s = AsiTigerZStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.home().unwrap();
         s.stop().unwrap();
-        assert_eq!(s.get_limits().unwrap_err(), MmError::UnsupportedCommand);
+        assert_eq!(s.get_limits().unwrap(), (-250.0, 1500.0));
     }
 }

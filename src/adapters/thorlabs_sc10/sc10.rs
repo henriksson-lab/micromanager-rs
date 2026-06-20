@@ -14,12 +14,13 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 pub struct ThorlabsSC10 {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
-    is_open: bool,
+    is_open: Cell<bool>,
 }
 
 impl ThorlabsSC10 {
@@ -30,38 +31,44 @@ impl ThorlabsSC10 {
             .unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
-            is_open: false,
+            is_open: Cell::new(false),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
     /// Send a command and receive the reply (echo-stripped).
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let cmd = command.to_string();
         self.call_transport(|t| {
-            let resp = t.send_recv(&cmd)?;
+            t.purge()?;
+            t.send(&format!("{}\r", cmd))?;
+            let resp = t.receive_line()?;
             Self::strip_echo(&cmd, &resp)
         })
     }
 
     fn strip_echo(command: &str, response: &str) -> MmResult<String> {
-        let mut answer = response.trim().trim_end_matches('>').trim().to_string();
+        let trimmed = response.trim();
+        let Some(without_prompt) = trimmed.strip_suffix('>') else {
+            return Err(MmError::SerialCommandFailed);
+        };
+        let mut answer = without_prompt.trim().to_string();
         if let Some(rest) = answer.strip_prefix(command) {
             answer = rest
                 .trim_start_matches(['\r', '\n', ' '])
@@ -83,10 +90,10 @@ impl ThorlabsSC10 {
         Ok(answer)
     }
 
-    fn query_open(&mut self) -> MmResult<bool> {
+    fn query_open(&self) -> MmResult<bool> {
         let answer = self.cmd("ens?")?;
         let open = answer.trim().parse::<i64>().unwrap_or(0) != 0;
-        self.is_open = open;
+        self.is_open.set(open);
         Ok(open)
     }
 }
@@ -107,7 +114,7 @@ impl Device for ThorlabsSC10 {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
         // Query device identity (retry once if the first attempt fails, per C++ original)
@@ -179,14 +186,12 @@ impl Shutter for ThorlabsSC10 {
         if current != open {
             let _ = self.cmd("ens")?;
         }
-        self.is_open = open;
+        self.is_open.set(open);
         Ok(())
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        // We return the cached state; a live query would call self.cmd("ens?")
-        // but get_open takes &self so we return cached.
-        Ok(self.is_open)
+        self.query_open()
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
@@ -202,8 +207,8 @@ mod tests {
     fn make_device() -> ThorlabsSC10 {
         // init: *idn? → "SC10 ver1.0", mode=1 → "1"
         let t = MockTransport::new()
-            .expect("*idn?", "*idn?\rSC10 ver1.0")
-            .expect("mode=1", "mode=1\r1");
+            .expect("*idn?\r", "*idn?\rSC10 ver1.0>")
+            .expect("mode=1\r", "mode=1\r1>");
         ThorlabsSC10::new().with_transport(Box::new(t))
     }
 
@@ -229,10 +234,11 @@ mod tests {
     #[test]
     fn set_open_toggles_once() {
         let t = MockTransport::new()
-            .expect("*idn?", "*idn?\rSC10 ver1.0")
-            .expect("mode=1", "mode=1\r1")
-            .expect("ens?", "ens?\r0")
-            .expect("ens", "ens\r1"); // one toggle to open
+            .expect("*idn?\r", "*idn?\rSC10 ver1.0>")
+            .expect("mode=1\r", "mode=1\r1>")
+            .expect("ens?\r", "ens?\r0>")
+            .expect("ens\r", "ens\r1>")
+            .expect("ens?\r", "ens?\r1>");
         let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         // Initially closed; opening sends "ens"
@@ -244,9 +250,10 @@ mod tests {
     fn set_open_no_toggle_if_same_state() {
         // No "ens" command expected beyond init
         let t = MockTransport::new()
-            .expect("*idn?", "*idn?\rSC10 ver1.0")
-            .expect("mode=1", "mode=1\r1")
-            .expect("ens?", "ens?\r0");
+            .expect("*idn?\r", "*idn?\rSC10 ver1.0>")
+            .expect("mode=1\r", "mode=1\r1>")
+            .expect("ens?\r", "ens?\r0>")
+            .expect("ens?\r", "ens?\r0>");
         let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         // Already closed; closing again should not send "ens"
@@ -257,8 +264,9 @@ mod tests {
     #[test]
     fn fire_is_unsupported_like_upstream() {
         let t = MockTransport::new()
-            .expect("*idn?", "*idn?\rSC10 ver1.0")
-            .expect("mode=1", "mode=1\r1");
+            .expect("*idn?\r", "*idn?\rSC10 ver1.0>")
+            .expect("mode=1\r", "mode=1\r1>")
+            .expect("ens?\r", "ens?\r0>");
         let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         assert_eq!(d.fire(10.0).unwrap_err(), MmError::UnsupportedCommand);
@@ -279,9 +287,9 @@ mod tests {
     #[test]
     fn command_property_stores_answer() {
         let t = MockTransport::new()
-            .expect("*idn?", "*idn?\rSC10 ver1.0")
-            .expect("mode=1", "mode=1\r1")
-            .expect("ens?", "ens?\r0");
+            .expect("*idn?\r", "*idn?\rSC10 ver1.0>")
+            .expect("mode=1\r", "mode=1\r1>")
+            .expect("ens?\r", "ens?\r0>");
         let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         d.set_property("SC10 Command:", PropertyValue::String("ens?".into()))
@@ -295,9 +303,9 @@ mod tests {
     #[test]
     fn command_property_strips_echo_and_prompt() {
         let t = MockTransport::new()
-            .expect("*idn?", "*idn?\rSC10 ver1.0>")
-            .expect("mode=1", "mode=1\r1>")
-            .expect("ens?", " ens?\r0>");
+            .expect("*idn?\r", "*idn?\rSC10 ver1.0>")
+            .expect("mode=1\r", "mode=1\r1>")
+            .expect("ens?\r", " ens?\r0>");
         let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         d.set_property("SC10 Command:", PropertyValue::String("ens?".into()))
@@ -311,9 +319,9 @@ mod tests {
     #[test]
     fn command_property_rejects_missing_echo() {
         let t = MockTransport::new()
-            .expect("*idn?", "*idn?\rSC10 ver1.0")
-            .expect("mode=1", "mode=1\r1")
-            .expect("ens?", "0");
+            .expect("*idn?\r", "*idn?\rSC10 ver1.0>")
+            .expect("mode=1\r", "mode=1\r1>")
+            .expect("ens?\r", "0");
         let mut d = ThorlabsSC10::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         assert_eq!(

@@ -17,7 +17,7 @@
 ///                               "Laser Operation Time = X Hours" + empty line
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Device, Shutter};
+use crate::traits::{Device, Generic, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
@@ -29,6 +29,7 @@ pub struct LaserQuantumLaser {
     power_mw: f64,
     current_pct: f64,
     max_power_mw: f64,
+    control_mode: String,
 }
 
 impl LaserQuantumLaser {
@@ -45,7 +46,7 @@ impl LaserQuantumLaser {
             .unwrap();
         props.set_property_limits("Power (mW)", 0.0, 500.0).unwrap();
         props
-            .define_property("Current (%)", PropertyValue::Integer(0), false)
+            .define_property("Current (%)", PropertyValue::Integer(0), true)
             .unwrap();
         props
             .set_property_limits("Current (%)", 0.0, 100.0)
@@ -94,6 +95,7 @@ impl LaserQuantumLaser {
             power_mw: 0.0,
             current_pct: 0.0,
             max_power_mw: 500.0,
+            control_mode: "Power".into(),
         }
     }
 
@@ -116,7 +118,13 @@ impl LaserQuantumLaser {
         let cmd = format!("{}\r", command);
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
-            Ok(resp.trim().to_string())
+            let resp = resp.trim().to_string();
+            if resp.to_ascii_uppercase().contains("ERROR") {
+                return Err(MmError::LocallyDefined(format!(
+                    "LaserQuantum returned error response: {resp}"
+                )));
+            }
+            Ok(resp)
         })
     }
 
@@ -132,6 +140,21 @@ impl LaserQuantumLaser {
             .find(|c: char| c != '.' && c != '-' && !c.is_ascii_digit())
             .unwrap_or(numeric.len());
         numeric[..end].parse().unwrap_or(0.0)
+    }
+
+    fn set_control_mode_cache(&mut self, mode: &str) {
+        self.control_mode = mode.into();
+        self.props
+            .entry_mut("Control mode")
+            .map(|e| e.value = PropertyValue::String(mode.into()));
+
+        let power_mode = mode == "Power";
+        if let Some(entry) = self.props.entry_mut("Power (mW)") {
+            entry.read_only = !power_mode;
+        }
+        if let Some(entry) = self.props.entry_mut("Current (%)") {
+            entry.read_only = power_mode;
+        }
     }
 }
 
@@ -178,9 +201,7 @@ impl Device for LaserQuantumLaser {
         } else {
             "Power"
         };
-        self.props
-            .entry_mut("Control mode")
-            .map(|e| e.value = PropertyValue::String(mode.into()));
+        self.set_control_mode_cache(mode);
 
         // Timers (4 responses: 3 data lines + empty)
         if let Ok(line1) = self.cmd("TIMERS?") {
@@ -234,6 +255,7 @@ impl Device for LaserQuantumLaser {
         match name {
             "Power (mW)" => Ok(PropertyValue::Float(self.power_mw)),
             "Current (%)" => Ok(PropertyValue::Integer(self.current_pct as i64)),
+            "Control mode" => Ok(PropertyValue::String(self.control_mode.clone())),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -241,6 +263,9 @@ impl Device for LaserQuantumLaser {
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "Power (mW)" => {
+                if self.control_mode != "Power" {
+                    return Err(MmError::CanNotSetProperty);
+                }
                 let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 if !(0.0..=self.max_power_mw).contains(&mw) {
                     return Err(MmError::InvalidPropertyValue);
@@ -265,6 +290,9 @@ impl Device for LaserQuantumLaser {
                 self.props.set(name, PropertyValue::Float(max_power))
             }
             "Current (%)" => {
+                if self.control_mode != "Current" {
+                    return Err(MmError::CanNotSetProperty);
+                }
                 let pct = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 if !(0.0..=100.0).contains(&pct) {
                     return Err(MmError::InvalidPropertyValue);
@@ -288,7 +316,9 @@ impl Device for LaserQuantumLaser {
                 if self.initialized {
                     self.cmd(&format!("CONTROL={}", cmd_mode))?;
                 }
-                self.props.set(name, PropertyValue::String(mode))
+                self.props.set(name, PropertyValue::String(mode.clone()))?;
+                self.set_control_mode_cache(&mode);
+                Ok(())
             }
             "Laser Operation" => {
                 let operation = val.as_str().to_string();
@@ -346,6 +376,8 @@ impl Shutter for LaserQuantumLaser {
     }
 }
 
+impl Generic for LaserQuantumLaser {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +426,12 @@ mod tests {
         assert!(!dev.has_property("PowerSetpoint_mW"));
         assert!(!dev.has_property("Current_pct"));
         assert!(!dev.has_property("ControlMode"));
+        assert_eq!(
+            dev.get_property("Control mode").unwrap(),
+            PropertyValue::String("Power".into())
+        );
+        assert!(!dev.is_property_read_only("Power (mW)"));
+        assert!(dev.is_property_read_only("Current (%)"));
     }
 
     #[test]
@@ -418,6 +456,41 @@ mod tests {
     }
 
     #[test]
+    fn control_mode_gates_power_and_current_setters() {
+        let mut dev = LaserQuantumLaser::new();
+        assert_eq!(
+            dev.set_property("Current (%)", PropertyValue::Float(50.0)),
+            Err(MmError::CanNotSetProperty)
+        );
+        dev.set_property("Control mode", PropertyValue::String("Current".into()))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("Control mode").unwrap(),
+            PropertyValue::String("Current".into())
+        );
+        assert!(dev.is_property_read_only("Power (mW)"));
+        assert!(!dev.is_property_read_only("Current (%)"));
+        assert_eq!(
+            dev.set_property("Power (mW)", PropertyValue::Float(50.0)),
+            Err(MmError::CanNotSetProperty)
+        );
+        dev.set_property("Current (%)", PropertyValue::Float(50.0))
+            .unwrap();
+    }
+
+    #[test]
+    fn command_error_response_does_not_update_cached_setpoint() {
+        let t = make_transport().expect("POWER=80.0000\r", "ERROR 1");
+        let mut dev = LaserQuantumLaser::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert!(dev
+            .set_property("Power (mW)", PropertyValue::Float(80.0))
+            .is_err());
+        assert_eq!(dev.power_mw, 50.0);
+    }
+
+    #[test]
     fn maximum_power_limits_power_property() {
         let mut dev = LaserQuantumLaser::new();
         let entry = dev.props.entry("Power (mW)").unwrap();
@@ -439,6 +512,7 @@ mod tests {
     #[test]
     fn current_property_rejects_out_of_range_values() {
         let mut dev = LaserQuantumLaser::new();
+        dev.set_control_mode_cache("Current");
         assert_eq!(
             dev.set_property("Current (%)", PropertyValue::Float(101.0)),
             Err(MmError::InvalidPropertyValue)

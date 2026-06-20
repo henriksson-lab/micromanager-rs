@@ -17,26 +17,37 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Generic};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 pub struct ThorlabsTSP01 {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     /// Cached internal temperature (°C)
-    temp_internal: f64,
+    temp_internal: Cell<f64>,
     /// Cached humidity (%)
-    humidity: f64,
+    humidity: Cell<f64>,
     /// Cached probe 1 temperature (°C)
-    temp_probe1: f64,
+    temp_probe1: Cell<f64>,
     /// Cached probe 2 temperature (°C)
-    temp_probe2: f64,
+    temp_probe2: Cell<f64>,
 }
 
 impl ThorlabsTSP01 {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Thermometer", PropertyValue::String("ThorlabsTSP01".into()))
+            .unwrap();
+        props
+            .set_allowed_values("Thermometer", &["ThorlabsTSP01"])
+            .unwrap();
+        props
+            .define_property(
+                "Sensor Serial Number",
+                PropertyValue::String(String::new()),
+                true,
+            )
             .unwrap();
         props
             .define_property("USBDeviceTemp", PropertyValue::Float(24.0), true)
@@ -53,31 +64,31 @@ impl ThorlabsTSP01 {
 
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
-            temp_internal: 24.0,
-            humidity: 50.0,
-            temp_probe1: 24.0,
-            temp_probe2: 24.0,
+            temp_internal: Cell::new(24.0),
+            humidity: Cell::new(50.0),
+            temp_probe1: Cell::new(24.0),
+            temp_probe2: Cell::new(24.0),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let cmd = command.to_string();
         self.call_transport(|t| Ok(t.send_recv(&cmd)?.trim().to_string()))
     }
@@ -89,19 +100,53 @@ impl ThorlabsTSP01 {
 
     /// Read all sensor values and cache them.
     pub fn poll(&mut self) -> MmResult<()> {
+        self.poll_update_once().map(|_| ())
+    }
+
+    /// Run one synchronous pass of the upstream background polling loop.
+    pub fn poll_update_once(&self) -> MmResult<bool> {
+        let old_internal = self.temp_internal.get();
+        let old_humidity = self.humidity.get();
+        let old_probe1 = self.temp_probe1.get();
+        let old_probe2 = self.temp_probe2.get();
+
+        let internal = self.read_internal_temp()?;
+        let humidity = self.read_humidity()?;
+        let probe1 = self.read_probe1_temp()?;
+        let probe2 = self.read_probe2_temp()?;
+
+        Ok(internal != old_internal
+            || humidity != old_humidity
+            || probe1 != old_probe1
+            || probe2 != old_probe2)
+    }
+
+    fn read_internal_temp(&self) -> MmResult<f64> {
         let t = self.cmd("SENS:TEMP:INT?")?;
-        self.temp_internal = Self::parse_float(&t, "internal temp")?;
+        let val = Self::parse_float(&t, "internal temp")?;
+        self.temp_internal.set(val);
+        Ok(val)
+    }
 
+    fn read_humidity(&self) -> MmResult<f64> {
         let h = self.cmd("SENS:HUM?")?;
-        self.humidity = Self::parse_float(&h, "humidity")?;
+        let val = Self::parse_float(&h, "humidity")?;
+        self.humidity.set(val);
+        Ok(val)
+    }
 
+    fn read_probe1_temp(&self) -> MmResult<f64> {
         let p1 = self.cmd("SENS:TEMP:EXT1?")?;
-        self.temp_probe1 = Self::parse_float(&p1, "probe1 temp")?;
+        let val = Self::parse_float(&p1, "probe1 temp")?;
+        self.temp_probe1.set(val);
+        Ok(val)
+    }
 
+    fn read_probe2_temp(&self) -> MmResult<f64> {
         let p2 = self.cmd("SENS:TEMP:EXT2?")?;
-        self.temp_probe2 = Self::parse_float(&p2, "probe2 temp")?;
-
-        Ok(())
+        let val = Self::parse_float(&p2, "probe2 temp")?;
+        self.temp_probe2.set(val);
+        Ok(val)
     }
 }
 
@@ -121,31 +166,39 @@ impl Device for ThorlabsTSP01 {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
-        let _idn = self.cmd("*IDN?")?;
+        let idn = self.cmd("*IDN?")?;
+        let serial = idn.split(',').nth(2).unwrap_or("").trim().to_string();
+        if let Some(entry) = self.props.entry_mut("Sensor Serial Number") {
+            entry.value = PropertyValue::String(serial);
+        }
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
         self.initialized = false;
+        self.transport.borrow_mut().take();
         Ok(())
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "USBDeviceTemp" => Ok(PropertyValue::Float(self.temp_internal)),
-            "USBDeviceHumidity" => Ok(PropertyValue::Float(self.humidity)),
-            "TempProbe1" => Ok(PropertyValue::Float(self.temp_probe1)),
-            "TempProbe2" => Ok(PropertyValue::Float(self.temp_probe2)),
+            "USBDeviceTemp" => Ok(PropertyValue::Float(self.read_internal_temp()?)),
+            "USBDeviceHumidity" => Ok(PropertyValue::Float(self.read_humidity()?)),
+            "TempProbe1" => Ok(PropertyValue::Float(self.read_probe1_temp()?)),
+            "TempProbe2" => Ok(PropertyValue::Float(self.read_probe2_temp()?)),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Thermometer" if self.initialized => Err(MmError::InvalidProperty),
+            _ => self.props.set(name, val),
+        }
     }
 
     fn property_names(&self) -> Vec<String> {
@@ -159,7 +212,11 @@ impl Device for ThorlabsTSP01 {
     fn is_property_read_only(&self, name: &str) -> bool {
         matches!(
             name,
-            "USBDeviceTemp" | "USBDeviceHumidity" | "TempProbe1" | "TempProbe2"
+            "USBDeviceTemp"
+                | "USBDeviceHumidity"
+                | "TempProbe1"
+                | "TempProbe2"
+                | "Sensor Serial Number"
         ) || self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
 
@@ -190,6 +247,11 @@ mod tests {
     fn initialize_succeeds() {
         let d = make_initialized();
         assert!(d.initialized);
+        assert!(d.has_property("Thermometer"));
+        assert_eq!(
+            d.get_property("Sensor Serial Number").unwrap(),
+            PropertyValue::String("M00123".into())
+        );
     }
 
     #[test]
@@ -208,23 +270,38 @@ mod tests {
         let mut d = ThorlabsTSP01::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         d.poll().unwrap();
-        assert!((d.temp_internal - 25.3).abs() < 0.01);
-        assert!((d.humidity - 55.1).abs() < 0.01);
-        assert!((d.temp_probe1 - 24.8).abs() < 0.01);
-        assert!((d.temp_probe2 - 23.9).abs() < 0.01);
+        assert!((d.temp_internal.get() - 25.3).abs() < 0.01);
+        assert!((d.humidity.get() - 55.1).abs() < 0.01);
+        assert!((d.temp_probe1.get() - 24.8).abs() < 0.01);
+        assert!((d.temp_probe2.get() - 23.9).abs() < 0.01);
     }
 
     #[test]
-    fn get_property_returns_cached() {
+    fn poll_update_once_reports_whether_values_changed() {
         let t = MockTransport::new()
             .expect("*IDN?", "Thorlabs,TSP01,M00123,1.0")
-            .expect("SENS:TEMP:INT?", "22.0")
-            .expect("SENS:HUM?", "45.0")
-            .expect("SENS:TEMP:EXT1?", "21.0")
-            .expect("SENS:TEMP:EXT2?", "20.0");
+            .expect("SENS:TEMP:INT?", "24.0")
+            .expect("SENS:HUM?", "50.0")
+            .expect("SENS:TEMP:EXT1?", "24.0")
+            .expect("SENS:TEMP:EXT2?", "24.0")
+            .expect("SENS:TEMP:INT?", "25.0")
+            .expect("SENS:HUM?", "50.0")
+            .expect("SENS:TEMP:EXT1?", "24.0")
+            .expect("SENS:TEMP:EXT2?", "24.0");
         let mut d = ThorlabsTSP01::new().with_transport(Box::new(t));
         d.initialize().unwrap();
-        d.poll().unwrap();
+        assert!(!d.poll_update_once().unwrap());
+        assert!(d.poll_update_once().unwrap());
+        assert!((d.temp_internal.get() - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn get_property_reads_live_value() {
+        let t = MockTransport::new()
+            .expect("*IDN?", "Thorlabs,TSP01,M00123,1.0")
+            .expect("SENS:TEMP:INT?", "22.0");
+        let mut d = ThorlabsTSP01::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
         let v = d.get_property("USBDeviceTemp").unwrap();
         if let PropertyValue::Float(f) = v {
             assert!((f - 22.0).abs() < 0.01);
@@ -240,6 +317,31 @@ mod tests {
         assert!(d.is_property_read_only("USBDeviceHumidity"));
         assert!(d.is_property_read_only("TempProbe1"));
         assert!(d.is_property_read_only("TempProbe2"));
+        assert!(d.is_property_read_only("Sensor Serial Number"));
+    }
+
+    #[test]
+    fn thermometer_selector_is_bounded_to_current_transport_resource() {
+        let d = ThorlabsTSP01::new();
+        let allowed = &d.props.entry("Thermometer").unwrap().allowed_values;
+        assert_eq!(allowed, &vec!["ThorlabsTSP01".to_string()]);
+    }
+
+    #[test]
+    fn initialized_thermometer_change_is_rejected() {
+        let mut d = make_initialized();
+        assert_eq!(
+            d.set_property("Thermometer", PropertyValue::String("other".into()))
+                .unwrap_err(),
+            MmError::InvalidProperty
+        );
+    }
+
+    #[test]
+    fn shutdown_closes_transport() {
+        let mut d = make_initialized();
+        d.shutdown().unwrap();
+        assert!(d.poll().is_err());
     }
 
     #[test]

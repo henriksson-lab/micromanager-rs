@@ -93,6 +93,9 @@ pub struct DahengCamera {
     binning: i32,
     capturing: bool,
     serial_number: String,
+    trigger_mode: String,
+    trigger_source: String,
+    trigger_activation: String,
 }
 
 impl DahengCamera {
@@ -112,6 +115,33 @@ impl DahengCamera {
             .unwrap();
         props
             .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props.set_allowed_values("Binning", &["1", "2"]).unwrap();
+        props
+            .define_property("TriggerMode", PropertyValue::String("Off".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("TriggerMode", &["Off", "On"])
+            .unwrap();
+        props
+            .define_property(
+                "TriggerSource",
+                PropertyValue::String("Software".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("TriggerSource", &["Software"])
+            .unwrap();
+        props
+            .define_property(
+                "TriggerActivation",
+                PropertyValue::String("RisingEdge".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("TriggerActivation", &["FallingEdge", "RisingEdge"])
             .unwrap();
         props
             .define_property("Width", PropertyValue::Integer(0), true)
@@ -134,6 +164,9 @@ impl DahengCamera {
             binning: 1,
             capturing: false,
             serial_number: String::new(),
+            trigger_mode: "Off".into(),
+            trigger_source: "Software".into(),
+            trigger_activation: "RisingEdge".into(),
         }
     }
 
@@ -168,6 +201,41 @@ impl DahengCamera {
     fn write_pixel_format(&self, fmt: i64) {
         unsafe {
             let _ = ffi::GXSetEnum(self.handle, ffi::GX_ENUM_PIXEL_FORMAT, fmt);
+        }
+    }
+
+    fn write_trigger_mode(&self) {
+        if self.handle.is_null() {
+            return;
+        }
+        let mode = if self.trigger_mode == "On" {
+            ffi::GX_TRIGGER_MODE_ON
+        } else {
+            ffi::GX_TRIGGER_MODE_OFF
+        };
+        unsafe {
+            let _ = ffi::GXSetEnum(self.handle, ffi::GX_ENUM_TRIGGER_MODE, mode);
+            if self.trigger_source == "Software" {
+                let _ = ffi::GXSetEnum(
+                    self.handle,
+                    ffi::GX_ENUM_TRIGGER_SOURCE,
+                    ffi::GX_TRIGGER_SOURCE_SOFTWARE,
+                );
+            }
+            let activation = if self.trigger_activation == "FallingEdge" {
+                ffi::GX_TRIGGER_ACTIVATION_FALLING_EDGE
+            } else {
+                ffi::GX_TRIGGER_ACTIVATION_RISING_EDGE
+            };
+            let _ = ffi::GXSetEnum(self.handle, ffi::GX_ENUM_TRIGGER_ACTIVATION, activation);
+        }
+    }
+
+    fn require_not_capturing(&self) -> MmResult<()> {
+        if self.capturing {
+            Err(MmError::CameraBusyAcquiring)
+        } else {
+            Ok(())
         }
     }
 
@@ -316,15 +384,6 @@ impl Device for DahengCamera {
             }
         }
 
-        // Disable trigger (free-running) for snap_image
-        unsafe {
-            let _ = ffi::GXSetEnum(
-                self.handle,
-                ffi::GX_ENUM_TRIGGER_MODE,
-                ffi::GX_TRIGGER_MODE_OFF,
-            );
-        }
-
         // Apply pre-init settings
         self.write_exposure(self.exposure_ms);
         let gain = self
@@ -336,6 +395,7 @@ impl Device for DahengCamera {
         self.write_gain(gain);
         self.write_binning(self.binning);
         self.write_pixel_format(self.pixel_format);
+        self.write_trigger_mode();
 
         // Clear ROI to full sensor
         self.clear_roi().ok();
@@ -384,6 +444,9 @@ impl Device for DahengCamera {
             )),
             "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
             "SerialNumber" => Ok(PropertyValue::String(self.serial_number.clone())),
+            "TriggerMode" => Ok(PropertyValue::String(self.trigger_mode.clone())),
+            "TriggerSource" => Ok(PropertyValue::String(self.trigger_source.clone())),
+            "TriggerActivation" => Ok(PropertyValue::String(self.trigger_activation.clone())),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -400,6 +463,7 @@ impl Device for DahengCamera {
                 self.props.set(name, val)
             }
             "Exposure(us)" => {
+                self.require_not_capturing()?;
                 let exposure_us = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.exposure_ms = exposure_us / 1000.0;
                 self.props.set(name, PropertyValue::Float(exposure_us))?;
@@ -409,6 +473,7 @@ impl Device for DahengCamera {
                 Ok(())
             }
             "Gain" => {
+                self.require_not_capturing()?;
                 let g = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, PropertyValue::Float(g))?;
                 if !self.handle.is_null() {
@@ -417,10 +482,12 @@ impl Device for DahengCamera {
                 Ok(())
             }
             "PixelType" => {
+                self.require_not_capturing()?;
                 let fmt_name = val.as_str().to_string();
-                self.pixel_format =
+                let pixel_format =
                     pixel_format_from_name(&fmt_name).ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, val)?;
+                self.pixel_format = pixel_format;
                 if !self.handle.is_null() {
                     self.write_pixel_format(self.pixel_format);
                 }
@@ -428,14 +495,40 @@ impl Device for DahengCamera {
                 Ok(())
             }
             "Binning" => {
-                self.binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
+                self.require_not_capturing()?;
+                let binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
                 self.props
-                    .set(name, PropertyValue::Integer(self.binning as i64))?;
+                    .set(name, PropertyValue::Integer(binning as i64))?;
+                self.binning = binning;
                 if !self.handle.is_null() {
                     self.write_binning(self.binning);
                 }
                 self.clear_roi().ok();
                 self.sync_dimensions();
+                Ok(())
+            }
+            "TriggerMode" => {
+                self.require_not_capturing()?;
+                let trigger_mode = val.as_str().to_string();
+                self.props.set(name, val)?;
+                self.trigger_mode = trigger_mode;
+                self.write_trigger_mode();
+                Ok(())
+            }
+            "TriggerSource" => {
+                self.require_not_capturing()?;
+                let trigger_source = val.as_str().to_string();
+                self.props.set(name, val)?;
+                self.trigger_source = trigger_source;
+                self.write_trigger_mode();
+                Ok(())
+            }
+            "TriggerActivation" => {
+                self.require_not_capturing()?;
+                let trigger_activation = val.as_str().to_string();
+                self.props.set(name, val)?;
+                self.trigger_activation = trigger_activation;
+                self.write_trigger_mode();
                 Ok(())
             }
             _ => self.props.set(name, val),
@@ -485,13 +578,8 @@ impl Camera for DahengCamera {
         let result = self.fetch_frame();
         unsafe {
             let _ = ffi::GXStreamOff(self.handle);
-            // Restore free-running mode
-            ffi::GXSetEnum(
-                self.handle,
-                ffi::GX_ENUM_TRIGGER_MODE,
-                ffi::GX_TRIGGER_MODE_OFF,
-            );
         }
+        self.write_trigger_mode();
         result
     }
 
@@ -526,6 +614,9 @@ impl Camera for DahengCamera {
     }
 
     fn set_exposure(&mut self, exp_ms: f64) {
+        if self.capturing {
+            return;
+        }
         self.exposure_ms = exp_ms;
         self.props
             .set("Exposure(us)", PropertyValue::Float(exp_ms * 1000.0))
@@ -540,9 +631,10 @@ impl Camera for DahengCamera {
     }
 
     fn set_binning(&mut self, bin: i32) -> MmResult<()> {
-        self.binning = bin;
+        self.require_not_capturing()?;
         self.props
             .set("Binning", PropertyValue::Integer(bin as i64))?;
+        self.binning = bin;
         if !self.handle.is_null() {
             self.write_binning(bin);
         }
@@ -566,6 +658,7 @@ impl Camera for DahengCamera {
     }
 
     fn set_roi(&mut self, roi: ImageRoi) -> MmResult<()> {
+        self.require_not_capturing()?;
         self.check_open()?;
         if roi.width == 0 && roi.height == 0 {
             return self.clear_roi();
@@ -582,6 +675,7 @@ impl Camera for DahengCamera {
     }
 
     fn clear_roi(&mut self) -> MmResult<()> {
+        self.require_not_capturing()?;
         if self.handle.is_null() {
             return Ok(());
         }
@@ -627,6 +721,7 @@ impl Camera for DahengCamera {
             }
         }
         self.capturing = false;
+        self.write_trigger_mode();
         Ok(())
     }
 
@@ -694,6 +789,34 @@ mod tests {
     }
 
     #[test]
+    fn trigger_properties_are_present() {
+        let mut d = DahengCamera::new();
+        d.set_property("TriggerMode", PropertyValue::String("On".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("TriggerMode").unwrap(),
+            PropertyValue::String("On".into())
+        );
+        assert_eq!(
+            d.get_property("TriggerSource").unwrap(),
+            PropertyValue::String("Software".into())
+        );
+        assert_eq!(
+            d.get_property("TriggerActivation").unwrap(),
+            PropertyValue::String("RisingEdge".into())
+        );
+        d.set_property(
+            "TriggerActivation",
+            PropertyValue::String("FallingEdge".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            d.get_property("TriggerActivation").unwrap(),
+            PropertyValue::String("FallingEdge".into())
+        );
+    }
+
+    #[test]
     fn no_image_before_snap() {
         let d = DahengCamera::new();
         assert!(d.get_image_buffer().is_err());
@@ -718,11 +841,77 @@ mod tests {
     }
 
     #[test]
+    fn invalid_allowed_values_do_not_mutate_cached_state() {
+        let mut d = DahengCamera::new();
+        assert!(d
+            .set_property("Binning", PropertyValue::Integer(3))
+            .is_err());
+        assert_eq!(d.get_binning(), 1);
+        assert!(d.set_binning(3).is_err());
+        assert_eq!(d.get_binning(), 1);
+        assert!(d
+            .set_property("TriggerMode", PropertyValue::String("Pulse".into()))
+            .is_err());
+        assert_eq!(
+            d.get_property("TriggerMode").unwrap(),
+            PropertyValue::String("Off".into())
+        );
+        assert!(d
+            .set_property("TriggerSource", PropertyValue::String("Line1".into()))
+            .is_err());
+        assert_eq!(
+            d.get_property("TriggerSource").unwrap(),
+            PropertyValue::String("Software".into())
+        );
+        assert!(d
+            .set_property("TriggerActivation", PropertyValue::String("AnyEdge".into()),)
+            .is_err());
+        assert_eq!(
+            d.get_property("TriggerActivation").unwrap(),
+            PropertyValue::String("RisingEdge".into())
+        );
+    }
+
+    #[test]
     fn zero_sized_roi_requires_connected_clear_path() {
         let mut d = DahengCamera::new();
         assert_eq!(
             d.set_roi(ImageRoi::new(0, 0, 0, 0)).unwrap_err(),
             MmError::NotConnected
+        );
+    }
+
+    #[test]
+    fn acquisition_rejects_setting_changes_before_state_mutation() {
+        let mut d = DahengCamera::new();
+        d.capturing = true;
+
+        assert_eq!(
+            d.set_property("Exposure(us)", PropertyValue::Float(25_000.0))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.get_exposure(), 10.0);
+        assert_eq!(
+            d.set_property("TriggerMode", PropertyValue::String("On".into()))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(
+            d.get_property("TriggerMode").unwrap(),
+            PropertyValue::String("Off".into())
+        );
+        assert_eq!(
+            d.set_property(
+                "TriggerActivation",
+                PropertyValue::String("FallingEdge".into()),
+            )
+            .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(
+            d.get_property("TriggerActivation").unwrap(),
+            PropertyValue::String("RisingEdge".into())
         );
     }
 }

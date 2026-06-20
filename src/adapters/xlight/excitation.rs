@@ -1,82 +1,52 @@
-/// CrestOptics X-Light excitation filter wheel.
-///
-/// 8 positions, 1-based on wire.
-/// Older firmware uses command letter 'E'; newer firmware uses 'A'.
-/// During initialize we first try `rE`, if the echo doesn't start with "rE"
-/// we fall back to `rA` and set `use_new_cmd = true`.
-/// Query:  `rE\r` or `rA\r` → echoes `rEN` or `rAN`
-/// Set:    `EN\r` or `AN\r` → echoes same
-use crate::error::{MmError, MmResult};
-use crate::property::PropertyMap;
+use super::common::{SharedXLightTransport, XLightSpec, XLightStateCore};
+use crate::error::MmResult;
 use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
+const LABELS: [&str; 8] = [
+    "Excitation-0",
+    "Excitation-1",
+    "Excitation-2",
+    "Excitation-3",
+    "Excitation-4",
+    "Excitation-5",
+    "Excitation-6",
+    "Excitation-7",
+];
+
+const SPEC: XLightSpec = XLightSpec {
+    name: "XLIGHT Excitation Wheel",
+    description: "XLIGHT Excitation Wheel Position",
+    query: "rE",
+    command: "E",
+    num_positions: 8,
+    one_based: true,
+    initial_position: 0,
+    labels: &LABELS,
+};
+
 pub struct XLightExcitation {
-    props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
-    initialized: bool,
-    position: u64,
-    num_positions: u64,
-    labels: Vec<String>,
-    gate_open: bool,
-    use_new_cmd: bool, // true → use 'A', false → use 'E'
+    core: XLightStateCore,
+    use_new_cmd: bool,
 }
 
 impl XLightExcitation {
     pub fn new() -> Self {
-        let num_positions: u64 = 8;
-        let labels = (0..num_positions)
-            .map(|i| format!("Excitation-{}", i))
-            .collect();
-        let mut props = PropertyMap::new();
-        props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
-            .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props
-            .define_property("Label", PropertyValue::String("Undefined".into()), false)
-            .unwrap();
         Self {
-            props,
-            transport: None,
-            initialized: false,
-            position: 0,
-            num_positions,
-            labels,
-            gate_open: true,
+            core: XLightStateCore::new(SPEC),
             use_new_cmd: false,
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.core = self.core.with_transport(t);
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where
-        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
-    {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
-            None => Err(MmError::NotConnected),
-        }
-    }
-
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let full = format!("{}\r", command);
-        self.call_transport(|t| Ok(t.send_recv(&full)?.trim().to_string()))
-    }
-
-    fn cmd_letter(&self) -> char {
-        if self.use_new_cmd {
-            'A'
-        } else {
-            'E'
-        }
+    pub fn with_shared_transport(mut self, transport: SharedXLightTransport) -> Self {
+        self.core = self.core.with_shared_transport(transport);
+        self
     }
 }
 
@@ -88,142 +58,74 @@ impl Default for XLightExcitation {
 
 impl Device for XLightExcitation {
     fn name(&self) -> &str {
-        "XLight-Excitation"
+        self.core.name()
     }
     fn description(&self) -> &str {
-        "CrestOptics X-Light excitation filter wheel"
+        self.core.description()
     }
-
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
-            return Err(MmError::NotConnected);
+        match self.core.initialize_with_command("rE", "E") {
+            Ok(()) => {
+                self.use_new_cmd = false;
+                Ok(())
+            }
+            Err(_) => {
+                self.core.initialize_with_command("rA", "A")?;
+                self.use_new_cmd = true;
+                Ok(())
+            }
         }
-
-        // Try old-style 'E' command first
-        let resp = self.cmd("rE")?;
-        let (pos, new_cmd) = if resp.starts_with("rE") {
-            let digit = resp
-                .chars()
-                .last()
-                .and_then(|c| c.to_digit(10))
-                .unwrap_or(1) as u64;
-            (digit.saturating_sub(1), false)
-        } else {
-            // Try new-style 'A' command
-            let resp2 = self.cmd("rA")?;
-            let digit = resp2
-                .chars()
-                .last()
-                .and_then(|c| c.to_digit(10))
-                .unwrap_or(1) as u64;
-            (digit.saturating_sub(1), true)
-        };
-
-        self.position = pos;
-        self.use_new_cmd = new_cmd;
-        self.initialized = true;
-        Ok(())
     }
-
     fn shutdown(&mut self) -> MmResult<()> {
-        self.initialized = false;
-        Ok(())
+        self.core.shutdown()
     }
-
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        match name {
-            "State" => Ok(PropertyValue::Integer(self.position as i64)),
-            "Label" => Ok(PropertyValue::String(
-                self.labels
-                    .get(self.position as usize)
-                    .cloned()
-                    .unwrap_or_default(),
-            )),
-            _ => self.props.get(name).cloned(),
-        }
+        self.core.get_property(name)
     }
-
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        match name {
-            "State" => {
-                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
-                self.set_position(pos)
-            }
-            "Label" => {
-                let label = val.as_str().to_string();
-                self.set_position_by_label(&label)
-            }
-            _ => self.props.set(name, val),
-        }
+        self.core.set_property(name, val)
     }
-
     fn property_names(&self) -> Vec<String> {
-        self.props.property_names().to_vec()
+        self.core.property_names()
     }
     fn has_property(&self, name: &str) -> bool {
-        self.props.has_property(name)
+        self.core.has_property(name)
     }
     fn is_property_read_only(&self, name: &str) -> bool {
-        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
+        self.core.is_property_read_only(name)
     }
     fn device_type(&self) -> DeviceType {
-        DeviceType::State
+        self.core.device_type()
     }
     fn busy(&self) -> bool {
-        false
+        self.core.busy()
     }
 }
 
 impl StateDevice for XLightExcitation {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
-        if pos >= self.num_positions {
-            return Err(MmError::UnknownPosition);
-        }
-        if self.initialized {
-            let letter = self.cmd_letter();
-            self.cmd(&format!("{}{}", letter, pos + 1))?;
-        }
-        self.position = pos;
-        Ok(())
+        self.core.set_position(pos)
     }
-
     fn get_position(&self) -> MmResult<u64> {
-        Ok(self.position)
+        self.core.get_position()
     }
     fn get_number_of_positions(&self) -> u64 {
-        self.num_positions
+        self.core.get_number_of_positions()
     }
-
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels
-            .get(pos as usize)
-            .cloned()
-            .ok_or(MmError::UnknownPosition)
+        self.core.get_position_label(pos)
     }
-
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self
-            .labels
-            .iter()
-            .position(|l| l == label)
-            .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
-        self.set_position(pos)
+        self.core.set_position_by_label(label)
     }
-
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
-        if pos >= self.num_positions {
-            return Err(MmError::UnknownPosition);
-        }
-        self.labels[pos as usize] = label.to_string();
-        Ok(())
+        self.core.set_position_label(pos, label)
     }
-
     fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
-        self.gate_open = open;
-        Ok(())
+        self.core.set_gate_open(open)
     }
     fn get_gate_open(&self) -> MmResult<bool> {
-        Ok(self.gate_open)
+        self.core.get_gate_open()
     }
 }
 
@@ -254,7 +156,6 @@ mod tests {
 
     #[test]
     fn set_position_new_cmd() {
-        // rE returns something not starting with "rE" → falls back to rA
         let t = MockTransport::new()
             .expect("rE\r", "ERR")
             .expect("rA\r", "rA2")

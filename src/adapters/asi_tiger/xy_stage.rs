@@ -42,7 +42,7 @@ impl AsiTigerXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
         props
             .define_property(
@@ -50,6 +50,24 @@ impl AsiTigerXYStage {
                 PropertyValue::String(String::new()),
                 true,
             )
+            .unwrap();
+        props
+            .define_property("FirmwareBuild", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("HexAddress", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("AxisDirectionX", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .set_allowed_values("AxisDirectionX", &["1", "-1"])
+            .unwrap();
+        props
+            .define_property("AxisDirectionY", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .set_allowed_values("AxisDirectionY", &["1", "-1"])
             .unwrap();
         Self {
             props,
@@ -80,6 +98,7 @@ impl AsiTigerXYStage {
     fn cmd(&self, command: &str) -> MmResult<String> {
         let full = format!("{}\r", command);
         self.call_transport(|t| {
+            t.purge()?;
             let r = t.send_recv(&full)?;
             Ok(r.trim().to_string())
         })
@@ -103,6 +122,12 @@ impl AsiTigerXYStage {
         resp.split_whitespace()
             .find(|s| s.starts_with(&key))
             .and_then(|s| s[key.len()..].parse::<f64>().ok())
+    }
+
+    fn parse_required_axis_value(resp: &str, axis: char) -> MmResult<f64> {
+        Self::parse_axis_value(resp, axis).ok_or_else(|| {
+            MmError::LocallyDefined(format!("ASI Tiger response lacks {} value: {}", axis, resp))
+        })
     }
 
     fn format_units(value: f64) -> String {
@@ -170,7 +195,10 @@ impl Device for AsiTigerXYStage {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -257,7 +285,11 @@ impl XYStage for AsiTigerXYStage {
     }
 
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Err(MmError::UnsupportedCommand)
+        let x_min = Self::parse_required_axis_value(&self.cmd_ok("SL X?")?, 'X')? * 1000.0;
+        let x_max = Self::parse_required_axis_value(&self.cmd_ok("SU X?")?, 'X')? * 1000.0;
+        let y_min = Self::parse_required_axis_value(&self.cmd_ok("SL Y?")?, 'Y')? * 1000.0;
+        let y_max = Self::parse_required_axis_value(&self.cmd_ok("SU Y?")?, 'Y')? * 1000.0;
+        Ok((x_min, x_max, y_min, y_max))
     }
 }
 
@@ -355,9 +387,17 @@ mod tests {
 
     #[test]
     fn upstream_step_size_and_limits_behavior() {
-        let s = AsiTigerXYStage::new();
+        let t = MockTransport::new()
+            .expect("SL X?\r", ":A X=-1.5")
+            .expect("SU X?\r", ":A X=2.5")
+            .expect("SL Y?\r", ":A Y=-3")
+            .expect("SU Y?\r", ":A Y=4");
+        let s = AsiTigerXYStage::new().with_transport(Box::new(t));
         assert_eq!(s.get_step_size_um(), (0.001, 0.001));
-        assert_eq!(s.get_limits_um(), Err(MmError::UnsupportedCommand));
+        assert_eq!(
+            s.get_limits_um().unwrap(),
+            (-1500.0, 2500.0, -3000.0, 4000.0)
+        );
     }
 
     #[test]

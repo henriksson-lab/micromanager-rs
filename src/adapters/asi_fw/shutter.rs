@@ -9,14 +9,18 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
 pub struct AsiShutter {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     shutter_id: u8,
     shutter_type: String,
-    is_open: bool,
+    is_open: Cell<bool>,
+    delay_ms: f64,
+    changed_time: Cell<Instant>,
 }
 
 impl AsiShutter {
@@ -42,33 +46,39 @@ impl AsiShutter {
         props
             .set_allowed_values("ASIShutterType", &["Normally Open", "Normally Closed"])
             .unwrap();
+        props
+            .define_property("Delay", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("Delay", 0.0, f64::MAX).unwrap();
 
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
             shutter_id,
             shutter_type: "Normally Open".into(),
-            is_open: false,
+            is_open: Cell::new(false),
+            delay_ms: 0.0,
+            changed_time: Cell::new(Instant::now()),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let cmd = format!("{}\r", command);
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
@@ -86,15 +96,15 @@ impl Device for AsiShutter {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
         let resp = self.cmd(&format!("SQ {}", self.shutter_id))?;
-        self.is_open = self.parse_shutter_state(&resp)?;
+        self.is_open.set(self.parse_shutter_state(&resp)?);
         self.props
             .define_property(
                 "State",
-                PropertyValue::Integer(if self.is_open { 1 } else { 0 }),
+                PropertyValue::Integer(if self.is_open.get() { 1 } else { 0 }),
                 false,
             )
             .unwrap();
@@ -112,9 +122,10 @@ impl Device for AsiShutter {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(if self.is_open { 1 } else { 0 })),
+            "State" => Ok(PropertyValue::Integer(if self.get_open()? { 1 } else { 0 })),
             "ASIShutterNumber" => Ok(PropertyValue::Integer(self.shutter_id as i64)),
             "ASIShutterType" => Ok(PropertyValue::String(self.shutter_type.clone())),
+            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -143,6 +154,14 @@ impl Device for AsiShutter {
                 self.shutter_type = shutter_type;
                 Ok(())
             }
+            "Delay" => {
+                let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if delay < 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.delay_ms = delay;
+                self.props.set(name, PropertyValue::Float(delay))
+            }
             _ => self.props.set(name, val),
         }
     }
@@ -160,7 +179,7 @@ impl Device for AsiShutter {
         DeviceType::Shutter
     }
     fn busy(&self) -> bool {
-        false
+        self.changed_time.get().elapsed().as_secs_f64() * 1000.0 < self.delay_ms
     }
 }
 
@@ -176,13 +195,21 @@ impl Shutter for AsiShutter {
         } else {
             format!("SC {}", self.shutter_id)
         };
+        self.changed_time.set(Instant::now());
         self.cmd(&cmd)?;
-        self.is_open = open;
+        self.is_open.set(open);
         Ok(())
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        if self.initialized {
+            let resp = self.cmd(&format!("SQ {}", self.shutter_id))?;
+            let open = self.parse_shutter_state(&resp)?;
+            self.is_open.set(open);
+            Ok(open)
+        } else {
+            Ok(self.is_open.get())
+        }
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
@@ -219,7 +246,9 @@ mod tests {
 
     #[test]
     fn initialize_reads_state() {
-        let t = MockTransport::new().expect("SQ 1\r", "16"); // shutter 1 closed, card present
+        let t = MockTransport::new()
+            .expect("SQ 1\r", "16") // shutter 1 closed, card present
+            .expect("SQ 1\r", "16");
         let mut s = AsiShutter::new(1).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!(!s.get_open().unwrap());
@@ -230,13 +259,14 @@ mod tests {
         let t = MockTransport::new()
             .expect("SQ 1\r", "16")
             .expect("SO 1\r", "1")
+            .expect("SQ 1\r", "18")
             .expect("SC 1\r", "0");
         let mut s = AsiShutter::new(1).with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
         assert!(s.get_open().unwrap());
         s.set_open(false).unwrap();
-        assert!(!s.get_open().unwrap());
+        assert!(!s.is_open.get());
     }
 
     #[test]
@@ -265,5 +295,29 @@ mod tests {
     fn fire_is_unsupported() {
         let mut s = AsiShutter::new(0);
         assert_eq!(s.fire(1.0), Err(MmError::UnsupportedCommand));
+    }
+
+    #[test]
+    fn state_property_queries_live_sq() {
+        let t = MockTransport::new()
+            .expect("SQ 0\r", "16")
+            .expect("SQ 0\r", "17");
+        let mut s = AsiShutter::new(0).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(1));
+    }
+
+    #[test]
+    fn busy_uses_delay_timer_after_set_open() {
+        let t = MockTransport::new()
+            .expect("SQ 0\r", "16")
+            .expect("SO 0\r", "1");
+        let mut s = AsiShutter::new(0).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_property("Delay", PropertyValue::Float(50.0)).unwrap();
+        s.set_open(true).unwrap();
+        assert!(s.busy());
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(!s.busy());
     }
 }

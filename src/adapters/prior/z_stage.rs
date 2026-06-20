@@ -13,12 +13,13 @@ use crate::transport::Transport;
 use crate::types::{DeviceType, FocusDirection, PropertyValue};
 use std::cell::RefCell;
 
-const STEPS_PER_UM: f64 = 10.0;
+const DEFAULT_STEPS_PER_UM: f64 = 10.0;
 
 pub struct PriorZStage {
     props: PropertyMap,
     transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
+    steps_per_um: f64,
     pos_um: f64,
 }
 
@@ -26,12 +27,30 @@ impl PriorZStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
+        props
+            .define_property("StepSize_um", PropertyValue::Float(0.1), true)
+            .unwrap();
+        props
+            .define_property("MaxSpeed", PropertyValue::Integer(20), false)
+            .unwrap();
+        props.set_property_limits("MaxSpeed", 1.0, 100.0).unwrap();
+        props
+            .define_property("Acceleration", PropertyValue::Integer(20), false)
+            .unwrap();
+        props
+            .set_property_limits("Acceleration", 1.0, 100.0)
+            .unwrap();
+        props
+            .define_property("SCurve", PropertyValue::Integer(20), false)
+            .unwrap();
+        props.set_property_limits("SCurve", 1.0, 100.0).unwrap();
         Self {
             props,
             transport: RefCell::new(None),
             initialized: false,
+            steps_per_um: DEFAULT_STEPS_PER_UM,
             pos_um: 0.0,
         }
     }
@@ -66,6 +85,48 @@ impl PriorZStage {
             Err(MmError::LocallyDefined(format!("Prior Z error: {}", resp)))
         }
     }
+
+    fn check_zero(resp: &str, context: &str) -> MmResult<()> {
+        let s = resp.trim();
+        if s.starts_with('0') {
+            Ok(())
+        } else {
+            Err(MmError::LocallyDefined(format!(
+                "Prior Z {} error: {}",
+                context, s
+            )))
+        }
+    }
+
+    fn query_bounded_i64_property(&self, command: &str) -> MmResult<PropertyValue> {
+        self.clear_port()?;
+        let value = self
+            .cmd(command)?
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        if !(1..=100).contains(&value) {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        Ok(PropertyValue::Integer(value))
+    }
+
+    fn clear_port(&self) -> MmResult<()> {
+        self.call_transport(|t| t.purge())
+    }
+
+    fn discover_resolution(&mut self) {
+        if let Ok(resp) = self.cmd("RES,Z") {
+            if let Ok(res) = resp.trim().parse::<f64>() {
+                if res > 0.0 {
+                    self.steps_per_um = 1.0 / res;
+                    if let Some(e) = self.props.entry_mut("StepSize_um") {
+                        e.value = PropertyValue::Float(res);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Default for PriorZStage {
@@ -86,10 +147,12 @@ impl Device for PriorZStage {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
+        self.clear_port()?;
         self.cmd("COMP 0")?;
+        self.discover_resolution();
         let r = self.cmd("PZ")?;
         let steps: i64 = r.trim().parse().unwrap_or(0);
-        self.pos_um = steps as f64 / STEPS_PER_UM;
+        self.pos_um = steps as f64 / self.steps_per_um;
         self.initialized = true;
         Ok(())
     }
@@ -100,10 +163,39 @@ impl Device for PriorZStage {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if self.initialized {
+            match name {
+                "MaxSpeed" => return self.query_bounded_i64_property("SMZ"),
+                "Acceleration" => return self.query_bounded_i64_property("SAZ"),
+                "SCurve" => return self.query_bounded_i64_property("SCZ"),
+                _ => {}
+            }
+        }
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            "MaxSpeed" if self.initialized => {
+                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(v))?;
+                self.clear_port()?;
+                Self::check_zero(&self.cmd(&format!("SMZ,{}", v))?, name)
+            }
+            "Acceleration" if self.initialized => {
+                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(v))?;
+                self.clear_port()?;
+                Self::check_zero(&self.cmd(&format!("SAZ,{}", v))?, name)
+            }
+            "SCurve" if self.initialized => {
+                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(v))?;
+                self.clear_port()?;
+                Self::check_zero(&self.cmd(&format!("SCZ,{}", v))?, name)
+            }
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -128,8 +220,8 @@ impl Device for PriorZStage {
 
 impl Stage for PriorZStage {
     fn set_position_um(&mut self, z: f64) -> MmResult<()> {
-        let target_steps = (z * STEPS_PER_UM).round() as i64;
-        let current_steps = (self.pos_um * STEPS_PER_UM).round() as i64;
+        let target_steps = (z * self.steps_per_um).round() as i64;
+        let current_steps = (self.pos_um * self.steps_per_um).round() as i64;
         let delta = target_steps - current_steps;
         let cmd = if delta >= 0 {
             format!("U,{}", delta)
@@ -138,7 +230,7 @@ impl Stage for PriorZStage {
         };
         let r = self.cmd(&cmd)?;
         Self::check_r(&r)?;
-        self.pos_um = target_steps as f64 / STEPS_PER_UM;
+        self.pos_um = target_steps as f64 / self.steps_per_um;
         Ok(())
     }
     fn get_position_um(&self) -> MmResult<f64> {
@@ -147,10 +239,10 @@ impl Stage for PriorZStage {
             .trim()
             .parse()
             .map_err(|_| MmError::SerialInvalidResponse)?;
-        Ok(steps as f64 / STEPS_PER_UM)
+        Ok(steps as f64 / self.steps_per_um)
     }
     fn set_relative_position_um(&mut self, dz: f64) -> MmResult<()> {
-        let steps = (dz.abs() * STEPS_PER_UM).round() as i64;
+        let steps = (dz.abs() * self.steps_per_um).round() as i64;
         let cmd = if dz >= 0.0 {
             format!("U,{}", steps)
         } else {
@@ -187,6 +279,7 @@ mod tests {
     fn initialize() {
         let t = MockTransport::new()
             .expect("COMP 0\r", "0")
+            .expect("RES,Z\r", "0.1")
             .expect("PZ\r", "500")
             .expect("PZ\r", "500"); // PZ -> 50 µm
         let mut s = PriorZStage::new().with_transport(Box::new(t));
@@ -198,6 +291,7 @@ mod tests {
     fn move_absolute() {
         let t = MockTransport::new()
             .expect("COMP 0\r", "0")
+            .expect("RES,Z\r", "0.1")
             .expect("PZ\r", "0")
             .expect("U,1000\r", "R")
             .expect("PZ\r", "1000");
@@ -211,6 +305,7 @@ mod tests {
     fn move_absolute_down_uses_relative_delta() {
         let t = MockTransport::new()
             .expect("COMP 0\r", "0")
+            .expect("RES,Z\r", "0.1")
             .expect("PZ\r", "1000")
             .expect("D,300\r", "R")
             .expect("PZ\r", "700");
@@ -224,6 +319,7 @@ mod tests {
     fn move_up() {
         let t = MockTransport::new()
             .expect("COMP 0\r", "0")
+            .expect("RES,Z\r", "0.1")
             .expect("PZ\r", "0")
             .expect("U,250\r", "R")
             .expect("PZ\r", "250");
@@ -237,6 +333,7 @@ mod tests {
     fn move_down() {
         let t = MockTransport::new()
             .expect("COMP 0\r", "0")
+            .expect("RES,Z\r", "0.1")
             .expect("PZ\r", "1000")
             .expect("D,300\r", "R")
             .expect("PZ\r", "700"); // start at 100 µm
@@ -252,10 +349,49 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_home_and_limits() {
+    fn unsupported_home_and_stop() {
         let mut s = PriorZStage::new();
         assert_eq!(s.home().unwrap_err(), MmError::UnsupportedCommand);
         assert_eq!(s.stop().unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn limits_are_unsupported_like_upstream() {
+        let s = PriorZStage::new();
         assert_eq!(s.get_limits().unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn z_motion_properties_use_z_commands_zero_ack_and_live_reads() {
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .expect("RES,Z\r", "0.1")
+            .expect("PZ\r", "0")
+            .expect("SMZ,41\r", "0")
+            .expect("SMZ\r", "41")
+            .expect("SAZ,42\r", "0")
+            .expect("SAZ\r", "42")
+            .expect("SCZ,43\r", "0")
+            .expect("SCZ\r", "43");
+        let mut s = PriorZStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_property("MaxSpeed", PropertyValue::Integer(41))
+            .unwrap();
+        assert_eq!(
+            s.get_property("MaxSpeed").unwrap(),
+            PropertyValue::Integer(41)
+        );
+        s.set_property("Acceleration", PropertyValue::Integer(42))
+            .unwrap();
+        assert_eq!(
+            s.get_property("Acceleration").unwrap(),
+            PropertyValue::Integer(42)
+        );
+        s.set_property("SCurve", PropertyValue::Integer(43))
+            .unwrap();
+        assert_eq!(
+            s.get_property("SCurve").unwrap(),
+            PropertyValue::Integer(43)
+        );
     }
 }

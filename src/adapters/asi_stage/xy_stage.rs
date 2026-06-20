@@ -23,13 +23,55 @@ pub struct AsiXYStage {
     initialized: bool,
     x_um: f64,
     y_um: f64,
+    last_serial_command: String,
+    only_send_serial_command_on_change: bool,
 }
 
 impl AsiXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
+            .unwrap();
+        props
+            .define_property("Version", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("BuildName", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("AxisDirectionX", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .set_allowed_values("AxisDirectionX", &["1", "-1"])
+            .unwrap();
+        props
+            .define_property("AxisDirectionY", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .set_allowed_values("AxisDirectionY", &["1", "-1"])
+            .unwrap();
+        props
+            .define_property("StepSizeX_um", PropertyValue::Float(STEP_SIZE_UM), true)
+            .unwrap();
+        props
+            .define_property("StepSizeY_um", PropertyValue::Float(STEP_SIZE_UM), true)
+            .unwrap();
+        props
+            .define_property("SerialCommand", PropertyValue::String(String::new()), false)
+            .unwrap();
+        props
+            .define_property("SerialResponse", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property(
+                "OnlySendSerialCommandOnChange",
+                PropertyValue::String("Yes".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("OnlySendSerialCommandOnChange", &["Yes", "No"])
             .unwrap();
 
         Self {
@@ -38,6 +80,8 @@ impl AsiXYStage {
             initialized: false,
             x_um: 0.0,
             y_um: 0.0,
+            last_serial_command: String::new(),
+            only_send_serial_command_on_change: true,
         }
     }
 
@@ -59,6 +103,7 @@ impl AsiXYStage {
     fn cmd(&self, command: &str) -> MmResult<String> {
         let cmd = format!("{}\r", command);
         self.call_transport(|t| {
+            t.purge()?;
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
         })
@@ -76,6 +121,15 @@ impl AsiXYStage {
 
     fn asi_units(um: f64) -> String {
         format!("{:.6}", um * ASI_SERIAL_UNITS_PER_UM)
+    }
+
+    fn is_info_command(command: &str) -> bool {
+        command
+            .trim_start_matches(|c: char| c.is_ascii_digit() || c.is_ascii_whitespace())
+            .chars()
+            .next()
+            .map(|c| c.eq_ignore_ascii_case(&'I'))
+            .unwrap_or(false)
     }
 
     /// Parse `:A X=<x> Y=<y>` or upstream `:A <x> <y>` → (x_um, y_um).
@@ -149,7 +203,29 @@ impl Device for AsiXYStage {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            "SerialCommand" => {
+                let command = val.as_str().to_string();
+                if !self.only_send_serial_command_on_change || command != self.last_serial_command {
+                    if Self::is_info_command(&command) {
+                        return Err(MmError::UnsupportedCommand);
+                    }
+                    let response = self.cmd(&command)?;
+                    self.last_serial_command = command.clone();
+                    if let Some(entry) = self.props.entry_mut("SerialResponse") {
+                        entry.value = PropertyValue::String(response);
+                    }
+                }
+                self.props.set(name, PropertyValue::String(command))
+            }
+            "OnlySendSerialCommandOnChange" => {
+                self.props.set(name, val)?;
+                self.only_send_serial_command_on_change = self.props.get(name)?.as_str() == "Yes";
+                Ok(())
+            }
+            _ => self.props.set(name, val),
+        }
     }
 
     fn property_names(&self) -> Vec<String> {
@@ -309,6 +385,66 @@ mod tests {
             MmError::UnsupportedCommand
         );
         assert_eq!(stage.get_step_size_um(), (0.01, 0.01));
+    }
+
+    #[test]
+    fn manual_serial_command_stores_response_and_respects_changed_guard() {
+        let t = MockTransport::new()
+            .expect("W X Y\r", ":A X=0 Y=0")
+            .expect("S X?\r", ":A X=7.5");
+        let mut stage = AsiXYStage::new().with_transport(Box::new(t));
+        stage.initialize().unwrap();
+
+        stage
+            .set_property("SerialCommand", PropertyValue::String("S X?".into()))
+            .unwrap();
+        assert_eq!(
+            stage.get_property("SerialResponse").unwrap(),
+            PropertyValue::String(":A X=7.5".into())
+        );
+        stage
+            .set_property("SerialCommand", PropertyValue::String("S X?".into()))
+            .unwrap();
+    }
+
+    #[test]
+    fn manual_serial_command_can_send_repeated_values_when_enabled() {
+        let t = MockTransport::new()
+            .expect("W X Y\r", ":A X=0 Y=0")
+            .expect("S X?\r", ":A X=7.5")
+            .expect("S X?\r", ":A X=8.0");
+        let mut stage = AsiXYStage::new().with_transport(Box::new(t));
+        stage.initialize().unwrap();
+
+        stage
+            .set_property(
+                "OnlySendSerialCommandOnChange",
+                PropertyValue::String("No".into()),
+            )
+            .unwrap();
+        stage
+            .set_property("SerialCommand", PropertyValue::String("S X?".into()))
+            .unwrap();
+        stage
+            .set_property("SerialCommand", PropertyValue::String("S X?".into()))
+            .unwrap();
+        assert_eq!(
+            stage.get_property("SerialResponse").unwrap(),
+            PropertyValue::String(":A X=8.0".into())
+        );
+    }
+
+    #[test]
+    fn manual_serial_rejects_info_command_like_upstream() {
+        let t = MockTransport::new().expect("W X Y\r", ":A X=0 Y=0");
+        let mut stage = AsiXYStage::new().with_transport(Box::new(t));
+        stage.initialize().unwrap();
+        assert_eq!(
+            stage
+                .set_property("SerialCommand", PropertyValue::String(" INFO".into()))
+                .unwrap_err(),
+            MmError::UnsupportedCommand
+        );
     }
 
     #[test]

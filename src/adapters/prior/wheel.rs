@@ -12,6 +12,7 @@ use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 const DEFAULT_NUM_POSITIONS: u64 = 10;
 
@@ -23,13 +24,16 @@ pub struct PriorWheel {
     position: u64, // 0-indexed internally
     num_positions: u64,
     gate_open: bool,
+    speed: i64,
+    delay_ms: f64,
+    changed_time: Option<Instant>,
 }
 
 impl PriorWheel {
     pub fn new(id: u8) -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
         props
             .define_property("WheelId", PropertyValue::Integer(id as i64), false)
@@ -41,6 +45,25 @@ impl PriorWheel {
                 false,
             )
             .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String("Filter-1".into()), false)
+            .unwrap();
+        props
+            .define_property("Speed", PropertyValue::Integer(3), false)
+            .unwrap();
+        props
+            .define_property("Delay", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property(
+                "Closed_Position",
+                PropertyValue::String(String::new()),
+                false,
+            )
+            .unwrap();
         Self {
             props,
             transport: RefCell::new(None),
@@ -49,6 +72,9 @@ impl PriorWheel {
             position: 0,
             num_positions: DEFAULT_NUM_POSITIONS,
             gate_open: true,
+            speed: 3,
+            delay_ms: 0.0,
+            changed_time: None,
         }
     }
 
@@ -75,6 +101,10 @@ impl PriorWheel {
         })
     }
 
+    fn clear_port(&self) -> MmResult<()> {
+        self.call_transport(|t| t.purge())
+    }
+
     fn check_r(resp: &str) -> MmResult<()> {
         if resp.trim() == "R" {
             Ok(())
@@ -84,6 +114,36 @@ impl PriorWheel {
                 resp
             )))
         }
+    }
+
+    fn mark_changed(&mut self) {
+        self.changed_time = Some(Instant::now());
+    }
+
+    fn delay_duration(&self) -> Duration {
+        Duration::from_secs_f64((self.delay_ms.max(0.0)) / 1000.0)
+    }
+
+    fn closed_position(&self) -> u64 {
+        self.props
+            .get("Closed_Position")
+            .ok()
+            .and_then(|v| v.as_str().parse::<u64>().ok())
+            .unwrap_or(0)
+    }
+
+    fn set_physical_position(&mut self, pos: u64) -> MmResult<()> {
+        if pos >= self.num_positions {
+            return Err(MmError::LocallyDefined(format!(
+                "Position {} out of range",
+                pos
+            )));
+        }
+        self.clear_port()?;
+        let r = self.cmd(&format!("7,{},{}", self.id, pos + 1))?;
+        Self::check_r(&r)?;
+        self.mark_changed();
+        Ok(())
     }
 }
 
@@ -105,8 +165,10 @@ impl Device for PriorWheel {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
+        self.clear_port()?;
         self.cmd("COMP 0")?;
         let home = self.cmd(&format!("7,{},h", self.id))?;
+        self.mark_changed();
         if home.starts_with('E') && home.len() > 2 {
             return Err(MmError::LocallyDefined(format!(
                 "Prior wheel error: {}",
@@ -124,12 +186,39 @@ impl Device for PriorWheel {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "State" => Ok(PropertyValue::Integer(self.position as i64)),
+            "Label" => Ok(PropertyValue::String(format!(
+                "Filter-{}",
+                self.position + 1
+            ))),
+            "Speed" => Ok(PropertyValue::Integer(self.speed)),
+            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
+            _ => self.props.get(name).cloned(),
+        }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        if name == "NumPositions" {
-            let n = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
-            self.num_positions = n;
+        match name {
+            "Port" if self.initialized => return Err(MmError::InvalidPropertyValue),
+            "State" => {
+                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if pos < 0 {
+                    return Err(MmError::UnknownPosition);
+                }
+                return self.set_position(pos as u64);
+            }
+            "Label" => return self.set_position_by_label(val.as_str()),
+            "NumPositions" => {
+                let n = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
+                self.num_positions = n;
+            }
+            "Speed" => {
+                self.speed = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            }
+            "Delay" => {
+                self.delay_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            }
+            _ => {}
         }
         self.props.set(name, val)
     }
@@ -146,7 +235,9 @@ impl Device for PriorWheel {
         DeviceType::State
     }
     fn busy(&self) -> bool {
-        false
+        self.changed_time
+            .map(|t| t.elapsed() < self.delay_duration())
+            .unwrap_or(false)
     }
 }
 
@@ -158,9 +249,11 @@ impl StateDevice for PriorWheel {
                 pos
             )));
         }
-        // Device uses 1-indexed positions
-        let r = self.cmd(&format!("7,{},{}", self.id, pos + 1))?;
-        Self::check_r(&r)?;
+        if self.gate_open {
+            self.set_physical_position(pos)?;
+        } else {
+            self.set_physical_position(self.closed_position())?;
+        }
         self.position = pos;
         Ok(())
     }
@@ -190,6 +283,14 @@ impl StateDevice for PriorWheel {
         Ok(())
     }
     fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        if self.gate_open == open {
+            return Ok(());
+        }
+        if open {
+            self.set_physical_position(self.position)?;
+        } else {
+            self.set_physical_position(self.closed_position())?;
+        }
         self.gate_open = open;
         Ok(())
     }
@@ -238,6 +339,40 @@ mod tests {
         let mut w = PriorWheel::new(1).with_transport(Box::new(t));
         w.initialize().unwrap();
         assert!(w.set_position(10).is_err()); // default 10 positions (0-9)
+    }
+
+    #[test]
+    fn busy_uses_configured_delay_after_move() {
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .any("R")
+            .expect("7,1,2\r", "R");
+        let mut w = PriorWheel::new(1).with_transport(Box::new(t));
+        w.set_property("Delay", PropertyValue::Float(1000.0))
+            .unwrap();
+        w.initialize().unwrap();
+        assert!(w.busy());
+    }
+
+    #[test]
+    fn closed_gate_moves_to_closed_position_but_keeps_logical_state() {
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .any("R")
+            .expect("7,1,2\r", "R")
+            .expect("7,1,4\r", "R")
+            .expect("7,1,4\r", "R")
+            .expect("7,1,6\r", "R")
+            .expect("7,1\r", "6");
+        let mut w = PriorWheel::new(1).with_transport(Box::new(t));
+        w.set_property("Closed_Position", PropertyValue::String("3".into()))
+            .unwrap();
+        w.initialize().unwrap();
+        w.set_gate_open(false).unwrap();
+        w.set_position(5).unwrap();
+        assert_eq!(w.get_property("State").unwrap(), PropertyValue::Integer(5));
+        w.set_gate_open(true).unwrap();
+        assert_eq!(w.get_position().unwrap(), 5);
     }
 
     #[test]

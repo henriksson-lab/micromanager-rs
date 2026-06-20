@@ -15,12 +15,19 @@ use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
 const CHANNELS: [char; 4] = ['A', 'B', 'C', 'D'];
+const WAVELENGTH_LABELS: [[i64; 4]; 4] = [
+    [365, 385, 405, 435],
+    [460, 470, 490, 500],
+    [525, 550, 580, 595],
+    [635, 660, 740, 770],
+];
 
 #[derive(Debug, Clone, Copy)]
 struct Channel {
     id: char,
     intensity: u8,
     selected: bool,
+    wavelength: i64,
 }
 
 pub struct CoolLedPE4000 {
@@ -51,6 +58,21 @@ impl CoolLedPE4000 {
                 .define_property(&key_sel, PropertyValue::Integer(0), false)
                 .unwrap();
             props.set_allowed_values(&key_sel, &["0", "1"]).unwrap();
+            let idx = (ch as u8 - b'A') as usize;
+            let key_wave = format!("Channel{}", ch);
+            props
+                .define_property(
+                    &key_wave,
+                    PropertyValue::Integer(WAVELENGTH_LABELS[idx][0]),
+                    false,
+                )
+                .unwrap();
+            let allowed: Vec<String> = WAVELENGTH_LABELS[idx]
+                .iter()
+                .map(|w| w.to_string())
+                .collect();
+            let allowed_refs: Vec<&str> = allowed.iter().map(String::as_str).collect();
+            props.set_allowed_values(&key_wave, &allowed_refs).unwrap();
         }
         props
             .define_property("Global State", PropertyValue::Integer(0), false)
@@ -58,6 +80,10 @@ impl CoolLedPE4000 {
         props
             .set_allowed_values("Global State", &["0", "1"])
             .unwrap();
+        props
+            .define_property("Lock Pod", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("Lock Pod", &["0", "1"]).unwrap();
         Self {
             props,
             transport: None,
@@ -68,21 +94,25 @@ impl CoolLedPE4000 {
                     id: 'A',
                     intensity: 0,
                     selected: false,
+                    wavelength: 365,
                 },
                 Channel {
                     id: 'B',
                     intensity: 0,
                     selected: false,
+                    wavelength: 460,
                 },
                 Channel {
                     id: 'C',
                     intensity: 0,
                     selected: false,
+                    wavelength: 525,
                 },
                 Channel {
                     id: 'D',
                     intensity: 0,
                     selected: false,
+                    wavelength: 635,
                 },
             ],
         }
@@ -126,6 +156,28 @@ impl CoolLedPE4000 {
         }
         result
     }
+
+    fn refresh_css(&mut self) -> MmResult<()> {
+        let css = self.cmd("CSS?")?;
+        let states = Self::parse_css(&css);
+        self.global_on = false;
+        for (i, (sel, on, intensity)) in states.iter().enumerate() {
+            self.channels[i].selected = *sel;
+            self.channels[i].intensity = *intensity;
+            let ch = self.channels[i].id;
+            self.props
+                .entry_mut(&format!("Intensity{}", ch))
+                .map(|e| e.value = PropertyValue::Integer(*intensity as i64));
+            self.props
+                .entry_mut(&format!("Selection{}", ch))
+                .map(|e| e.value = PropertyValue::Integer(if *sel { 1 } else { 0 }));
+            self.global_on |= *on;
+        }
+        self.props
+            .entry_mut("Global State")
+            .map(|e| e.value = PropertyValue::Integer(if self.global_on { 1 } else { 0 }));
+        Ok(())
+    }
 }
 
 impl Default for CoolLedPE4000 {
@@ -157,24 +209,8 @@ impl Device for CoolLedPE4000 {
         self.props
             .entry_mut("Version")
             .map(|e| e.value = PropertyValue::String(ver));
-        let css = self.cmd("CSS?")?;
-        let states = Self::parse_css(&css);
-        self.global_on = false;
-        for (i, (sel, on, intensity)) in states.iter().enumerate() {
-            self.channels[i].selected = *sel;
-            self.channels[i].intensity = *intensity;
-            let ch = self.channels[i].id;
-            self.props
-                .entry_mut(&format!("Intensity{}", ch))
-                .map(|e| e.value = PropertyValue::Integer(*intensity as i64));
-            self.props
-                .entry_mut(&format!("Selection{}", ch))
-                .map(|e| e.value = PropertyValue::Integer(if *sel { 1 } else { 0 }));
-            self.global_on |= *on;
-        }
-        self.props
-            .entry_mut("Global State")
-            .map(|e| e.value = PropertyValue::Integer(if self.global_on { 1 } else { 0 }));
+        self.cmd("PORT:P=ON")?;
+        self.refresh_css()?;
         self.initialized = true;
         Ok(())
     }
@@ -219,6 +255,19 @@ impl Device for CoolLedPE4000 {
                     .props
                     .set(name, PropertyValue::Integer(if selected { 1 } else { 0 }));
             }
+            let key_wave = format!("Channel{}", ch);
+            if name == key_wave {
+                let wavelength = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                let idx = (ch as u8 - b'A') as usize;
+                if !WAVELENGTH_LABELS[idx].contains(&wavelength) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                if self.initialized {
+                    self.cmd(&format!("LOAD:{}", wavelength))?;
+                }
+                self.channels[idx].wavelength = wavelength;
+                return self.props.set(name, PropertyValue::Integer(wavelength));
+            }
         }
         if name == "Global State" {
             let open = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
@@ -230,6 +279,20 @@ impl Device for CoolLedPE4000 {
             return self
                 .props
                 .set(name, PropertyValue::Integer(if open { 1 } else { 0 }));
+        }
+        if name == "Lock Pod" {
+            let locked = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if locked != 0 && locked != 1 {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            if self.initialized {
+                self.cmd(if locked == 1 {
+                    "PORT:P=OFF"
+                } else {
+                    "PORT:P=ON"
+                })?;
+            }
+            return self.props.set(name, PropertyValue::Integer(locked));
         }
         self.props.set(name, val)
     }
@@ -277,6 +340,7 @@ mod tests {
         MockTransport::new()
             .expect("XMODEL\r", "pE-4000 v1.0")
             .expect("XVER\r", "HW:2.0 FW:3.1")
+            .expect("PORT:P=ON\r", "OK")
             // 4 channels: A selected/on/75, B-D not selected/off/0
             .expect("CSS?\r", "CSSASN075BXF000CXF000DXF000")
     }
@@ -310,6 +374,32 @@ mod tests {
         dev.set_property("IntensityD", PropertyValue::Integer(50))
             .unwrap();
         assert_eq!(dev.channels[3].intensity, 50);
+    }
+
+    #[test]
+    fn channel_wavelength_sends_load() {
+        let t = make_transport().expect("LOAD:470\r", "OK");
+        let mut dev = CoolLedPE4000::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("ChannelB", PropertyValue::Integer(470))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("ChannelB").unwrap(),
+            PropertyValue::Integer(470)
+        );
+    }
+
+    #[test]
+    fn lock_pod_uses_upstream_port_commands() {
+        let t = make_transport().expect("PORT:P=OFF\r", "OK");
+        let mut dev = CoolLedPE4000::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("Lock Pod", PropertyValue::Integer(1))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("Lock Pod").unwrap(),
+            PropertyValue::Integer(1)
+        );
     }
 
     #[test]

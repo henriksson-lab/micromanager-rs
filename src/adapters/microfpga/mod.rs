@@ -125,7 +125,7 @@ pub(crate) fn write_register(t: &mut dyn Transport, addr: u32, value: u32) -> Mm
 static DEVICE_LIST: &[DeviceInfo] = &[
     DeviceInfo {
         name: DEVICE_NAME_HUB,
-        description: "MicroFPGA Hub (required)",
+        description: "Hub (required)",
         device_type: DeviceType::Hub,
     },
     DeviceInfo {

@@ -9,7 +9,8 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
 pub struct AsiFw1000Shutter {
     props: PropertyMap,
@@ -18,6 +19,8 @@ pub struct AsiFw1000Shutter {
     shutter_nr: u8,
     shutter_type: String,
     open: bool,
+    delay_ms: f64,
+    changed_time: Cell<Instant>,
 }
 
 impl AsiFw1000Shutter {
@@ -43,6 +46,10 @@ impl AsiFw1000Shutter {
         props
             .set_allowed_values("ASIShutterType", &["Normally Open", "Normally Closed"])
             .unwrap();
+        props
+            .define_property("Delay", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("Delay", 0.0, f64::MAX).unwrap();
         Self {
             props,
             transport: RefCell::new(None),
@@ -50,6 +57,8 @@ impl AsiFw1000Shutter {
             shutter_nr,
             shutter_type: "Normally Open".into(),
             open: false,
+            delay_ms: 0.0,
+            changed_time: Cell::new(Instant::now()),
         }
     }
 
@@ -131,6 +140,7 @@ impl Device for AsiFw1000Shutter {
             "State" => Ok(PropertyValue::Integer(if self.get_open()? { 1 } else { 0 })),
             "ASIShutterNumber" => Ok(PropertyValue::Integer(self.shutter_nr as i64)),
             "ASIShutterType" => Ok(PropertyValue::String(self.shutter_type.clone())),
+            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -159,6 +169,14 @@ impl Device for AsiFw1000Shutter {
                 self.shutter_type = shutter_type;
                 Ok(())
             }
+            "Delay" => {
+                let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if delay < 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.delay_ms = delay;
+                self.props.set(name, PropertyValue::Float(delay))
+            }
             _ => self.props.set(name, val),
         }
     }
@@ -176,7 +194,7 @@ impl Device for AsiFw1000Shutter {
         DeviceType::Shutter
     }
     fn busy(&self) -> bool {
-        false
+        self.changed_time.get().elapsed().as_secs_f64() * 1000.0 < self.delay_ms
     }
 }
 
@@ -192,6 +210,7 @@ impl Shutter for AsiFw1000Shutter {
         } else {
             format!("SC {}", self.shutter_nr)
         };
+        self.changed_time.set(Instant::now());
         self.cmd(&cmd)?;
         self.open = open;
         Ok(())
@@ -307,6 +326,20 @@ mod tests {
         let mut s = AsiFw1000Shutter::new(0).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(1));
+    }
+
+    #[test]
+    fn busy_uses_delay_timer_after_set_open() {
+        let t = MockTransport::new()
+            .expect("SQ 0\r", "16")
+            .expect("SO 0\r", "1");
+        let mut s = AsiFw1000Shutter::new(0).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_property("Delay", PropertyValue::Float(50.0)).unwrap();
+        s.set_open(true).unwrap();
+        assert!(s.busy());
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(!s.busy());
     }
 
     #[test]

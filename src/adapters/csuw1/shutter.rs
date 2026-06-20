@@ -15,13 +15,17 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
 pub struct CsuShutter {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     nir: bool,
-    open: bool,
+    open: Cell<bool>,
+    delay_ms: f64,
+    changed_time: Instant,
 }
 
 impl CsuShutter {
@@ -36,31 +40,38 @@ impl CsuShutter {
         props
             .set_allowed_values("State", &["Closed", "Open"])
             .unwrap();
+        props
+            .define_property("Delay", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("Delay", 0.0, f64::MAX).unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
             nir,
-            open: false,
+            open: Cell::new(false),
+            delay_ms: 0.0,
+            changed_time: Instant::now(),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        let mut transport = self.transport.borrow_mut();
+        match transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let full = format!("{}\r", command);
         self.call_transport(|t| {
             let r = t.send_recv(&full)?;
@@ -100,16 +111,17 @@ impl Device for CsuShutter {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
         let q = format!("{}, ?", self.prefix());
         let resp = self.cmd(&q)?;
-        self.open = resp.contains("OPEN");
+        self.open.set(resp.contains("OPEN"));
         self.props.set(
             "State",
-            PropertyValue::String(if self.open { "Open" } else { "Closed" }.into()),
+            PropertyValue::String(if self.open.get() { "Open" } else { "Closed" }.into()),
         )?;
+        self.changed_time = Instant::now();
         self.initialized = true;
         Ok(())
     }
@@ -124,8 +136,9 @@ impl Device for CsuShutter {
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "State" => Ok(PropertyValue::String(
-                if self.open { "Open" } else { "Closed" }.into(),
+                if self.open.get() { "Open" } else { "Closed" }.into(),
             )),
+            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -140,6 +153,14 @@ impl Device for CsuShutter {
                 } else {
                     Err(MmError::InvalidPropertyValue)
                 }
+            }
+            "Delay" => {
+                let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if delay < 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.delay_ms = delay;
+                self.props.set(name, PropertyValue::Float(delay))
             }
             _ => self.props.set(name, val),
         }
@@ -157,13 +178,14 @@ impl Device for CsuShutter {
         DeviceType::Shutter
     }
     fn busy(&self) -> bool {
-        false
+        self.changed_time.elapsed().as_secs_f64() * 1000.0 < self.delay_ms
     }
 }
 
 impl Shutter for CsuShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         let cmd = format!("{}{}", self.prefix(), if open { "O" } else { "C" });
+        self.changed_time = Instant::now();
         let resp = self.cmd(&cmd)?;
         if resp.contains('N') {
             return Err(MmError::LocallyDefined(format!(
@@ -171,16 +193,20 @@ impl Shutter for CsuShutter {
                 resp
             )));
         }
-        self.open = open;
+        self.open.set(open);
         self.props.set(
             "State",
-            PropertyValue::String(if self.open { "Open" } else { "Closed" }.into()),
+            PropertyValue::String(if self.open.get() { "Open" } else { "Closed" }.into()),
         )?;
         Ok(())
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.open)
+        if self.nir && self.initialized {
+            let resp = self.cmd("SH2, ?")?;
+            self.open.set(resp.contains("OPEN"));
+        }
+        Ok(self.open.get())
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
@@ -219,11 +245,24 @@ mod tests {
     fn nir_shutter() {
         let t = MockTransport::new()
             .expect("SH2, ?\r", "OPEN\rA")
+            .expect("SH2, ?\r", "OPEN\rA")
             .expect("SH2C\r", "A");
         let mut s = CsuShutter::new(true).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!(s.get_open().unwrap());
         s.set_open(false).unwrap();
+        assert_eq!(s.get_property("State").unwrap().as_str(), "Closed");
+    }
+
+    #[test]
+    fn nir_get_open_reads_live_state() {
+        let t = MockTransport::new()
+            .expect("SH2, ?\r", "CLOSED\rA")
+            .expect("SH2O\r", "A")
+            .expect("SH2, ?\r", "CLOSED\rA");
+        let mut s = CsuShutter::new(true).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_open(true).unwrap();
         assert!(!s.get_open().unwrap());
     }
 
@@ -244,5 +283,19 @@ mod tests {
     fn fire_is_unsupported_like_upstream() {
         let mut s = CsuShutter::new(false);
         assert_eq!(s.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn set_open_starts_delay_backed_busy_timer() {
+        let t = MockTransport::new()
+            .expect("SH, ?\r", "CLOSED\rA")
+            .expect("SHO\r", "A");
+        let mut s = CsuShutter::new(false).with_transport(Box::new(t));
+        s.set_property("Delay", PropertyValue::Float(1000.0))
+            .unwrap();
+        s.initialize().unwrap();
+        assert!(s.busy());
+        s.set_open(true).unwrap();
+        assert!(s.busy());
     }
 }

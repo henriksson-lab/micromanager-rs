@@ -15,10 +15,11 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
 
 pub struct ChuoSeikiXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
     x_um: f64,
     y_um: f64,
@@ -77,21 +78,24 @@ impl ChuoSeikiXYStage {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => {
+                let mut t = t.borrow_mut();
+                f(t.as_mut())
+            }
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r\n", command);
         self.call_transport(|t| {
             let r = t.send_recv(&c)?;
@@ -164,13 +168,46 @@ impl ChuoSeikiXYStage {
         Ok((parse_axis(x_part, "X")?, parse_axis(y_part, "Y")?))
     }
 
-    fn query_position(&mut self) -> MmResult<(f64, f64)> {
+    fn query_position(&self) -> MmResult<(f64, f64)> {
         let pos_resp = self.cmd("RLP")?;
         let (x_steps, y_steps) = Self::parse_rlp_steps(&pos_resp)?;
         Ok((
             x_steps as f64 * self.step_size_um_x,
             y_steps as f64 * self.step_size_um_y,
         ))
+    }
+
+    fn query_busy(&self) -> MmResult<bool> {
+        let resp = self.cmd("RDR")?;
+        let status = resp
+            .trim()
+            .strip_prefix("RDR")
+            .unwrap_or(resp.trim())
+            .trim();
+        if let Ok(busy) = status.parse::<i64>() {
+            return Ok(busy != 0);
+        }
+
+        let mut saw_idle_flag = false;
+        for token in status.split(|c: char| !c.is_ascii_digit() && c != '-') {
+            if token.is_empty() {
+                continue;
+            }
+            match token.parse::<i64>() {
+                Ok(1) => return Ok(true),
+                Ok(0) => saw_idle_flag = true,
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        if saw_idle_flag {
+            Ok(false)
+        } else {
+            Err(MmError::LocallyDefined(format!(
+                "Cannot parse RDR: {}",
+                resp
+            )))
+        }
     }
 
     fn apply_controller_property(&mut self, name: &str, val: &PropertyValue) -> MmResult<()> {
@@ -261,6 +298,9 @@ impl Device for ChuoSeikiXYStage {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::InvalidPropertyValue);
+        }
         self.apply_controller_property(name, &val)?;
         self.props.set(name, val)
     }
@@ -277,7 +317,7 @@ impl Device for ChuoSeikiXYStage {
         DeviceType::XYStage
     }
     fn busy(&self) -> bool {
-        false
+        self.query_busy().unwrap_or(false)
     }
 }
 
@@ -291,7 +331,7 @@ impl XYStage for ChuoSeikiXYStage {
         Ok(())
     }
     fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
-        Ok((self.x_um, self.y_um))
+        self.query_position()
     }
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let x_steps = (dx / self.step_size_um_x).round() as i64;
@@ -337,7 +377,8 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let mut s = ChuoSeikiXYStage::new().with_transport(Box::new(make_transport()));
+        let t = make_transport().expect("RLP\r\n", "RLP X 100,Y 200");
+        let mut s = ChuoSeikiXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert_eq!(s.name(), "ChuoSeiki_MD 2-Axis");
         assert_eq!(s.description(), "XY Stages");
@@ -346,7 +387,9 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = make_transport().expect("ABA X 300,Y 400\r\n", "ABA X 00ERS Y 00");
+        let t = make_transport()
+            .expect("ABA X 300,Y 400\r\n", "ABA X 00ERS Y 00")
+            .expect("RLP\r\n", "RLP X 300,Y 400");
         let mut s = ChuoSeikiXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_xy_position_um(300.0, 400.0).unwrap();
@@ -355,7 +398,9 @@ mod tests {
 
     #[test]
     fn move_relative_uses_ica() {
-        let t = make_transport().expect("ICA X 3,Y -4\r\n", "ICA X 00ERS Y 00");
+        let t = make_transport()
+            .expect("ICA X 3,Y -4\r\n", "ICA X 00ERS Y 00")
+            .expect("RLP\r\n", "RLP X 103,Y 196");
         let mut s = ChuoSeikiXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_xy_position_um(3.0, -4.0).unwrap();
@@ -366,7 +411,8 @@ mod tests {
     fn home_and_stop_use_controller_commands() {
         let t = make_transport()
             .expect("HMB X,Y\r\n", "HMB 00")
-            .expect("SST X,Y\r\n", "SST 00");
+            .expect("SST X,Y\r\n", "SST 00")
+            .expect("RLP\r\n", "RLP X 0,Y 0");
         let mut s = ChuoSeikiXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.home().unwrap();
@@ -403,5 +449,40 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(ChuoSeikiXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn port_cannot_change_after_initialize() {
+        let mut s = ChuoSeikiXYStage::new().with_transport(Box::new(make_transport()));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_property("Port", PropertyValue::String("COM2".to_string()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+    }
+
+    #[test]
+    fn get_position_reads_live_rlp() {
+        let t = make_transport().expect("RLP\r\n", "RLP X 321,Y -654");
+        let mut s = ChuoSeikiXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.get_xy_position_um().unwrap(), (321.0, -654.0));
+    }
+
+    #[test]
+    fn busy_polls_rdr_status() {
+        let t = make_transport().expect("RDR\r\n", "RDR 1");
+        let mut s = ChuoSeikiXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
+    }
+
+    #[test]
+    fn busy_parses_axis_flags_from_rdr_response() {
+        let t = make_transport().expect("RDR\r\n", "RDR X 0, Y 1");
+        let mut s = ChuoSeikiXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
     }
 }

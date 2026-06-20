@@ -26,6 +26,7 @@ pub struct VarispecLCTF {
     delay_ms: f64,
     changed_time: Option<Instant>,
     last_response: String,
+    wavelength_sequence: Vec<f64>,
 }
 
 impl VarispecLCTF {
@@ -93,6 +94,7 @@ impl VarispecLCTF {
             delay_ms: 200.0,
             changed_time: None,
             last_response: String::new(),
+            wavelength_sequence: Vec::new(),
         }
     }
 
@@ -195,6 +197,53 @@ impl VarispecLCTF {
         } else {
             None
         }
+    }
+
+    pub fn clear_wavelength_sequence(&mut self) -> MmResult<()> {
+        self.wavelength_sequence.clear();
+        Ok(())
+    }
+
+    pub fn add_to_wavelength_sequence(&mut self, nm: f64) -> MmResult<()> {
+        if self.wavelength_sequence.len() >= 128 {
+            return Err(MmError::SequenceTooLarge);
+        }
+        if nm < self.min_nm || nm > self.max_nm {
+            return Err(MmError::InvalidPropertyValue);
+        }
+        self.wavelength_sequence.push(nm);
+        Ok(())
+    }
+
+    pub fn load_wavelength_sequence(&mut self) -> MmResult<()> {
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
+        self.send_cmd("C1")?;
+        let sequence = self.wavelength_sequence.clone();
+        for (index, nm) in sequence.into_iter().enumerate() {
+            self.send_cmd(&format!("D{:.3},{}", nm, index))?;
+        }
+        self.get_status()
+    }
+
+    pub fn start_wavelength_sequence(&mut self) -> MmResult<()> {
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
+        self.send_cmd("M0")?;
+        self.send_cmd("G1")?;
+        self.send_cmd("P0")?;
+        Ok(())
+    }
+
+    pub fn stop_wavelength_sequence(&mut self) -> MmResult<()> {
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
+        self.send_cmd("G0")?;
+        self.send_cmd("P0")?;
+        Ok(())
     }
 }
 
@@ -455,5 +504,33 @@ mod tests {
             dev.set_property("Wavelength", PropertyValue::Float(600.0)),
             Err(MmError::SerialInvalidResponse)
         );
+    }
+
+    #[test]
+    fn wavelength_sequence_loads_palette_like_upstream() {
+        let t = make_transport()
+            .expect("C1\r", "C1")
+            .expect("D500.000,0\r", "D500.000,0")
+            .expect("D600.000,1\r", "D600.000,1")
+            .expect_binary(&[b'@', 0x03]);
+        let mut dev = VarispecLCTF::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.add_to_wavelength_sequence(500.0).unwrap();
+        dev.add_to_wavelength_sequence(600.0).unwrap();
+        dev.load_wavelength_sequence().unwrap();
+    }
+
+    #[test]
+    fn wavelength_sequence_start_stop_matches_upstream_ttl_commands() {
+        let t = make_transport()
+            .expect("M0\r", "M0")
+            .expect("G1\r", "G1")
+            .expect("P0\r", "P0")
+            .expect("G0\r", "G0")
+            .expect("P0\r", "P0");
+        let mut dev = VarispecLCTF::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.start_wavelength_sequence().unwrap();
+        dev.stop_wavelength_sequence().unwrap();
     }
 }

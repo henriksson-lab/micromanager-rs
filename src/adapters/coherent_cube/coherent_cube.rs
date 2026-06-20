@@ -3,18 +3,22 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
 /// Coherent Cube laser controller.
 ///
 /// Open = laser on (L=1), Closed = laser off (L=0).
 pub struct CoherentCube {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
-    is_open: bool,
+    is_open: Cell<bool>,
     power_setpoint_mw: f64,
     min_power_mw: f64,
     max_power_mw: f64,
+    delay_ms: f64,
+    changed_time: Cell<Instant>,
 }
 
 impl CoherentCube {
@@ -33,6 +37,12 @@ impl CoherentCube {
             .define_property("State", PropertyValue::Integer(0), false)
             .unwrap();
         props.set_allowed_values("State", &["0", "1"]).unwrap();
+        props
+            .define_property("Delay_ms", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Delay_ms", 0.0, f64::MAX)
+            .unwrap();
         props
             .define_property(
                 "ExternalLaserPowerControl",
@@ -71,43 +81,47 @@ impl CoherentCube {
             props,
             transport: None,
             initialized: false,
-            is_open: false,
+            is_open: Cell::new(false),
             power_setpoint_mw: 0.0,
             min_power_mw: 0.0,
             max_power_mw: 100.0,
+            delay_ms: 0.0,
+            changed_time: Cell::new(Instant::now()),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
     /// Send `?TOKEN` and parse the `TOKEN=value` response.
-    fn query(&mut self, token: &str) -> MmResult<String> {
+    fn query(&self, token: &str) -> MmResult<String> {
         let cmd = format!("?{}", token);
         let tok = token.to_string();
         self.call_transport(|t| {
+            t.purge()?;
             let resp = t.send_recv(&cmd)?;
             Self::parse_response(&tok, &resp)
         })
     }
 
     /// Send `TOKEN=value` and parse the echoed `TOKEN=achieved` response.
-    fn set_token(&mut self, token: &str, value: &str) -> MmResult<String> {
+    fn set_token(&self, token: &str, value: &str) -> MmResult<String> {
         let cmd = format!("{}={}", token, value);
         let tok = token.to_string();
         self.call_transport(|t| {
+            t.purge()?;
             let resp = t.send_recv(&cmd)?;
             Self::parse_set_response(&tok, &resp)
         })
@@ -141,7 +155,7 @@ impl CoherentCube {
 
     fn set_power_setpoint(&mut self, requested_mw: f64) -> MmResult<f64> {
         let achieved = self
-            .set_token("P", &format!("{:.4}", requested_mw))?
+            .set_token("P", &Self::format_power_setpoint(requested_mw))?
             .parse::<f64>()
             .unwrap_or(0.0);
 
@@ -155,8 +169,25 @@ impl CoherentCube {
         Ok(requested_mw)
     }
 
+    fn format_power_setpoint(value: f64) -> String {
+        if value == 0.0 || !value.is_finite() {
+            return value.to_string();
+        }
+
+        let digits_before_decimal = value.abs().log10().floor() as i32 + 1;
+        let decimals = (5 - digits_before_decimal).max(0) as usize;
+        let mut formatted = format!("{value:.decimals$}");
+        if formatted.contains('.') {
+            formatted = formatted
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string();
+        }
+        formatted
+    }
+
     /// Read and discard the greeting banner (empty lines).
-    fn read_greeting(&mut self) -> MmResult<()> {
+    fn read_greeting(&self) -> MmResult<()> {
         loop {
             let line = self.call_transport(|t| t.receive_line())?;
             if line.trim().is_empty() {
@@ -221,8 +252,13 @@ impl Device for CoherentCube {
                 .entry_mut("Maximum Laser Power")
                 .map(|e| e.value = PropertyValue::Float(self.max_power_mw));
         }
+        let power_limit_upper = if self.max_power_mw < 1.0 {
+            100.0
+        } else {
+            self.max_power_mw
+        };
         self.props
-            .set_property_limits("PowerSetpoint", self.min_power_mw, self.max_power_mw)?;
+            .set_property_limits("PowerSetpoint", self.min_power_mw, power_limit_upper)?;
 
         // Query read-only ID fields
         if let Ok(hid) = self.query("HID") {
@@ -244,10 +280,10 @@ impl Device for CoherentCube {
 
         // Query current state
         if let Ok(l) = self.query("L") {
-            self.is_open = l.trim() == "1";
+            self.is_open.set(l.trim() == "1");
             self.props
                 .entry_mut("State")
-                .map(|e| e.value = PropertyValue::Integer(if self.is_open { 1 } else { 0 }));
+                .map(|e| e.value = PropertyValue::Integer(if self.is_open.get() { 1 } else { 0 }));
         }
         if let Ok(sp) = self.query("SP") {
             self.power_setpoint_mw = sp.parse().unwrap_or(0.0);
@@ -262,7 +298,7 @@ impl Device for CoherentCube {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            self.is_open = false;
+            self.is_open.set(false);
             self.initialized = false;
         }
         Ok(())
@@ -270,14 +306,65 @@ impl Device for CoherentCube {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
+            "PowerSetpoint" if self.initialized => Ok(PropertyValue::Float(
+                self.query("SP")?
+                    .parse()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
             "PowerSetpoint" => Ok(PropertyValue::Float(self.power_setpoint_mw)),
-            "State" => Ok(PropertyValue::Integer(if self.is_open { 1 } else { 0 })),
+            "PowerReadback" if self.initialized => Ok(PropertyValue::Float(
+                self.query("P")?
+                    .parse()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
+            "State" if self.initialized => {
+                let state = self.query("L")?;
+                match state.trim() {
+                    "0" => Ok(PropertyValue::Integer(0)),
+                    "1" => Ok(PropertyValue::Integer(1)),
+                    _ => Err(MmError::SerialInvalidResponse),
+                }
+            }
+            "State" => Ok(PropertyValue::Integer(if self.is_open.get() {
+                1
+            } else {
+                0
+            })),
+            "ExternalLaserPowerControl" if self.initialized => Ok(PropertyValue::Integer(
+                self.query("EXT")?
+                    .parse()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
+            "CWMode" if self.initialized => Ok(PropertyValue::Integer(
+                self.query("CW")?
+                    .parse()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
+            "HeadID" if self.initialized => Ok(PropertyValue::String(self.query("HID")?)),
+            "Head Usage Hours" if self.initialized => Ok(PropertyValue::String(self.query("HH")?)),
+            "Wavelength" if self.initialized => Ok(PropertyValue::Float(
+                self.query("WAVE")?
+                    .parse()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
+            "Minimum Laser Power" if self.initialized => Ok(PropertyValue::Float(
+                self.query("MINLP")?
+                    .parse()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
+            "Maximum Laser Power" if self.initialized => Ok(PropertyValue::Float(
+                self.query("MAXLP")?
+                    .parse()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
+            "Delay_ms" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "PowerSetpoint" => {
                 let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 let stored_mw = if self.initialized {
@@ -315,6 +402,12 @@ impl Device for CoherentCube {
                 }
                 self.props.set(name, PropertyValue::Integer(control))
             }
+            "Delay_ms" => {
+                let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(delay))?;
+                self.delay_ms = delay;
+                Ok(())
+            }
             _ => self.props.set(name, val),
         }
     }
@@ -336,7 +429,7 @@ impl Device for CoherentCube {
     }
 
     fn busy(&self) -> bool {
-        false
+        self.changed_time.get().elapsed().as_secs_f64() * 1000.0 < self.delay_ms
     }
 }
 
@@ -344,7 +437,8 @@ impl Shutter for CoherentCube {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         let val = if open { "1" } else { "0" };
         self.set_token("L", val)?;
-        self.is_open = open;
+        self.is_open.set(open);
+        self.changed_time.set(Instant::now());
         self.props
             .entry_mut("State")
             .map(|e| e.value = PropertyValue::Integer(if open { 1 } else { 0 }));
@@ -352,7 +446,15 @@ impl Shutter for CoherentCube {
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        if self.initialized {
+            match self.query("L")?.trim() {
+                "0" => Ok(false),
+                "1" => Ok(true),
+                _ => Err(MmError::SerialInvalidResponse),
+            }
+        } else {
+            Ok(self.is_open.get())
+        }
     }
 
     fn fire(&mut self, delta_t: f64) -> MmResult<()> {
@@ -394,7 +496,8 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let mut dev = CoherentCube::new().with_transport(Box::new(make_transport()));
+        let transport = make_transport().expect("?L", "L=0").expect("?L", "L=0");
+        let mut dev = CoherentCube::new().with_transport(Box::new(transport));
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
         assert_eq!(dev.power_setpoint_mw, 10.0);
@@ -410,7 +513,11 @@ mod tests {
     fn open_close() {
         let transport = make_transport()
             .any("L=1") // set_open(true) → L=1=response
-            .any("L=0"); // set_open(false)
+            .expect("?L", "L=1")
+            .expect("?L", "L=1")
+            .any("L=0") // set_open(false)
+            .expect("?L", "L=0")
+            .expect("?L", "L=0");
         let mut dev = CoherentCube::new().with_transport(Box::new(transport));
         dev.initialize().unwrap();
         dev.set_open(true).unwrap();
@@ -429,7 +536,7 @@ mod tests {
 
     #[test]
     fn set_power() {
-        let transport = make_transport().any("P=50.0000"); // set_property PowerSetpoint
+        let transport = make_transport().expect("P=50", "P=50"); // set_property PowerSetpoint
         let mut dev = CoherentCube::new().with_transport(Box::new(transport));
         dev.initialize().unwrap();
         dev.set_property("PowerSetpoint", PropertyValue::Float(50.0))
@@ -438,8 +545,43 @@ mod tests {
     }
 
     #[test]
+    fn max_power_below_one_uses_cpp_offline_limit_fallback() {
+        let transport = MockTransport::new()
+            .any("CoherentCube v1.0")
+            .any("")
+            .any("E=0")
+            .any(">=0")
+            .any("CDRH=0")
+            .any("T=1")
+            .any("EXT=0")
+            .expect("?MINLP", "MINLP=0.0")
+            .expect("?MAXLP", "MAXLP=0.0")
+            .any("HID=SN-001")
+            .any("HH=100.5")
+            .any("WAVE=488.0")
+            .any("L=0")
+            .any("SP=10.0");
+        let mut dev = CoherentCube::new().with_transport(Box::new(transport));
+        dev.initialize().unwrap();
+
+        let entry = dev.props.entry("PowerSetpoint").unwrap();
+        assert_eq!(dev.max_power_mw, 0.0);
+        assert_eq!(entry.upper_limit, 100.0);
+    }
+
+    #[test]
+    fn power_setpoint_format_matches_cpp_default_precision() {
+        assert_eq!(CoherentCube::format_power_setpoint(50.0), "50");
+        assert_eq!(CoherentCube::format_power_setpoint(12.3456), "12.346");
+        assert_eq!(CoherentCube::format_power_setpoint(0.123456), "0.12346");
+        assert_eq!(CoherentCube::format_power_setpoint(100.0), "100");
+    }
+
+    #[test]
     fn set_power_keeps_achieved_value_when_echo_is_close_but_different() {
-        let transport = make_transport().any("P=46.0000");
+        let transport = make_transport()
+            .any("P=46.0000")
+            .expect("?SP", "SP=46.0000");
         let mut dev = CoherentCube::new().with_transport(Box::new(transport));
         dev.initialize().unwrap();
         dev.set_property("PowerSetpoint", PropertyValue::Float(50.0))
@@ -468,7 +610,7 @@ mod tests {
 
     #[test]
     fn set_external_power_control() {
-        let transport = make_transport().any("EXT=1");
+        let transport = make_transport().any("EXT=1").expect("?EXT", "EXT=1");
         let mut dev = CoherentCube::new().with_transport(Box::new(transport));
         dev.initialize().unwrap();
         dev.set_property("ExternalLaserPowerControl", PropertyValue::Integer(1))
@@ -480,8 +622,90 @@ mod tests {
     }
 
     #[test]
+    fn get_power_properties_refresh_live_serial_values() {
+        let transport = make_transport()
+            .expect("?SP", "SP=12.5")
+            .expect("?P", "P=12.0")
+            .expect("?MINLP", "MINLP=0.5")
+            .expect("?MAXLP", "MAXLP=80.0");
+        let mut dev = CoherentCube::new().with_transport(Box::new(transport));
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.get_property("PowerSetpoint").unwrap(),
+            PropertyValue::Float(12.5)
+        );
+        assert_eq!(
+            dev.get_property("PowerReadback").unwrap(),
+            PropertyValue::Float(12.0)
+        );
+        assert_eq!(
+            dev.get_property("Minimum Laser Power").unwrap(),
+            PropertyValue::Float(0.5)
+        );
+        assert_eq!(
+            dev.get_property("Maximum Laser Power").unwrap(),
+            PropertyValue::Float(80.0)
+        );
+    }
+
+    #[test]
+    fn get_misc_properties_refresh_live_serial_values() {
+        let transport = make_transport()
+            .expect("?CW", "CW=1")
+            .expect("?HID", "HID=SN-002")
+            .expect("?HH", "HH=101.5")
+            .expect("?WAVE", "WAVE=561.0");
+        let mut dev = CoherentCube::new().with_transport(Box::new(transport));
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.get_property("CWMode").unwrap(),
+            PropertyValue::Integer(1)
+        );
+        assert_eq!(
+            dev.get_property("HeadID").unwrap(),
+            PropertyValue::String("SN-002".into())
+        );
+        assert_eq!(
+            dev.get_property("Head Usage Hours").unwrap(),
+            PropertyValue::String("101.5".into())
+        );
+        assert_eq!(
+            dev.get_property("Wavelength").unwrap(),
+            PropertyValue::Float(561.0)
+        );
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected() {
+        let transport = make_transport();
+        let mut dev = CoherentCube::new().with_transport(Box::new(transport));
+        dev.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
+    }
+
+    #[test]
+    fn busy_tracks_delay_after_state_change() {
+        let transport = make_transport().any("L=1");
+        let mut dev = CoherentCube::new().with_transport(Box::new(transport));
+        dev.initialize().unwrap();
+        dev.set_property("Delay_ms", PropertyValue::Float(1000.0))
+            .unwrap();
+        dev.set_open(true).unwrap();
+        assert!(dev.busy());
+    }
+
+    #[test]
     fn fire_closes_after_pulse() {
-        let transport = make_transport().any("L=1").any("L=0");
+        let transport = make_transport().any("L=1").any("L=0").expect("?L", "L=0");
         let mut dev = CoherentCube::new().with_transport(Box::new(transport));
         dev.initialize().unwrap();
         dev.fire(0.0).unwrap();

@@ -175,8 +175,48 @@ impl AravisCamera {
         let _ = camera.set_binning(bin, bin);
     }
 
+    fn apply_binning(camera: &aravis::Camera, bin: i32) -> MmResult<()> {
+        camera.set_binning(bin, bin).map_err(Self::arv_err)
+    }
+
     fn write_pixel_format(camera: &aravis::Camera, fmt: &str) {
         let _ = camera.set_pixel_format_from_string(fmt);
+    }
+
+    fn require_not_capturing(&self) -> MmResult<()> {
+        if self.capturing {
+            Err(MmError::CameraBusyAcquiring)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn sync_binning_choices(&mut self) {
+        let Some(camera) = self.camera.as_ref() else {
+            return;
+        };
+        let Ok(true) = camera.is_binning_available() else {
+            self.props.set_allowed_values("Binning", &["1"]).ok();
+            self.props.set_property_limits("Binning", 1.0, 1.0).ok();
+            return;
+        };
+        let (Ok((min, max)), Ok(increment)) =
+            (camera.x_binning_bounds(), camera.x_binning_increment())
+        else {
+            return;
+        };
+        if min > max || increment <= 0 {
+            return;
+        }
+        let allowed: Vec<String> = (min..=max)
+            .step_by(increment as usize)
+            .map(|v| v.to_string())
+            .collect();
+        let allowed_refs: Vec<&str> = allowed.iter().map(String::as_str).collect();
+        self.props
+            .set_property_limits("Binning", min as f64, max as f64)
+            .ok();
+        self.props.set_allowed_values("Binning", &allowed_refs).ok();
     }
 
     /// Sync cached dimensions and pixel format metadata from the camera.
@@ -298,10 +338,25 @@ impl Device for AravisCamera {
         let cam = self.camera.as_ref().unwrap();
         Self::write_exposure(cam, self.exposure_ms);
         Self::write_gain(cam, self.gain());
-        Self::write_binning(cam, self.binning);
         if self.pixel_format_configured {
             let fmt = self.pixel_format.clone();
             Self::write_pixel_format(cam, &fmt);
+        }
+
+        self.sync_binning_choices();
+        let binning_result = self
+            .camera
+            .as_ref()
+            .map(|cam| Self::apply_binning(cam, self.binning));
+        if !matches!(binning_result, Some(Ok(()))) {
+            self.binning = self
+                .camera
+                .as_ref()
+                .and_then(|cam| cam.binning().map(|(x, _)| x).ok())
+                .unwrap_or(1);
+            self.props
+                .set("Binning", PropertyValue::Integer(self.binning as i64))
+                .ok();
         }
 
         // Clear ROI to full sensor
@@ -350,6 +405,7 @@ impl Device for AravisCamera {
                 self.props.set(name, val)
             }
             "Exposure" => {
+                self.require_not_capturing()?;
                 self.exposure_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props
                     .set(name, PropertyValue::Float(self.exposure_ms))?;
@@ -359,6 +415,7 @@ impl Device for AravisCamera {
                 Ok(())
             }
             "Gain" => {
+                self.require_not_capturing()?;
                 let g = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, PropertyValue::Float(g))?;
                 if let Some(cam) = self.camera.as_ref() {
@@ -367,6 +424,7 @@ impl Device for AravisCamera {
                 Ok(())
             }
             "PixelType" => {
+                self.require_not_capturing()?;
                 let fmt = val.as_str();
                 if !is_supported_pixel_format(fmt) {
                     return Err(MmError::InvalidPropertyValue);
@@ -382,12 +440,13 @@ impl Device for AravisCamera {
                 Ok(())
             }
             "Binning" => {
-                self.binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
-                self.props
-                    .set(name, PropertyValue::Integer(self.binning as i64))?;
+                self.require_not_capturing()?;
+                let bin = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
+                self.props.set(name, PropertyValue::Integer(bin as i64))?;
                 if let Some(cam) = self.camera.as_ref() {
-                    Self::write_binning(cam, self.binning);
+                    Self::apply_binning(cam, bin)?;
                 }
+                self.binning = bin;
                 self.clear_roi().ok();
                 self.sync_dimensions();
                 Ok(())
@@ -468,6 +527,9 @@ impl Camera for AravisCamera {
     }
 
     fn set_exposure(&mut self, exp_ms: f64) {
+        if self.capturing {
+            return;
+        }
         self.exposure_ms = exp_ms;
         self.props
             .set("Exposure", PropertyValue::Float(exp_ms))
@@ -482,12 +544,13 @@ impl Camera for AravisCamera {
     }
 
     fn set_binning(&mut self, bin: i32) -> MmResult<()> {
-        self.binning = bin;
+        self.require_not_capturing()?;
         self.props
             .set("Binning", PropertyValue::Integer(bin as i64))?;
         if let Some(cam) = self.camera.as_ref() {
-            Self::write_binning(cam, bin);
+            Self::apply_binning(cam, bin)?;
         }
+        self.binning = bin;
         self.clear_roi().ok();
         self.sync_dimensions();
         Ok(())
@@ -503,6 +566,7 @@ impl Camera for AravisCamera {
     }
 
     fn set_roi(&mut self, roi: ImageRoi) -> MmResult<()> {
+        self.require_not_capturing()?;
         if roi.width == 0 && roi.height == 0 {
             return self.clear_roi();
         }
@@ -519,6 +583,7 @@ impl Camera for AravisCamera {
     }
 
     fn clear_roi(&mut self) -> MmResult<()> {
+        self.require_not_capturing()?;
         let cam = self.camera.as_ref().ok_or(MmError::NotConnected)?;
         // Reset offsets first, then set max dimensions
         let _ = cam.set_region(0, 0, 64, 64);
@@ -677,5 +742,24 @@ mod tests {
     fn snap_without_init_errors() {
         let mut d = AravisCamera::new();
         assert!(d.snap_image().is_err());
+    }
+
+    #[test]
+    fn acquisition_rejects_setting_changes_before_state_mutation() {
+        let mut d = AravisCamera::new();
+        d.capturing = true;
+
+        assert_eq!(
+            d.set_property("Exposure", PropertyValue::Float(25.0))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.get_exposure(), 10.0);
+        assert_eq!(
+            d.set_property("Binning", PropertyValue::Integer(2))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.get_binning(), 1);
     }
 }

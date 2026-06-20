@@ -3,6 +3,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 use std::thread;
 use std::time::Duration;
 
@@ -15,11 +16,11 @@ use std::time::Duration;
 ///   5 = internal error, 6 = sleep, 7 = searching SLM point.
 pub struct LaserBoxx {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
-    is_open: bool,
-    power_setpoint_mw: f64,
-    current_setpoint_pct: f64,
+    is_open: Cell<bool>,
+    power_setpoint_mw: Cell<f64>,
+    current_setpoint_pct: Cell<f64>,
     nominal_power_mw: f64,
     model: String,
 }
@@ -115,30 +116,30 @@ impl LaserBoxx {
             props,
             transport: None,
             initialized: false,
-            is_open: false,
-            power_setpoint_mw: 0.0,
-            current_setpoint_pct: 0.0,
+            is_open: Cell::new(false),
+            power_setpoint_mw: Cell::new(0.0),
+            current_setpoint_pct: Cell::new(0.0),
             nominal_power_mw: 100.0,
             model: String::new(),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let cmd = command.to_string();
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
@@ -155,30 +156,30 @@ impl LaserBoxx {
             .unwrap_or(100.0)
     }
 
-    fn status_string(code: i64) -> &'static str {
+    fn status_string(code: i64) -> MmResult<&'static str> {
         match code {
-            1 => "Warm-up phase",
-            2 => "Stand-by for emission",
-            3 => "Emission is on",
-            4 => "Alarm raised",
-            5 => "Internal error raised",
-            6 => "Sleep mode",
-            7 => "Searching for SLM point",
-            _ => "Unknown",
+            1 => Ok("Warm-up phase"),
+            2 => Ok("Stand-by for emission"),
+            3 => Ok("Emission is on"),
+            4 => Ok("Alarm raised"),
+            5 => Ok("Internal error raised"),
+            6 => Ok("Sleep mode"),
+            7 => Ok("Searching for SLM point"),
+            _ => Err(MmError::UnknownPosition),
         }
     }
 
-    fn alarm_string(code: i64) -> &'static str {
+    fn alarm_string(code: i64) -> MmResult<&'static str> {
         match code {
-            0 => "No alarm",
-            1 => "Out-of-bounds current",
-            2 => "Out-of-bounds power",
-            3 => "Out-of-bounds supply voltage",
-            4 => "Out-of-bounds inner temperature",
-            5 => "Out-of-bounds laser head temperature",
-            7 => "Interlock circuit open",
-            8 => "Manual reset",
-            _ => "Unknown alarm",
+            0 => Ok("No alarm"),
+            1 => Ok("Out-of-bounds current"),
+            2 => Ok("Out-of-bounds power"),
+            3 => Ok("Out-of-bounds supply voltage"),
+            4 => Ok("Out-of-bounds inner temperature"),
+            5 => Ok("Out-of-bounds laser head temperature"),
+            7 => Ok("Interlock circuit open"),
+            8 => Ok("Manual reset"),
+            _ => Err(MmError::UnknownPosition),
         }
     }
 
@@ -189,6 +190,157 @@ impl LaserBoxx {
             Some((idx, _)) => info[..idx].to_string(),
             None => info.to_string(),
         }
+    }
+
+    fn status_code(&self) -> MmResult<i64> {
+        self.cmd("?sta")?
+            .parse::<i64>()
+            .map_err(|_| MmError::SerialInvalidResponse)
+    }
+
+    fn status_is_open(code: i64) -> bool {
+        matches!(code, 1 | 3 | 7)
+    }
+
+    fn parse_f64_response(response: String) -> MmResult<f64> {
+        response
+            .trim_end_matches('%')
+            .parse::<f64>()
+            .map_err(|_| MmError::SerialInvalidResponse)
+    }
+
+    fn refresh_open_from_status(&self) -> MmResult<bool> {
+        let open = Self::status_is_open(self.status_code()?);
+        self.is_open.set(open);
+        Ok(open)
+    }
+
+    fn refresh_status_properties(&mut self) -> MmResult<()> {
+        let serial_number = self.cmd("hid?")?;
+        self.props
+            .entry_mut("Serial number")
+            .map(|e| e.value = PropertyValue::String(serial_number));
+
+        let software_version = self.cmd("?sv")?;
+        self.props
+            .entry_mut("Software version")
+            .map(|e| e.value = PropertyValue::String(software_version));
+
+        let model = Self::model_property_value(&self.cmd("inf?")?);
+        self.props
+            .entry_mut("Model")
+            .map(|e| e.value = PropertyValue::String(model));
+
+        let status = self.status_code()?;
+        let status_string = Self::status_string(status)?;
+        self.props
+            .entry_mut("Laser status")
+            .map(|e| e.value = PropertyValue::String(status_string.into()));
+
+        let status = self.status_code()?;
+        self.is_open.set(Self::status_is_open(status));
+        let emission = if self.is_open.get() { "On" } else { "Off" };
+        self.props
+            .entry_mut("Emission")
+            .map(|e| e.value = PropertyValue::String(emission.into()));
+
+        let alarm_code = self
+            .cmd("?f")?
+            .parse::<i64>()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        let alarm = Self::alarm_string(alarm_code)?;
+        self.props
+            .entry_mut("Alarm")
+            .map(|e| e.value = PropertyValue::String(alarm.into()));
+
+        let interlock = if self.cmd("?int")?.trim() == "1" {
+            "Closed"
+        } else {
+            "Open"
+        };
+        self.props
+            .entry_mut("OnInterlock")
+            .map(|e| e.value = PropertyValue::String(interlock.into()));
+
+        let control_mode = if self.model == "LBX" && self.cmd("?acc")?.trim() == "1" {
+            "ACC"
+        } else {
+            "APC"
+        };
+        self.props
+            .entry_mut("Control mode")
+            .map(|e| e.value = PropertyValue::String(control_mode.into()));
+
+        let monitored_power = self.cmd("?p")?.parse::<f64>().unwrap_or(0.0);
+        self.props
+            .entry_mut("Monitored power (mW)")
+            .map(|e| e.value = PropertyValue::Float(monitored_power));
+
+        let power_pct = if self.model == "LBX" {
+            100.0 * self.cmd("?sp")?.parse::<f64>().unwrap_or(0.0) / self.nominal_power_mw
+        } else {
+            Self::parse_f64_response(self.cmd("ip")?)?
+        };
+        self.power_setpoint_mw.set(power_pct);
+        self.props
+            .entry_mut("Power set point (%)")
+            .map(|e| e.value = PropertyValue::Float(power_pct));
+
+        if self.model != "LMX" {
+            let monitored_current = self.cmd("?c")?.parse::<f64>().unwrap_or(0.0);
+            self.props
+                .entry_mut("Monitored current (mA)")
+                .map(|e| e.value = PropertyValue::Float(monitored_current));
+        }
+
+        let current_pct = if self.model == "LBX" {
+            self.cmd("?sc")?.parse::<f64>().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        self.current_setpoint_pct.set(current_pct);
+        self.props
+            .entry_mut("Current set point (%)")
+            .map(|e| e.value = PropertyValue::Float(current_pct));
+
+        let sleep_mode = if self.model != "LMX" && self.cmd("?t")?.trim() == "0" {
+            "Sleep"
+        } else {
+            "Ready"
+        };
+        self.props
+            .entry_mut("Sleep mode")
+            .map(|e| e.value = PropertyValue::String(sleep_mode.into()));
+
+        let analog_mode = if self.model == "LBX" && self.cmd("?am")?.trim() == "1" {
+            "On"
+        } else {
+            "Off"
+        };
+        self.props
+            .entry_mut("Analog modulation")
+            .map(|e| e.value = PropertyValue::String(analog_mode.into()));
+
+        let digital_mode = if self.model == "LBX" && self.cmd("?ttl")?.trim() == "1" {
+            "On"
+        } else {
+            "Off"
+        };
+        self.props
+            .entry_mut("Digital modulation")
+            .map(|e| e.value = PropertyValue::String(digital_mode.into()));
+
+        let hours = self.cmd("?hh")?.parse::<f64>().unwrap_or(0.0);
+        self.props
+            .entry_mut("Emission time (hours)")
+            .map(|e| e.value = PropertyValue::Float(hours));
+
+        let base_temp = self.cmd("?bt")?.parse::<f64>().unwrap_or(0.0);
+        self.props
+            .entry_mut("Base temperature")
+            .map(|e| e.value = PropertyValue::Float(base_temp));
+
+        Ok(())
     }
 }
 
@@ -220,110 +372,7 @@ impl Device for LaserBoxx {
             e.value = PropertyValue::String(Self::model_property_value(&info));
         });
 
-        if let Ok(sn) = self.cmd("hid?") {
-            self.props
-                .entry_mut("Serial number")
-                .map(|e| e.value = PropertyValue::String(sn));
-        }
-        if let Ok(sv) = self.cmd("?sv") {
-            self.props
-                .entry_mut("Software version")
-                .map(|e| e.value = PropertyValue::String(sv));
-        }
-        if let Ok(hh) = self.cmd("?hh") {
-            let hours = hh.parse::<f64>().unwrap_or(0.0);
-            self.props
-                .entry_mut("Emission time (hours)")
-                .map(|e| e.value = PropertyValue::Float(hours));
-        }
-        if let Ok(bt) = self.cmd("?bt") {
-            let temp = bt.parse::<f64>().unwrap_or(0.0);
-            self.props
-                .entry_mut("Base temperature")
-                .map(|e| e.value = PropertyValue::Float(temp));
-        }
-        if let Ok(f) = self.cmd("?f") {
-            let code = f.parse::<i64>().unwrap_or(0);
-            let alarm = Self::alarm_string(code);
-            self.props
-                .entry_mut("Alarm")
-                .map(|e| e.value = PropertyValue::String(alarm.into()));
-        }
-        if let Ok(i) = self.cmd("?int") {
-            let s = if i.trim() == "1" { "Closed" } else { "Open" };
-            self.props
-                .entry_mut("OnInterlock")
-                .map(|e| e.value = PropertyValue::String(s.into()));
-        }
-
-        // Query initial status
-        if let Ok(sta) = self.cmd("?sta") {
-            let code = sta.parse::<i64>().unwrap_or(0);
-            self.is_open = matches!(code, 1 | 3 | 7);
-            let status = Self::status_string(code);
-            self.props
-                .entry_mut("Laser status")
-                .map(|e| e.value = PropertyValue::String(status.into()));
-            let emission = if self.is_open { "On" } else { "Off" };
-            self.props
-                .entry_mut("Emission")
-                .map(|e| e.value = PropertyValue::String(emission.into()));
-        }
-
-        // Query power readback
-        if let Ok(p) = self.cmd("?p") {
-            let mw = p.parse::<f64>().unwrap_or(0.0);
-            self.props
-                .entry_mut("Monitored power (mW)")
-                .map(|e| e.value = PropertyValue::Float(mw));
-        }
-        if self.model != "LMX" {
-            if let Ok(c) = self.cmd("?c") {
-                let ma = c.parse::<f64>().unwrap_or(0.0);
-                self.props
-                    .entry_mut("Monitored current (mA)")
-                    .map(|e| e.value = PropertyValue::Float(ma));
-            }
-        }
-        if self.model == "LBX" {
-            if let Ok(acc) = self.cmd("?acc") {
-                let mode = if acc.trim() == "1" { "ACC" } else { "APC" };
-                self.props
-                    .entry_mut("Control mode")
-                    .map(|e| e.value = PropertyValue::String(mode.into()));
-            }
-            if let Ok(sc) = self.cmd("?sc") {
-                let pct = sc.parse::<f64>().unwrap_or(0.0);
-                self.current_setpoint_pct = pct;
-                self.props
-                    .entry_mut("Current set point (%)")
-                    .map(|e| e.value = PropertyValue::Float(pct));
-            }
-            if let Ok(am) = self.cmd("?am") {
-                let mode = if am.trim() == "1" { "On" } else { "Off" };
-                self.props
-                    .entry_mut("Analog modulation")
-                    .map(|e| e.value = PropertyValue::String(mode.into()));
-            }
-            if let Ok(ttl) = self.cmd("?ttl") {
-                let mode = if ttl.trim() == "1" { "On" } else { "Off" };
-                self.props
-                    .entry_mut("Digital modulation")
-                    .map(|e| e.value = PropertyValue::String(mode.into()));
-            }
-        }
-        if self.model != "LMX" {
-            if let Ok(t) = self.cmd("?t") {
-                let mode = if t.trim() == "0" { "Sleep" } else { "Ready" };
-                self.props
-                    .entry_mut("Sleep mode")
-                    .map(|e| e.value = PropertyValue::String(mode.into()));
-            }
-        } else {
-            self.props
-                .entry_mut("Sleep mode")
-                .map(|e| e.value = PropertyValue::String("Ready".into()));
-        }
+        self.refresh_status_properties()?;
 
         self.initialized = true;
         Ok(())
@@ -332,7 +381,7 @@ impl Device for LaserBoxx {
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
             let _ = self.cmd("dl 0");
-            self.is_open = false;
+            self.is_open.set(false);
             self.initialized = false;
         }
         Ok(())
@@ -340,14 +389,106 @@ impl Device for LaserBoxx {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "Power set point (%)" => Ok(PropertyValue::Float(self.power_setpoint_mw)),
-            "Current set point (%)" => Ok(PropertyValue::Float(self.current_setpoint_pct)),
+            "Serial number" if self.initialized => Ok(PropertyValue::String(self.cmd("hid?")?)),
+            "Software version" if self.initialized => Ok(PropertyValue::String(self.cmd("?sv")?)),
+            "Model" if self.initialized => Ok(PropertyValue::String(Self::model_property_value(
+                &self.cmd("inf?")?,
+            ))),
+            "Laser status" if self.initialized => Ok(PropertyValue::String(
+                Self::status_string(self.status_code()?)?.into(),
+            )),
+            "Emission" if self.initialized => {
+                let open = self.refresh_open_from_status()?;
+                Ok(PropertyValue::String(
+                    if open { "On" } else { "Off" }.into(),
+                ))
+            }
+            "Alarm" if self.initialized => {
+                let code = self
+                    .cmd("?f")?
+                    .parse::<i64>()
+                    .map_err(|_| MmError::SerialInvalidResponse)?;
+                Ok(PropertyValue::String(Self::alarm_string(code)?.into()))
+            }
+            "OnInterlock" if self.initialized => {
+                let s = if self.cmd("?int")?.trim() == "1" {
+                    "Closed"
+                } else {
+                    "Open"
+                };
+                Ok(PropertyValue::String(s.into()))
+            }
+            "Control mode" if self.initialized => {
+                let mode = if self.model == "LBX" && self.cmd("?acc")?.trim() == "1" {
+                    "ACC"
+                } else {
+                    "APC"
+                };
+                Ok(PropertyValue::String(mode.into()))
+            }
+            "Monitored power (mW)" if self.initialized => Ok(PropertyValue::Float(
+                Self::parse_f64_response(self.cmd("?p")?)?,
+            )),
+            "Power set point (%)" if self.initialized => {
+                let pct = if self.model == "LBX" {
+                    100.0 * Self::parse_f64_response(self.cmd("?sp")?)? / self.nominal_power_mw
+                } else {
+                    Self::parse_f64_response(self.cmd("ip")?)?
+                };
+                self.power_setpoint_mw.set(pct);
+                Ok(PropertyValue::Float(pct))
+            }
+            "Power set point (%)" => Ok(PropertyValue::Float(self.power_setpoint_mw.get())),
+            "Monitored current (mA)" if self.initialized && self.model != "LMX" => Ok(
+                PropertyValue::Float(Self::parse_f64_response(self.cmd("?c")?)?),
+            ),
+            "Current set point (%)" if self.initialized => {
+                let pct = if self.model == "LBX" {
+                    Self::parse_f64_response(self.cmd("?sc")?)?
+                } else {
+                    0.0
+                };
+                self.current_setpoint_pct.set(pct);
+                Ok(PropertyValue::Float(pct))
+            }
+            "Current set point (%)" => Ok(PropertyValue::Float(self.current_setpoint_pct.get())),
+            "Sleep mode" if self.initialized => {
+                let mode = if self.model != "LMX" && self.cmd("?t")?.trim() == "0" {
+                    "Sleep"
+                } else {
+                    "Ready"
+                };
+                Ok(PropertyValue::String(mode.into()))
+            }
+            "Analog modulation" if self.initialized => {
+                let mode = if self.model == "LBX" && self.cmd("?am")?.trim() == "1" {
+                    "On"
+                } else {
+                    "Off"
+                };
+                Ok(PropertyValue::String(mode.into()))
+            }
+            "Digital modulation" if self.initialized => {
+                let mode = if self.model == "LBX" && self.cmd("?ttl")?.trim() == "1" {
+                    "On"
+                } else {
+                    "Off"
+                };
+                Ok(PropertyValue::String(mode.into()))
+            }
+            "Emission time (hours)" if self.initialized => Ok(PropertyValue::Float(
+                Self::parse_f64_response(self.cmd("?hh")?)?,
+            )),
+            "Base temperature" if self.initialized => Ok(PropertyValue::Float(
+                Self::parse_f64_response(self.cmd("?bt")?)?,
+            )),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "Emission" => {
                 let s = match &val {
                     PropertyValue::String(s) => s.clone(),
@@ -360,7 +501,7 @@ impl Device for LaserBoxx {
                 if self.initialized {
                     let cmd = if open { "dl 1" } else { "dl 0" };
                     self.cmd(cmd)?;
-                    self.is_open = open;
+                    self.is_open.set(open);
                     thread::sleep(Duration::from_millis(500));
                 }
                 self.props.set(name, PropertyValue::String(s))
@@ -382,7 +523,7 @@ impl Device for LaserBoxx {
                         .unwrap_or_default();
                     if old != mode {
                         self.cmd("dl 0")?;
-                        self.is_open = false;
+                        self.is_open.set(false);
                         let query = if mode == "ACC" { "1" } else { "0" };
                         self.cmd(&format!("acc {}", query))?;
                     }
@@ -402,9 +543,9 @@ impl Device for LaserBoxx {
                         format!("ip {}", pct)
                     };
                     self.cmd(&cmd)?;
-                    self.power_setpoint_mw = pct;
+                    self.power_setpoint_mw.set(pct);
                 } else {
-                    self.power_setpoint_mw = pct;
+                    self.power_setpoint_mw.set(pct);
                 }
                 self.props
                     .entry_mut("Power set point (%)")
@@ -419,7 +560,7 @@ impl Device for LaserBoxx {
                 if self.initialized && self.model == "LBX" {
                     self.cmd(&format!("c {}", pct))?;
                 }
-                self.current_setpoint_pct = pct;
+                self.current_setpoint_pct.set(pct);
                 self.props
                     .entry_mut("Current set point (%)")
                     .map(|e| e.value = PropertyValue::Float(pct));
@@ -487,7 +628,7 @@ impl Shutter for LaserBoxx {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         let cmd = if open { "dl 1" } else { "dl 0" };
         self.cmd(cmd)?;
-        self.is_open = open;
+        self.is_open.set(open);
         let emission = if open { "On" } else { "Off" };
         self.props
             .entry_mut("Emission")
@@ -496,12 +637,16 @@ impl Shutter for LaserBoxx {
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        if self.initialized {
+            self.refresh_open_from_status()
+        } else {
+            Ok(self.is_open.get())
+        }
     }
 
     fn fire(&mut self, delta_t: f64) -> MmResult<()> {
         self.set_open(true)?;
-        thread::sleep(Duration::from_millis((delta_t + 0.5).max(0.0) as u64));
+        thread::sleep(Duration::from_millis(delta_t.max(0.0) as u64));
         self.set_open(false)
     }
 }
@@ -516,23 +661,33 @@ mod tests {
             .expect("inf?", "LBX-473-100-CSB")
             .expect("hid?", "OXX-SN-001")
             .expect("?sv", "v2.3.1")
-            .expect("?hh", "123.5")
-            .expect("?bt", "31.2")
+            .expect("inf?", "LBX-473-100-CSB")
+            .expect("?sta", "2")
+            .expect("?sta", "2")
             .expect("?f", "0")
             .expect("?int", "1")
-            .expect("?sta", "2")
-            .expect("?p", "0.0")
-            .expect("?c", "12.5")
             .expect("?acc", "0")
+            .expect("?p", "0.0")
+            .expect("?sp", "0.0")
+            .expect("?c", "12.5")
             .expect("?sc", "7.5")
+            .expect("?t", "1")
             .expect("?am", "0")
             .expect("?ttl", "0")
-            .expect("?t", "1")
+            .expect("?hh", "123.5")
+            .expect("?bt", "31.2")
     }
 
     #[test]
     fn initialize_reads_fields() {
-        let mut dev = LaserBoxx::new().with_transport(Box::new(make_transport()));
+        let t = make_transport()
+            .expect("?sta", "2")
+            .expect("hid?", "OXX-SN-001")
+            .expect("?int", "1")
+            .expect("?f", "0")
+            .expect("?bt", "31.2")
+            .expect("?sc", "7.5");
+        let mut dev = LaserBoxx::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
         assert_eq!(dev.nominal_power_mw, 100.0);
@@ -560,7 +715,11 @@ mod tests {
 
     #[test]
     fn open_close_emission() {
-        let t = make_transport().expect("dl 1", "").expect("dl 0", "");
+        let t = make_transport()
+            .expect("dl 1", "")
+            .expect("?sta", "3")
+            .expect("dl 0", "")
+            .expect("?sta", "2");
         let mut dev = LaserBoxx::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_open(true).unwrap();
@@ -576,7 +735,7 @@ mod tests {
         dev.initialize().unwrap();
         dev.set_property("Power set point (%)", PropertyValue::Float(50.0))
             .unwrap();
-        assert_eq!(dev.power_setpoint_mw, 50.0);
+        assert_eq!(dev.power_setpoint_mw.get(), 50.0);
     }
 
     #[test]
@@ -585,14 +744,17 @@ mod tests {
             .expect("inf?", "LCX-561-200-CPP")
             .expect("hid?", "OXX-SN-002")
             .expect("?sv", "v2.3.1")
-            .expect("?hh", "10")
-            .expect("?bt", "30")
+            .expect("inf?", "LCX-561-200-CPP")
+            .expect("?sta", "2")
+            .expect("?sta", "2")
             .expect("?f", "0")
             .expect("?int", "1")
-            .expect("?sta", "2")
             .expect("?p", "0.0")
+            .expect("ip", "0.0")
             .expect("?c", "12.5")
             .expect("?t", "1")
+            .expect("?hh", "10")
+            .expect("?bt", "30")
             .expect("ip 50", "OK");
         let mut dev = LaserBoxx::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
@@ -642,5 +804,60 @@ mod tests {
     fn no_transport_error() {
         let mut dev = LaserBoxx::new();
         assert!(dev.initialize().is_err());
+    }
+
+    #[test]
+    fn port_cannot_change_after_initialize() {
+        let t = make_transport();
+        let mut dev = LaserBoxx::new().with_transport(Box::new(t));
+        dev.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
+    }
+
+    #[test]
+    fn unknown_status_and_alarm_codes_error() {
+        let t = MockTransport::new()
+            .expect("inf?", "LBX-473-100-CSB")
+            .expect("hid?", "OXX-SN-001")
+            .expect("?sv", "v2.3.1")
+            .expect("inf?", "LBX-473-100-CSB")
+            .expect("?sta", "99");
+        let mut dev = LaserBoxx::new().with_transport(Box::new(t));
+        assert_eq!(
+            dev.initialize().unwrap_err(),
+            MmError::UnknownPosition
+        );
+
+        let t = MockTransport::new()
+            .expect("inf?", "LBX-473-100-CSB")
+            .expect("hid?", "OXX-SN-001")
+            .expect("?sv", "v2.3.1")
+            .expect("inf?", "LBX-473-100-CSB")
+            .expect("?sta", "2")
+            .expect("?sta", "2")
+            .expect("?f", "9");
+        let mut dev = LaserBoxx::new().with_transport(Box::new(t));
+        assert_eq!(
+            dev.initialize().unwrap_err(),
+            MmError::UnknownPosition
+        );
+    }
+
+    #[test]
+    fn shutdown_ignores_emission_off_error() {
+        let t = make_transport();
+        let mut dev = LaserBoxx::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.shutdown().unwrap();
+        assert!(!dev.initialized);
     }
 }

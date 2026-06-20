@@ -18,6 +18,10 @@ pub struct IBeamSmartCW {
     is_open: bool,
     power_mw: f64,
     max_power_mw: f64,
+    fine_on: bool,
+    ext_on: bool,
+    fine_a_pct: f64,
+    fine_b_pct: f64,
 }
 
 impl IBeamSmartCW {
@@ -63,6 +67,30 @@ impl IBeamSmartCW {
         props
             .define_property("Power (mW)", PropertyValue::Float(0.0), false)
             .unwrap();
+        props
+            .define_property(
+                "Enable ext trigger",
+                PropertyValue::String("Off".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("Enable ext trigger", &["Off", "On"])
+            .unwrap();
+        props
+            .define_property("Enable Fine", PropertyValue::String("Off".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("Enable Fine", &["Off", "On"])
+            .unwrap();
+        props
+            .define_property("Fine A (%)", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("Fine A (%)", 0.0, 100.0).unwrap();
+        props
+            .define_property("Fine B (%)", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props.set_property_limits("Fine B (%)", 0.0, 100.0).unwrap();
 
         Self {
             props,
@@ -71,6 +99,10 @@ impl IBeamSmartCW {
             is_open: false,
             power_mw: 0.0,
             max_power_mw: 125.0,
+            fine_on: false,
+            ext_on: false,
+            fine_a_pct: 0.0,
+            fine_b_pct: 10.0,
         }
     }
 
@@ -94,8 +126,25 @@ impl IBeamSmartCW {
         let cmd = command.to_string();
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
-            Ok(resp.trim().to_string())
+            let resp = resp.trim().trim_start_matches("CMD>").trim().to_string();
+            if resp.starts_with("%SYS") && !resp.contains("%SYS-I") {
+                return Err(MmError::LocallyDefined(format!(
+                    "iBeamSmart error response: {}",
+                    resp
+                )));
+            }
+            Ok(resp)
         })
+    }
+
+    fn parse_on_off(resp: &str) -> Option<bool> {
+        if resp.contains("ON") {
+            Some(true)
+        } else if resp.contains("OFF") {
+            Some(false)
+        } else {
+            None
+        }
     }
 }
 
@@ -145,7 +194,7 @@ impl Device for IBeamSmartCW {
 
         // Get laser on/off status
         if let Ok(la) = self.cmd("sta la") {
-            self.is_open = la.contains("ON");
+            self.is_open = Self::parse_on_off(&la).unwrap_or(false);
             let label = if self.is_open { "On" } else { "Off" };
             self.props
                 .entry_mut("Laser Operation")
@@ -190,6 +239,14 @@ impl Device for IBeamSmartCW {
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "Power (mW)" => Ok(PropertyValue::Float(self.power_mw)),
+            "Enable ext trigger" => Ok(PropertyValue::String(
+                if self.ext_on { "On" } else { "Off" }.into(),
+            )),
+            "Enable Fine" => Ok(PropertyValue::String(
+                if self.fine_on { "On" } else { "Off" }.into(),
+            )),
+            "Fine A (%)" => Ok(PropertyValue::Float(self.fine_a_pct)),
+            "Fine B (%)" => Ok(PropertyValue::Float(self.fine_b_pct)),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -198,6 +255,9 @@ impl Device for IBeamSmartCW {
         match name {
             "Power (mW)" => {
                 let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.0..=self.max_power_mw).contains(&mw) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 if self.initialized {
                     self.cmd(&format!("set pow {:.2}", mw))?;
                 }
@@ -219,6 +279,46 @@ impl Device for IBeamSmartCW {
                     self.is_open = open;
                 }
                 self.props.set(name, PropertyValue::String(s))
+            }
+            "Enable ext trigger" => {
+                let s = val.as_str();
+                if s != "On" && s != "Off" {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let on = s == "On";
+                if self.initialized {
+                    self.cmd(if on { "en x" } else { "di x" })?;
+                }
+                self.ext_on = on;
+                self.props.set(name, PropertyValue::String(s.into()))
+            }
+            "Enable Fine" => {
+                let s = val.as_str();
+                if s != "On" && s != "Off" {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let on = s == "On";
+                if self.initialized {
+                    self.cmd(if on { "fine on" } else { "fine off" })?;
+                }
+                self.fine_on = on;
+                self.props.set(name, PropertyValue::String(s.into()))
+            }
+            "Fine A (%)" | "Fine B (%)" => {
+                let pct = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.0..=100.0).contains(&pct) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let fine = if name == "Fine A (%)" { 'a' } else { 'b' };
+                if self.initialized {
+                    self.cmd(&format!("fine {} {}", fine, pct))?;
+                }
+                if fine == 'a' {
+                    self.fine_a_pct = pct;
+                } else {
+                    self.fine_b_pct = pct;
+                }
+                self.props.set(name, PropertyValue::Float(pct))
             }
             _ => self.props.set(name, val),
         }
@@ -320,6 +420,38 @@ mod tests {
         dev.set_property("Power (mW)", PropertyValue::Float(50.0))
             .unwrap();
         assert_eq!(dev.power_mw, 50.0);
+    }
+
+    #[test]
+    fn fine_and_ext_properties_send_upstream_commands() {
+        let t = make_transport()
+            .expect("fine on", "[OK]")
+            .expect("fine a 25", "[OK]")
+            .expect("en x", "[OK]");
+        let mut dev = IBeamSmartCW::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("Enable Fine", PropertyValue::String("On".into()))
+            .unwrap();
+        dev.set_property("Fine A (%)", PropertyValue::Float(25.0))
+            .unwrap();
+        dev.set_property("Enable ext trigger", PropertyValue::String("On".into()))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("Enable Fine").unwrap(),
+            PropertyValue::String("On".into())
+        );
+        assert_eq!(
+            dev.get_property("Enable ext trigger").unwrap(),
+            PropertyValue::String("On".into())
+        );
+    }
+
+    #[test]
+    fn sys_error_response_is_propagated() {
+        let t = make_transport().expect("la on", "%SYS-E-001 bad");
+        let mut dev = IBeamSmartCW::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        assert!(dev.set_open(true).is_err());
     }
 
     #[test]

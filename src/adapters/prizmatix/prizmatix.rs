@@ -1,11 +1,144 @@
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Device, Generic};
+use crate::traits::{Device, Generic, Hub};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
 /// Maximum number of LED channels supported.
 const MAX_LEDS: usize = 8;
+
+pub struct PrizmatixHub {
+    props: PropertyMap,
+    transport: Option<Box<dyn Transport>>,
+    initialized: bool,
+    num_leds: usize,
+}
+
+impl PrizmatixHub {
+    pub fn new() -> Self {
+        let mut props = PropertyMap::new();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("NumLEDs", PropertyValue::Integer(0), true)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            num_leds: 0,
+        }
+    }
+
+    pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
+        self.transport = Some(t);
+        self
+    }
+
+    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
+        match self.transport.as_mut() {
+            Some(t) => f(t.as_mut()),
+            None => Err(MmError::NotConnected),
+        }
+    }
+
+    fn cmd(&mut self, command: &str) -> MmResult<String> {
+        self.call_transport(|t| Ok(t.send_recv(command)?.trim().to_string()))
+    }
+
+    fn read_num_leds(&mut self) -> MmResult<usize> {
+        let v0 = self.cmd("V:0\n")?;
+        let num_leds = v0
+            .find('_')
+            .and_then(|pos| v0[pos + 1..].parse::<usize>().ok())
+            .unwrap_or(0);
+        if num_leds == 0 {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        Ok(num_leds.min(MAX_LEDS))
+    }
+}
+
+impl Default for PrizmatixHub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Device for PrizmatixHub {
+    fn name(&self) -> &str {
+        "prizmatix-Hub"
+    }
+
+    fn description(&self) -> &str {
+        "Hub (required)"
+    }
+
+    fn initialize(&mut self) -> MmResult<()> {
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
+        self.num_leds = self.read_num_leds()?;
+        self.props
+            .entry_mut("NumLEDs")
+            .map(|e| e.value = PropertyValue::Integer(self.num_leds as i64));
+        self.initialized = true;
+        Ok(())
+    }
+
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
+
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::InvalidPropertyValue);
+        }
+        self.props.set(name, val)
+    }
+
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
+
+    fn is_property_read_only(&self, name: &str) -> bool {
+        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
+    }
+
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Hub
+    }
+
+    fn busy(&self) -> bool {
+        false
+    }
+}
+
+impl Hub for PrizmatixHub {
+    fn detect_installed_devices(&mut self) -> MmResult<Vec<String>> {
+        if !self.initialized {
+            self.num_leds = self.read_num_leds()?;
+        }
+        if self.num_leds > 0 {
+            Ok(vec!["Prizmatix Ctrl".into()])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+}
 
 /// Prizmatix LED controller.
 ///
@@ -295,6 +428,21 @@ mod tests {
             .expect("V:0", "V:0_3")
             .expect("V:1", "V:1_4")
             .expect("S:0", "0Red,Green,Blue")
+    }
+
+    #[test]
+    fn hub_detects_prizmatix_controller_child() {
+        let t = MockTransport::new().expect("V:0\n", "V:0_3");
+        let mut hub = PrizmatixHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+        assert_eq!(
+            hub.get_property("NumLEDs").unwrap(),
+            PropertyValue::Integer(3)
+        );
+        assert_eq!(
+            hub.detect_installed_devices().unwrap(),
+            vec!["Prizmatix Ctrl".to_string()]
+        );
     }
 
     #[test]

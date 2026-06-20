@@ -14,6 +14,38 @@ use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::RefCell;
+#[cfg(test)]
+use std::cell::Cell;
+#[cfg(not(test))]
+use std::sync::atomic::{AtomicI8, Ordering};
+
+#[cfg(not(test))]
+static ACTIVE_WHEEL: AtomicI8 = AtomicI8::new(-1);
+
+#[cfg(test)]
+thread_local! {
+    static ACTIVE_WHEEL: Cell<i8> = const { Cell::new(-1) };
+}
+
+#[cfg(not(test))]
+fn active_wheel_load() -> i8 {
+    ACTIVE_WHEEL.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+fn active_wheel_load() -> i8 {
+    ACTIVE_WHEEL.with(Cell::get)
+}
+
+#[cfg(not(test))]
+fn active_wheel_store(wheel: i8) {
+    ACTIVE_WHEEL.store(wheel, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn active_wheel_store(wheel: i8) {
+    ACTIVE_WHEEL.with(|active| active.set(wheel));
+}
 
 pub struct AsiFw1000FilterWheel {
     props: PropertyMap,
@@ -32,6 +64,9 @@ pub struct AsiFw1000FilterWheel {
 impl AsiFw1000FilterWheel {
     pub fn new(wheel: u8) -> Self {
         let mut props = PropertyMap::new();
+        props
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
+            .unwrap();
         props
             .define_property(
                 "ASIFilterWheelNumber",
@@ -99,6 +134,22 @@ impl AsiFw1000FilterWheel {
         })
     }
 
+    fn select_wheel_if_needed(&self) -> MmResult<()> {
+        if active_wheel_load() == self.wheel as i8 {
+            return Ok(());
+        }
+        self.select_wheel()
+    }
+
+    fn select_wheel(&self) -> MmResult<()> {
+        let resp = self.cmd(&format!("FW{}", self.wheel))?;
+        if !resp.starts_with("FW") {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        active_wheel_store(self.wheel as i8);
+        Ok(())
+    }
+
     /// Parse the data field from an echo response "CMD <data>".
     fn parse_last_word(resp: &str) -> &str {
         resp.split_whitespace().last().unwrap_or("")
@@ -123,13 +174,13 @@ impl Device for AsiFw1000FilterWheel {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
+        active_wheel_store(-1);
         // Match upstream FilterWheelSA initialization: disable prompt characters first.
         let vb_resp = self.cmd("VB 6")?;
         if !vb_resp.starts_with("VB 6") {
             return Err(MmError::SerialInvalidResponse);
         }
-        // Select wheel
-        self.cmd(&format!("FW{}", self.wheel))?;
+        self.select_wheel()?;
         // Query number of positions
         let nf_resp = self.cmd("NF")?;
         let mut n: u64 = Self::parse_last_word(&nf_resp).parse().unwrap_or(6);
@@ -147,7 +198,7 @@ impl Device for AsiFw1000FilterWheel {
         let allowed_refs: Vec<&str> = allowed.iter().map(String::as_str).collect();
         self.props
             .set_allowed_values("Closed_Position", &allowed_refs)?;
-        // Query current position
+        // Query current position after the forced initialization-time wheel select.
         let mp_resp = self.cmd("MP")?;
         self.position = Self::parse_last_word(&mp_resp).parse().unwrap_or(0);
         self.initialized = true;
@@ -210,6 +261,7 @@ impl Device for AsiFw1000FilterWheel {
                 let speed = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, PropertyValue::Integer(speed))?;
                 if self.initialized {
+                    self.select_wheel_if_needed()?;
                     let resp = self.cmd(&format!("SV {}", speed))?;
                     if !resp.starts_with("SV") {
                         return Err(MmError::SerialInvalidResponse);
@@ -220,6 +272,7 @@ impl Device for AsiFw1000FilterWheel {
             }
             "SerialCommand" => {
                 let command = val.as_str().to_string();
+                self.select_wheel_if_needed()?;
                 self.manual_serial_answer = self.cmd(&command)?;
                 self.props.set(name, PropertyValue::String(command))?;
                 if let Some(e) = self.props.entry_mut("SerialResponse") {
@@ -227,6 +280,7 @@ impl Device for AsiFw1000FilterWheel {
                 }
                 Ok(())
             }
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             _ => self.props.set(name, val),
         }
     }
@@ -244,6 +298,7 @@ impl Device for AsiFw1000FilterWheel {
         DeviceType::State
     }
     fn busy(&self) -> bool {
+        let _ = self.select_wheel_if_needed();
         self.cmd("?")
             .map(|resp| resp.trim() == "3")
             .unwrap_or(false)
@@ -255,6 +310,7 @@ impl StateDevice for AsiFw1000FilterWheel {
         if pos >= self.num_positions {
             return Err(MmError::UnknownPosition);
         }
+        self.select_wheel_if_needed()?;
         let resp = self.cmd(&format!("MP{}", pos))?;
         if !resp.starts_with("MP") {
             return Err(MmError::LocallyDefined("Error setting filter wheel".into()));
@@ -390,5 +446,36 @@ mod tests {
         let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
         w.initialize().unwrap();
         assert_eq!(w.get_property("State").unwrap(), PropertyValue::Integer(4));
+    }
+
+    #[test]
+    fn reselects_wheel_before_later_commands_when_global_active_changed() {
+        active_wheel_store(1);
+        let t = MockTransport::new()
+            .expect("VB 6\r", "VB 6")
+            .expect("FW0\r", "FW0")
+            .expect("NF\r", "NF 6")
+            .expect("MP\r", "MP 0")
+            .expect("FW0\r", "FW0")
+            .expect("MP3\r", "MP3");
+        let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        active_wheel_store(1);
+        w.set_position(3).unwrap();
+    }
+
+    #[test]
+    fn port_is_preinit_only() {
+        let t = make_init_transport();
+        let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
+        w.set_property("Port", PropertyValue::String("COM1".into())).unwrap();
+        w.initialize().unwrap();
+        assert!(w
+            .set_property("Port", PropertyValue::String("COM2".into()))
+            .is_err());
+        assert_eq!(
+            w.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
     }
 }

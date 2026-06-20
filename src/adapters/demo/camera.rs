@@ -5,6 +5,11 @@ use crate::types::{DeviceType, ImageRoi, PropertyValue};
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
+const MODE_ARTIFICIAL_WAVES: &str = "Artificial Waves";
+const MODE_NOISE: &str = "Noise";
+const MODE_COLOR_TEST: &str = "Color Test Pattern";
+const MODE_BEADS: &str = "Fluorescent Beads";
+
 /// Demo camera — simulates a 512×512 grayscale camera.
 pub struct DemoCamera {
     props: PropertyMap,
@@ -21,6 +26,31 @@ pub struct DemoCamera {
     binning: i32,
     roi: ImageRoi,
     capturing: bool,
+    exposure_maximum_ms: f64,
+    scan_mode: i64,
+    gain: i64,
+    offset: i64,
+    ccd_temperature: f64,
+    camera_ccd_x_size: u32,
+    camera_ccd_y_size: u32,
+    trigger_device: String,
+    drop_pixels: bool,
+    saturate_pixels: bool,
+    fast_image: bool,
+    fraction_drop_or_saturate: f64,
+    rotate_images: bool,
+    display_image_number: bool,
+    stripe_width: f64,
+    allow_multi_roi: bool,
+    multi_roi_fill_value: i64,
+    use_exposure_sequences: bool,
+    exposure_sequence: Vec<f64>,
+    exposure_sequence_running: bool,
+    exposure_sequence_index: usize,
+    sequence_remaining: Option<i64>,
+    sequence_interval_ms: f64,
+    sequence_last_frame: Option<Instant>,
+    mode: String,
 }
 
 impl DemoCamera {
@@ -31,6 +61,10 @@ impl DemoCamera {
         let mut props = PropertyMap::new();
         props
             .define_property("Exposure", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props.set_property_limits("Exposure", 0.0, 1000.0).unwrap();
+        props
+            .define_property("MaximumExposureMs", PropertyValue::Float(1000.0), false)
             .unwrap();
         props
             .define_property("Binning", PropertyValue::Integer(1), false)
@@ -57,12 +91,140 @@ impl DemoCamera {
             .define_property("ReadoutTime", PropertyValue::Float(0.0), false)
             .unwrap();
         props
+            .define_property("ScanMode", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .set_allowed_values("ScanMode", &["1", "2", "3"])
+            .unwrap();
+        props
+            .define_property("Gain", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_property_limits("Gain", -5.0, 8.0).unwrap();
+        props
+            .define_property("Offset", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("CCDTemperature", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .set_property_limits("CCDTemperature", -100.0, 10.0)
+            .unwrap();
+        props
+            .define_property("CCDTemperature RO", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property(
+                "OnCameraCCDXSize",
+                PropertyValue::Integer(width as i64),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "OnCameraCCDYSize",
+                PropertyValue::Integer(height as i64),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("TriggerDevice", PropertyValue::String(String::new()), false)
+            .unwrap();
+        for name in [
+            "DropPixels",
+            "SaturatePixels",
+            "FastImage",
+            "RotateImages",
+            "DisplayImageNumber",
+            "AllowMultiROI",
+        ] {
+            props
+                .define_property(name, PropertyValue::Integer(0), false)
+                .unwrap();
+            props.set_allowed_values(name, &["0", "1"]).unwrap();
+        }
+        props
+            .define_property(
+                "FractionOfPixelsToDropOrSaturate",
+                PropertyValue::Float(0.002),
+                false,
+            )
+            .unwrap();
+        props
+            .set_property_limits("FractionOfPixelsToDropOrSaturate", 0.0, 0.1)
+            .unwrap();
+        props
+            .define_property("StripeWidth", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("StripeWidth", 0.0, 10.0).unwrap();
+        props
+            .define_property("MultiROIFillValue", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .set_property_limits("MultiROIFillValue", 0.0, 65536.0)
+            .unwrap();
+        props
+            .define_property(
+                "UseExposureSequences",
+                PropertyValue::String("No".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("UseExposureSequences", &["Yes", "No"])
+            .unwrap();
+        props
+            .define_property(
+                "Mode",
+                PropertyValue::String(MODE_ARTIFICIAL_WAVES.into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values(
+                "Mode",
+                &[
+                    MODE_ARTIFICIAL_WAVES,
+                    MODE_NOISE,
+                    MODE_COLOR_TEST,
+                    MODE_BEADS,
+                ],
+            )
+            .unwrap();
+        props
             .define_property(
                 "CameraName",
                 PropertyValue::String("DemoCamera-MultiMode".into()),
                 true,
             )
             .unwrap();
+        props
+            .define_property("CameraID", PropertyValue::String("V1.0".into()), true)
+            .unwrap();
+        props
+            .define_property("SimulateCrash", PropertyValue::String(String::new()), false)
+            .unwrap();
+        props
+            .set_allowed_values(
+                "SimulateCrash",
+                &["", "Dereference Null Pointer", "Divide by Zero"],
+            )
+            .unwrap();
+        for index in 1..=6 {
+            let name = format!("TestProperty{index}");
+            props
+                .define_property(&name, PropertyValue::Float(0.0), false)
+                .unwrap();
+            if index % 5 != 0 {
+                let upper = (index as f64)
+                    * 10_f64.powi(if index % 2 == 1 {
+                        -(index as i32)
+                    } else {
+                        index as i32
+                    });
+                let lower = if index % 3 == 0 { 0.0 } else { -upper };
+                props.set_property_limits(&name, lower, upper).unwrap();
+            }
+        }
 
         Self {
             props,
@@ -79,7 +241,47 @@ impl DemoCamera {
             binning: 1,
             roi: ImageRoi::new(0, 0, width, height),
             capturing: false,
+            exposure_maximum_ms: 1000.0,
+            scan_mode: 1,
+            gain: 0,
+            offset: 0,
+            ccd_temperature: 0.0,
+            camera_ccd_x_size: width,
+            camera_ccd_y_size: height,
+            trigger_device: String::new(),
+            drop_pixels: false,
+            saturate_pixels: false,
+            fast_image: false,
+            fraction_drop_or_saturate: 0.002,
+            rotate_images: false,
+            display_image_number: false,
+            stripe_width: 0.0,
+            allow_multi_roi: false,
+            multi_roi_fill_value: 0,
+            use_exposure_sequences: false,
+            exposure_sequence: Vec::new(),
+            exposure_sequence_running: false,
+            exposure_sequence_index: 0,
+            sequence_remaining: None,
+            sequence_interval_ms: 0.0,
+            sequence_last_frame: None,
+            mode: MODE_ARTIFICIAL_WAVES.into(),
         }
+    }
+
+    fn set_allowed_binning_for_scan_mode(&mut self) -> MmResult<()> {
+        let allowed: &[&str] = match self.scan_mode {
+            1 => &["1", "2", "4", "8"],
+            2 => &["1", "2", "4"],
+            _ => &["1", "2"],
+        };
+        self.props.set_allowed_values("Binning", allowed)?;
+        if self.scan_mode == 3 && [4, 8].contains(&self.binning) {
+            self.set_binning_checked(2)?;
+        } else if self.scan_mode == 2 && self.binning == 8 {
+            self.set_binning_checked(4)?;
+        }
+        Ok(())
     }
 
     fn set_pixel_type(&mut self, pixel_type: &str) -> MmResult<()> {
@@ -166,7 +368,12 @@ impl DemoCamera {
         if self.capturing {
             return Err(MmError::CameraBusyAcquiring);
         }
-        if ![1, 2, 4, 8].contains(&bin) {
+        let allowed = match self.scan_mode {
+            1 => [1, 2, 4, 8].contains(&bin),
+            2 => [1, 2, 4].contains(&bin),
+            _ => [1, 2].contains(&bin),
+        };
+        if !allowed {
             return Err(MmError::InvalidPropertyValue);
         }
         let old_binning = self.binning;
@@ -174,12 +381,12 @@ impl DemoCamera {
         self.props
             .set("Binning", PropertyValue::Integer(bin as i64))?;
         self.binning = bin;
-        self.width = 512 / bin as u32;
-        self.height = 512 / bin as u32;
+        self.width = self.camera_ccd_x_size / bin as u32;
+        self.height = self.camera_ccd_y_size / bin as u32;
         if old_roi.x == 0
             && old_roi.y == 0
-            && old_roi.width == 512 / old_binning as u32
-            && old_roi.height == 512 / old_binning as u32
+            && old_roi.width == self.camera_ccd_x_size / old_binning as u32
+            && old_roi.height == self.camera_ccd_y_size / old_binning as u32
         {
             self.roi = ImageRoi::new(0, 0, self.width, self.height);
         } else {
@@ -223,20 +430,163 @@ impl DemoCamera {
         Ok(())
     }
 
+    fn sequence_exposure(&mut self) -> f64 {
+        if self.exposure_sequence_running && !self.exposure_sequence.is_empty() {
+            let exposure = self.exposure_sequence[self.exposure_sequence_index];
+            self.exposure_sequence_index =
+                (self.exposure_sequence_index + 1) % self.exposure_sequence.len();
+            exposure
+        } else {
+            self.exposure_ms
+        }
+    }
+
+    fn wait_for_sequence_interval(&mut self) {
+        if !self.capturing || self.sequence_interval_ms <= 0.0 {
+            return;
+        }
+        if let Some(last_frame) = self.sequence_last_frame {
+            let interval = Duration::from_secs_f64(self.sequence_interval_ms / 1000.0);
+            let elapsed = last_frame.elapsed();
+            if interval > elapsed {
+                std::thread::sleep(interval - elapsed);
+            }
+        }
+    }
+
+    fn finish_sequence_frame(&mut self) {
+        if !self.capturing {
+            return;
+        }
+        self.sequence_last_frame = Some(Instant::now());
+        if let Some(remaining) = self.sequence_remaining.as_mut() {
+            *remaining -= 1;
+            if *remaining <= 0 {
+                let _ = self.stop_sequence_acquisition();
+            }
+        }
+    }
+
+    pub fn clear_exposure_sequence(&mut self) -> MmResult<()> {
+        if !self.use_exposure_sequences {
+            return Err(MmError::UnsupportedCommand);
+        }
+        self.exposure_sequence.clear();
+        self.exposure_sequence_index = 0;
+        Ok(())
+    }
+
+    pub fn add_to_exposure_sequence(&mut self, exposure_time_ms: f64) -> MmResult<()> {
+        if !self.use_exposure_sequences {
+            return Err(MmError::UnsupportedCommand);
+        }
+        if exposure_time_ms < 0.0 || exposure_time_ms > self.exposure_maximum_ms {
+            return Err(MmError::InvalidPropertyValue);
+        }
+        self.exposure_sequence.push(exposure_time_ms);
+        Ok(())
+    }
+
+    pub fn start_exposure_sequence(&mut self) -> MmResult<()> {
+        if !self.use_exposure_sequences {
+            return Err(MmError::UnsupportedCommand);
+        }
+        self.exposure_sequence_running = true;
+        Ok(())
+    }
+
+    pub fn stop_exposure_sequence(&mut self) -> MmResult<()> {
+        if !self.use_exposure_sequences {
+            return Err(MmError::UnsupportedCommand);
+        }
+        self.exposure_sequence_running = false;
+        self.exposure_sequence_index = 0;
+        Ok(())
+    }
+
+    pub fn exposure_sequence_max_length(&self) -> MmResult<i64> {
+        if !self.use_exposure_sequences {
+            return Err(MmError::UnsupportedCommand);
+        }
+        Ok(1_000)
+    }
+
+    pub fn is_exposure_sequenceable(&self) -> bool {
+        self.use_exposure_sequences
+    }
+
     /// Generate a synthetic test pattern (sine wave gradient).
-    fn generate_image(&mut self) {
+    fn generate_image(&mut self, exposure_ms: f64) {
         let w = self.roi.width as usize;
         let h = self.roi.height as usize;
         let bytes_per_pixel = self.bytes_per_pixel as usize;
         let buf = &mut self.image_buf;
         buf.resize(w * h * bytes_per_pixel, 0);
+        let exposure_scale = (exposure_ms / self.exposure_maximum_ms.max(1.0)).clamp(0.0, 1.0);
 
-        for y in 0..h {
-            for x in 0..w {
-                let val = ((x + y) % 256) as u8;
-                let idx = (y * w + x) * bytes_per_pixel;
-                for byte in &mut buf[idx..idx + bytes_per_pixel] {
-                    *byte = val;
+        match self.mode.as_str() {
+            MODE_NOISE => {
+                for y in 0..h {
+                    for x in 0..w {
+                        let noise = ((x.wrapping_mul(73) ^ y.wrapping_mul(151)) & 0xff) as f64;
+                        let val = (10.0 + noise * exposure_scale).min(255.0).round() as u8;
+                        let idx = (y * w + x) * bytes_per_pixel;
+                        for byte in &mut buf[idx..idx + bytes_per_pixel] {
+                            *byte = val;
+                        }
+                    }
+                }
+            }
+            MODE_COLOR_TEST => {
+                for y in 0..h {
+                    for x in 0..w {
+                        let idx = (y * w + x) * bytes_per_pixel;
+                        let band = if w == 0 { 0 } else { x * 6 / w };
+                        let val = ((band * 42) as f64 * exposure_scale).round() as u8;
+                        for byte in &mut buf[idx..idx + bytes_per_pixel] {
+                            *byte = val;
+                        }
+                        if bytes_per_pixel >= 4 {
+                            buf[idx] = if band == 0 || band == 3 { 255 } else { 0 };
+                            buf[idx + 1] = if band == 1 || band == 3 { 255 } else { 0 };
+                            buf[idx + 2] = if band == 2 || band == 3 { 255 } else { 0 };
+                            buf[idx + 3] = 255;
+                        }
+                    }
+                }
+            }
+            MODE_BEADS => {
+                for y in 0..h {
+                    for x in 0..w {
+                        let tile_x = x / 32;
+                        let tile_y = y / 32;
+                        let center_x = tile_x * 32 + ((tile_y * 11 + 13) % 24) + 4;
+                        let center_y = tile_y * 32 + ((tile_x * 7 + 9) % 24) + 4;
+                        let dx = x as isize - center_x as isize;
+                        let dy = y as isize - center_y as isize;
+                        let dist2 = dx * dx + dy * dy;
+                        let val = if dist2 <= 9 {
+                            (220.0 * exposure_scale).round() as u8
+                        } else {
+                            (8.0 * exposure_scale).round() as u8
+                        };
+                        let idx = (y * w + x) * bytes_per_pixel;
+                        for byte in &mut buf[idx..idx + bytes_per_pixel] {
+                            *byte = val;
+                        }
+                    }
+                }
+            }
+            _ => {
+                for y in 0..h {
+                    for x in 0..w {
+                        let raw = ((x + y) % 256) as f64;
+                        let val = (raw * exposure_scale).round() as u8;
+                        let idx = (y * w + x) * bytes_per_pixel;
+                        for byte in &mut buf[idx..idx + bytes_per_pixel] {
+                            *byte = val;
+                        }
+                    }
                 }
             }
         }
@@ -276,6 +626,37 @@ impl Device for DemoCamera {
             "PixelType" => self.props.get(name).cloned(),
             "BitDepth" => Ok(PropertyValue::Integer(self.bit_depth as i64)),
             "ReadoutTime" => Ok(PropertyValue::Float(self.readout_ms)),
+            "MaximumExposureMs" => Ok(PropertyValue::Float(self.exposure_maximum_ms)),
+            "ScanMode" => Ok(PropertyValue::Integer(self.scan_mode)),
+            "Gain" => Ok(PropertyValue::Integer(self.gain)),
+            "Offset" => Ok(PropertyValue::Integer(self.offset)),
+            "CCDTemperature" | "CCDTemperature RO" => {
+                Ok(PropertyValue::Float(self.ccd_temperature))
+            }
+            "OnCameraCCDXSize" => Ok(PropertyValue::Integer(self.camera_ccd_x_size as i64)),
+            "OnCameraCCDYSize" => Ok(PropertyValue::Integer(self.camera_ccd_y_size as i64)),
+            "TriggerDevice" => Ok(PropertyValue::String(self.trigger_device.clone())),
+            "DropPixels" => Ok(PropertyValue::Integer(self.drop_pixels as i64)),
+            "SaturatePixels" => Ok(PropertyValue::Integer(self.saturate_pixels as i64)),
+            "FastImage" => Ok(PropertyValue::Integer(self.fast_image as i64)),
+            "FractionOfPixelsToDropOrSaturate" => {
+                Ok(PropertyValue::Float(self.fraction_drop_or_saturate))
+            }
+            "RotateImages" => Ok(PropertyValue::Integer(self.rotate_images as i64)),
+            "DisplayImageNumber" => Ok(PropertyValue::Integer(self.display_image_number as i64)),
+            "StripeWidth" => Ok(PropertyValue::Float(self.stripe_width)),
+            "AllowMultiROI" => Ok(PropertyValue::Integer(self.allow_multi_roi as i64)),
+            "MultiROIFillValue" => Ok(PropertyValue::Integer(self.multi_roi_fill_value)),
+            "UseExposureSequences" => Ok(PropertyValue::String(
+                if self.use_exposure_sequences {
+                    "Yes"
+                } else {
+                    "No"
+                }
+                .into(),
+            )),
+            "Mode" => Ok(PropertyValue::String(self.mode.clone())),
+            "SimulateCrash" => Ok(PropertyValue::String(String::new())),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -284,8 +665,26 @@ impl Device for DemoCamera {
         match name {
             "Exposure" => {
                 let exposure = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, val)?;
+                if exposure < 0.0 || exposure > self.exposure_maximum_ms {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.props.set(name, PropertyValue::Float(exposure))?;
                 self.exposure_ms = exposure;
+                Ok(())
+            }
+            "MaximumExposureMs" => {
+                let max = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if max < 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.exposure_maximum_ms = max;
+                self.props
+                    .set_property_limits("Exposure", 0.0, self.exposure_maximum_ms)?;
+                self.props.set(name, PropertyValue::Float(max))?;
+                if self.exposure_ms > max {
+                    self.exposure_ms = max;
+                    self.props.set("Exposure", PropertyValue::Float(max))?;
+                }
                 Ok(())
             }
             "Binning" => {
@@ -302,6 +701,116 @@ impl Device for DemoCamera {
                 self.props.set(name, val)?;
                 self.readout_ms = readout;
                 Ok(())
+            }
+            "ScanMode" => {
+                let scan_mode = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(1..=3).contains(&scan_mode) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.props.set(name, PropertyValue::Integer(scan_mode))?;
+                self.scan_mode = scan_mode;
+                self.set_allowed_binning_for_scan_mode()
+            }
+            "Gain" => {
+                let gain = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(gain))?;
+                self.gain = gain;
+                Ok(())
+            }
+            "Offset" => {
+                let offset = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(offset))?;
+                self.offset = offset;
+                Ok(())
+            }
+            "CCDTemperature" => {
+                let temp = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(temp))?;
+                self.ccd_temperature = temp;
+                Ok(())
+            }
+            "OnCameraCCDXSize" | "OnCameraCCDYSize" => {
+                if self.capturing {
+                    return Err(MmError::CameraBusyAcquiring);
+                }
+                let size = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(16..=33_000).contains(&size) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.props.set(name, PropertyValue::Integer(size))?;
+                if name == "OnCameraCCDXSize" {
+                    self.camera_ccd_x_size = size as u32;
+                } else {
+                    self.camera_ccd_y_size = size as u32;
+                }
+                self.width = self.camera_ccd_x_size / self.binning as u32;
+                self.height = self.camera_ccd_y_size / self.binning as u32;
+                self.roi = ImageRoi::new(0, 0, self.width, self.height);
+                self.image_buf.resize(
+                    (self.roi.width * self.roi.height * self.bytes_per_pixel) as usize,
+                    0,
+                );
+                Ok(())
+            }
+            "TriggerDevice" => {
+                self.trigger_device = val.as_str().to_string();
+                self.props.set(name, val)
+            }
+            "DropPixels" | "SaturatePixels" | "FastImage" | "RotateImages"
+            | "DisplayImageNumber" | "AllowMultiROI" => {
+                let enabled = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
+                self.props
+                    .set(name, PropertyValue::Integer(enabled as i64))?;
+                match name {
+                    "DropPixels" => self.drop_pixels = enabled,
+                    "SaturatePixels" => self.saturate_pixels = enabled,
+                    "FastImage" => self.fast_image = enabled,
+                    "RotateImages" => self.rotate_images = enabled,
+                    "DisplayImageNumber" => self.display_image_number = enabled,
+                    "AllowMultiROI" => self.allow_multi_roi = enabled,
+                    _ => {}
+                }
+                Ok(())
+            }
+            "FractionOfPixelsToDropOrSaturate" => {
+                let fraction = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(fraction))?;
+                self.fraction_drop_or_saturate = fraction;
+                Ok(())
+            }
+            "StripeWidth" => {
+                let width = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(width))?;
+                self.stripe_width = width;
+                Ok(())
+            }
+            "MultiROIFillValue" => {
+                let fill = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(fill))?;
+                self.multi_roi_fill_value = fill;
+                Ok(())
+            }
+            "UseExposureSequences" => {
+                let setting = val.as_str();
+                self.props
+                    .set(name, PropertyValue::String(setting.to_string()))?;
+                self.use_exposure_sequences = setting == "Yes";
+                if !self.use_exposure_sequences {
+                    self.exposure_sequence_running = false;
+                    self.exposure_sequence_index = 0;
+                }
+                Ok(())
+            }
+            "Mode" => {
+                let mode = val.as_str().to_string();
+                self.props.set(name, PropertyValue::String(mode.clone()))?;
+                self.mode = mode;
+                Ok(())
+            }
+            "SimulateCrash" => {
+                self.props.set(name, val)?;
+                self.props
+                    .set(name, PropertyValue::String(String::new()))
             }
             _ => self.props.set(name, val),
         }
@@ -333,11 +842,14 @@ impl Camera for DemoCamera {
         if !self.initialized {
             return Err(MmError::NotConnected);
         }
-        if self.exposure_ms > 0.0 {
-            std::thread::sleep(Duration::from_secs_f64(self.exposure_ms / 1000.0));
+        self.wait_for_sequence_interval();
+        let exposure_ms = self.sequence_exposure();
+        if exposure_ms > 0.0 {
+            std::thread::sleep(Duration::from_secs_f64(exposure_ms / 1000.0));
         }
-        self.generate_image();
+        self.generate_image(exposure_ms);
         self.readout_start.set(Some(Instant::now()));
+        self.finish_sequence_frame();
         Ok(())
     }
 
@@ -381,6 +893,7 @@ impl Camera for DemoCamera {
     }
 
     fn set_exposure(&mut self, exp_ms: f64) {
+        let exp_ms = exp_ms.clamp(0.0, self.exposure_maximum_ms);
         self.exposure_ms = exp_ms;
         let _ = self.props.set("Exposure", PropertyValue::Float(exp_ms));
     }
@@ -409,12 +922,18 @@ impl Camera for DemoCamera {
         if self.capturing {
             return Err(MmError::CameraBusyAcquiring);
         }
+        self.sequence_remaining = if _count > 0 { Some(_count) } else { None };
+        self.sequence_interval_ms = _interval_ms.max(0.0);
+        self.sequence_last_frame = None;
         self.capturing = true;
         Ok(())
     }
 
     fn stop_sequence_acquisition(&mut self) -> MmResult<()> {
         self.capturing = false;
+        self.sequence_remaining = None;
+        self.sequence_interval_ms = 0.0;
+        self.sequence_last_frame = None;
         Ok(())
     }
 
@@ -623,5 +1142,223 @@ mod tests {
             MmError::CameraBusyAcquiring
         );
         assert_eq!(cam.get_roi().unwrap(), ImageRoi::new(0, 0, 512, 512));
+    }
+
+    #[test]
+    fn upstream_simple_property_surface_is_stateful() {
+        let mut cam = DemoCamera::new();
+
+        for name in [
+            "CameraID",
+            "MaximumExposureMs",
+            "TestProperty1",
+            "TestProperty2",
+            "TestProperty3",
+            "TestProperty4",
+            "TestProperty5",
+            "TestProperty6",
+            "ScanMode",
+            "Gain",
+            "Offset",
+            "CCDTemperature",
+            "CCDTemperature RO",
+            "OnCameraCCDXSize",
+            "OnCameraCCDYSize",
+            "TriggerDevice",
+            "DropPixels",
+            "SaturatePixels",
+            "FastImage",
+            "FractionOfPixelsToDropOrSaturate",
+            "RotateImages",
+            "DisplayImageNumber",
+            "StripeWidth",
+            "AllowMultiROI",
+            "MultiROIFillValue",
+            "UseExposureSequences",
+            "Mode",
+            "SimulateCrash",
+        ] {
+            assert!(cam.has_property(name), "{name}");
+        }
+
+        cam.set_property("Gain", PropertyValue::Integer(8)).unwrap();
+        cam.set_property("CCDTemperature", PropertyValue::Float(-20.0))
+            .unwrap();
+        cam.set_property("TriggerDevice", PropertyValue::String("DShutter".into()))
+            .unwrap();
+        cam.set_property("Mode", PropertyValue::String(MODE_BEADS.into()))
+            .unwrap();
+        cam.set_property("UseExposureSequences", PropertyValue::String("Yes".into()))
+            .unwrap();
+
+        assert_eq!(cam.get_property("Gain").unwrap(), PropertyValue::Integer(8));
+        assert_eq!(
+            cam.get_property("CCDTemperature RO").unwrap(),
+            PropertyValue::Float(-20.0)
+        );
+        assert_eq!(
+            cam.get_property("TriggerDevice").unwrap(),
+            PropertyValue::String("DShutter".into())
+        );
+        assert_eq!(
+            cam.get_property("Mode").unwrap(),
+            PropertyValue::String(MODE_BEADS.into())
+        );
+        assert_eq!(
+            cam.get_property("UseExposureSequences").unwrap(),
+            PropertyValue::String("Yes".into())
+        );
+        assert_eq!(
+            cam.get_property("CameraID").unwrap(),
+            PropertyValue::String("V1.0".into())
+        );
+        cam.set_property(
+            "SimulateCrash",
+            PropertyValue::String("Dereference Null Pointer".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            cam.get_property("SimulateCrash").unwrap(),
+            PropertyValue::String(String::new())
+        );
+        assert!(cam
+            .set_property("SimulateCrash", PropertyValue::String("Other".into()))
+            .is_err());
+
+        cam.set_property("TestProperty1", PropertyValue::Float(0.05))
+            .unwrap();
+        assert_eq!(
+            cam.get_property("TestProperty1").unwrap(),
+            PropertyValue::Float(0.05)
+        );
+        assert!(cam
+            .set_property("TestProperty1", PropertyValue::Float(0.2))
+            .is_err());
+        cam.set_property("TestProperty5", PropertyValue::Float(1.0e9))
+            .unwrap();
+    }
+
+    #[test]
+    fn scan_mode_updates_allowed_binning_like_upstream() {
+        let mut cam = DemoCamera::new();
+        cam.set_binning(8).unwrap();
+        cam.set_property("ScanMode", PropertyValue::Integer(2))
+            .unwrap();
+        assert_eq!(cam.get_binning(), 4);
+        assert!(cam.set_binning(8).is_err());
+        cam.set_property("ScanMode", PropertyValue::Integer(3))
+            .unwrap();
+        assert_eq!(cam.get_binning(), 2);
+        assert!(cam.set_binning(4).is_err());
+    }
+
+    #[test]
+    fn ccd_size_properties_resize_full_frame_and_validate_bounds() {
+        let mut cam = DemoCamera::new();
+        cam.set_property("OnCameraCCDXSize", PropertyValue::Integer(1024))
+            .unwrap();
+        cam.set_property("OnCameraCCDYSize", PropertyValue::Integer(256))
+            .unwrap();
+        assert_eq!(cam.get_roi().unwrap(), ImageRoi::new(0, 0, 1024, 256));
+        cam.set_binning(2).unwrap();
+        assert_eq!(cam.get_roi().unwrap(), ImageRoi::new(0, 0, 512, 128));
+        assert!(cam
+            .set_property("OnCameraCCDXSize", PropertyValue::Integer(15))
+            .is_err());
+    }
+
+    #[test]
+    fn maximum_exposure_clamps_existing_value_and_limits_future_sets() {
+        let mut cam = DemoCamera::new();
+        cam.set_property("Exposure", PropertyValue::Float(80.0))
+            .unwrap();
+        cam.set_property("MaximumExposureMs", PropertyValue::Float(50.0))
+            .unwrap();
+        assert_eq!(cam.get_exposure(), 50.0);
+        assert!(cam
+            .set_property("Exposure", PropertyValue::Float(60.0))
+            .is_err());
+        cam.set_exposure(60.0);
+        assert_eq!(cam.get_exposure(), 50.0);
+    }
+
+    #[test]
+    fn exposure_sequence_cycles_only_when_enabled() {
+        let mut cam = DemoCamera::new();
+
+        assert!(!cam.is_exposure_sequenceable());
+        assert_eq!(
+            cam.add_to_exposure_sequence(1.0).unwrap_err(),
+            MmError::UnsupportedCommand
+        );
+
+        cam.set_property("UseExposureSequences", PropertyValue::String("Yes".into()))
+            .unwrap();
+        assert!(cam.is_exposure_sequenceable());
+        assert_eq!(cam.exposure_sequence_max_length().unwrap(), 1_000);
+        cam.add_to_exposure_sequence(5.0).unwrap();
+        cam.add_to_exposure_sequence(15.0).unwrap();
+        cam.start_exposure_sequence().unwrap();
+
+        assert_eq!(cam.sequence_exposure(), 5.0);
+        assert_eq!(cam.sequence_exposure(), 15.0);
+        assert_eq!(cam.sequence_exposure(), 5.0);
+
+        cam.stop_exposure_sequence().unwrap();
+        assert_eq!(cam.sequence_exposure(), cam.get_exposure());
+        cam.clear_exposure_sequence().unwrap();
+        assert!(cam.exposure_sequence.is_empty());
+    }
+
+    #[test]
+    fn finite_sequence_acquisition_stops_after_requested_snaps() {
+        let mut cam = DemoCamera::new();
+        cam.initialize().unwrap();
+        cam.set_exposure(0.0);
+        cam.start_sequence_acquisition(2, 0.0).unwrap();
+
+        cam.snap_image().unwrap();
+        assert!(cam.is_capturing());
+        cam.snap_image().unwrap();
+        assert!(!cam.is_capturing());
+        assert_eq!(cam.sequence_remaining, None);
+    }
+
+    #[test]
+    fn generated_image_uses_selected_sequence_exposure() {
+        let mut cam = DemoCamera::new();
+        cam.generate_image(0.0);
+        let dark = cam.image_buf[1];
+        cam.generate_image(cam.exposure_maximum_ms);
+        let bright = cam.image_buf[1];
+
+        assert_eq!(dark, 0);
+        assert!(bright > dark);
+    }
+
+    #[test]
+    fn selected_modes_generate_distinct_bounded_patterns() {
+        let mut cam = DemoCamera::new();
+        cam.set_roi(ImageRoi::new(0, 0, 64, 64)).unwrap();
+        cam.set_exposure(cam.exposure_maximum_ms);
+
+        cam.set_property("Mode", PropertyValue::String(MODE_ARTIFICIAL_WAVES.into()))
+            .unwrap();
+        cam.generate_image(cam.get_exposure());
+        let waves = cam.image_buf.clone();
+
+        cam.set_property("Mode", PropertyValue::String(MODE_NOISE.into()))
+            .unwrap();
+        cam.generate_image(cam.get_exposure());
+        let noise = cam.image_buf.clone();
+
+        cam.set_property("Mode", PropertyValue::String(MODE_BEADS.into()))
+            .unwrap();
+        cam.generate_image(cam.get_exposure());
+        let beads = cam.image_buf.clone();
+
+        assert_ne!(waves, noise);
+        assert_ne!(waves, beads);
+        assert!(beads.iter().any(|&v| v >= 200));
     }
 }

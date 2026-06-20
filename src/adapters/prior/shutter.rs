@@ -12,6 +12,7 @@ use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 pub struct PriorShutter {
     props: PropertyMap,
@@ -19,16 +20,25 @@ pub struct PriorShutter {
     initialized: bool,
     id: u8,
     is_open: bool,
+    delay_ms: f64,
+    changed_time: Option<Instant>,
 }
 
 impl PriorShutter {
     pub fn new(id: u8) -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
         props
             .define_property("ShutterId", PropertyValue::Integer(id as i64), false)
+            .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1"]).unwrap();
+        props
+            .define_property("Delay", PropertyValue::Float(0.0), false)
             .unwrap();
         Self {
             props,
@@ -36,6 +46,8 @@ impl PriorShutter {
             initialized: false,
             id,
             is_open: false,
+            delay_ms: 0.0,
+            changed_time: None,
         }
     }
 
@@ -61,6 +73,18 @@ impl PriorShutter {
             Ok(r.trim().to_string())
         })
     }
+
+    fn clear_port(&self) -> MmResult<()> {
+        self.call_transport(|t| t.purge())
+    }
+
+    fn mark_changed(&mut self) {
+        self.changed_time = Some(Instant::now());
+    }
+
+    fn delay_duration(&self) -> Duration {
+        Duration::from_secs_f64(self.delay_ms.max(0.0) / 1000.0)
+    }
 }
 
 impl Default for PriorShutter {
@@ -81,10 +105,12 @@ impl Device for PriorShutter {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
+        self.clear_port()?;
         self.cmd("COMP 0")?;
         // Query initial state
         let r = self.cmd(&format!("8,{}", self.id))?;
         self.is_open = r.trim() == "0";
+        self.mark_changed();
         self.initialized = true;
         Ok(())
     }
@@ -97,10 +123,25 @@ impl Device for PriorShutter {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "State" => Ok(PropertyValue::Integer(if self.get_open()? { 1 } else { 0 })),
+            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
+            _ => self.props.get(name).cloned(),
+        }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            "State" => {
+                let open = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
+                self.set_open(open)
+            }
+            "Delay" => {
+                self.delay_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(self.delay_ms))
+            }
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -115,7 +156,9 @@ impl Device for PriorShutter {
         DeviceType::Shutter
     }
     fn busy(&self) -> bool {
-        false
+        self.changed_time
+            .map(|t| t.elapsed() < self.delay_duration())
+            .unwrap_or(false)
     }
 }
 
@@ -123,6 +166,7 @@ impl Shutter for PriorShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         // 0 = open, 1 = closed
         let val = if open { 0 } else { 1 };
+        self.clear_port()?;
         let resp = self.cmd(&format!("8,{},{}", self.id, val))?;
         if !resp.starts_with('R') {
             return Err(MmError::LocallyDefined(format!(
@@ -131,9 +175,11 @@ impl Shutter for PriorShutter {
             )));
         }
         self.is_open = open;
+        self.mark_changed();
         Ok(())
     }
     fn get_open(&self) -> MmResult<bool> {
+        self.clear_port()?;
         let r = self.cmd(&format!("8,{}", self.id))?;
         Ok(r.trim() == "0")
     }
@@ -184,6 +230,20 @@ mod tests {
         assert!(s.get_open().unwrap());
         s.set_open(false).unwrap();
         assert!(!s.get_open().unwrap());
+    }
+
+    #[test]
+    fn busy_uses_configured_delay_after_set_open() {
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .expect("8,1\r", "1")
+            .expect("8,1,0\r", "R");
+        let mut s = PriorShutter::new(1).with_transport(Box::new(t));
+        s.set_property("Delay", PropertyValue::Float(1000.0))
+            .unwrap();
+        s.initialize().unwrap();
+        s.set_open(true).unwrap();
+        assert!(s.busy());
     }
 
     #[test]

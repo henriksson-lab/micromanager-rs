@@ -37,6 +37,7 @@ pub const GX_FLOAT_GAIN: c_int = 0x20001393;
 // Enum features
 pub const GX_ENUM_PIXEL_FORMAT: c_int = 0x300003F6;
 pub const GX_ENUM_TRIGGER_MODE: c_int = 0x30000BBD;
+pub const GX_ENUM_TRIGGER_ACTIVATION: c_int = 0x30000BBF;
 pub const GX_ENUM_TRIGGER_SOURCE: c_int = 0x30000BC5;
 
 // Command features
@@ -48,6 +49,10 @@ pub const GX_TRIGGER_MODE_ON: i64 = 1;
 
 // Trigger source values
 pub const GX_TRIGGER_SOURCE_SOFTWARE: i64 = 0;
+
+// Trigger activation values
+pub const GX_TRIGGER_ACTIVATION_FALLING_EDGE: i64 = 0;
+pub const GX_TRIGGER_ACTIVATION_RISING_EDGE: i64 = 1;
 
 // ─── Pixel format values ─────────────────────────────────────────────────────
 

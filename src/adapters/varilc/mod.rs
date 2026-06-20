@@ -15,17 +15,21 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 const MAX_LCS: usize = 4;
+const DEFAULT_NUM_PALETTE_ELEMENTS: usize = 5;
 
 pub struct VariLC {
     props: PropertyMap,
     transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
+    num_total_lcs: usize,
     num_active_lcs: usize,
+    num_palette_elements: usize,
     wavelength: f64,
     retardance: [f64; MAX_LCS],
     min_wavelength: f64,
     max_wavelength: f64,
     serial_number: String,
+    palette_elements: Vec<String>,
     delay_ms: f64,
     changed_time: Option<Instant>,
     last_response: String,
@@ -41,13 +45,35 @@ impl VariLC {
             .define_property("Baud", PropertyValue::String("9600".into()), false)
             .unwrap();
         props
+            .set_allowed_values("Baud", &["115200", "9600"])
+            .unwrap();
+        props
+            .define_property("Baud Rate", PropertyValue::String("9600".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values("Baud Rate", &["115200", "9600"])
+            .unwrap();
+        props
             .define_property("NumActiveLCs", PropertyValue::Integer(2), false)
+            .unwrap();
+        props
+            .define_property("Number of Active LCs", PropertyValue::Integer(2), false)
+            .unwrap();
+        props
+            .define_property("Total Number of LCs", PropertyValue::Integer(2), false)
+            .unwrap();
+        props
+            .define_property(
+                "Total Number of Palette Elements",
+                PropertyValue::Integer(DEFAULT_NUM_PALETTE_ELEMENTS as i64),
+                false,
+            )
             .unwrap();
         props
             .define_property("Active LCs", PropertyValue::Integer(2), true)
             .unwrap();
         props
-            .define_property("Total LCs", PropertyValue::Integer(MAX_LCS as i64), true)
+            .define_property("Total LCs", PropertyValue::Integer(2), true)
             .unwrap();
         props
             .define_property(
@@ -80,6 +106,15 @@ impl VariLC {
                 .define_property(&abs_name, PropertyValue::Float(273.0), true)
                 .unwrap();
         }
+        for i in 0..DEFAULT_NUM_PALETTE_ELEMENTS {
+            props
+                .define_property(
+                    Self::palette_property_name(i),
+                    PropertyValue::String(String::new()),
+                    false,
+                )
+                .unwrap();
+        }
         props
             .define_property("Device Delay (ms.)", PropertyValue::Float(200.0), false)
             .unwrap();
@@ -104,12 +139,15 @@ impl VariLC {
             props,
             transport: RefCell::new(None),
             initialized: false,
+            num_total_lcs: 2,
             num_active_lcs: 2,
+            num_palette_elements: DEFAULT_NUM_PALETTE_ELEMENTS,
             wavelength: 546.0,
             retardance: [0.5; MAX_LCS],
             min_wavelength: 400.0,
             max_wavelength: 800.0,
             serial_number: String::new(),
+            palette_elements: vec![String::new(); DEFAULT_NUM_PALETTE_ELEMENTS],
             delay_ms: 200.0,
             changed_time: None,
             last_response: String::new(),
@@ -183,7 +221,7 @@ impl VariLC {
         let mut values = self.retardance;
         values[lc_index] = value;
         let mut cmd = String::from("L");
-        for value in values.iter().take(self.num_active_lcs) {
+        for value in values.iter().take(self.num_total_lcs) {
             cmd.push_str(&format!(" {}", value));
         }
         self.send_cmd(&cmd)?;
@@ -198,6 +236,73 @@ impl VariLC {
             }
         }
         out
+    }
+
+    fn palette_property_name(index: usize) -> String {
+        format!("Pal. elem. {:02}; enter 0 to define; 1 to activate", index)
+    }
+
+    fn set_integer_aliases(&mut self, names: &[&str], value: i64) {
+        for name in names {
+            if let Some(entry) = self.props.entry_mut(name) {
+                entry.value = PropertyValue::Integer(value);
+            }
+        }
+    }
+
+    fn set_baud_aliases(&mut self, value: String) -> MmResult<()> {
+        self.props
+            .set("Baud", PropertyValue::String(value.clone()))?;
+        self.props.set("Baud Rate", PropertyValue::String(value))?;
+        Ok(())
+    }
+
+    fn ensure_lc_properties(&mut self, count: usize) -> MmResult<()> {
+        for i in 0..count.min(MAX_LCS) {
+            let name = format!("Retardance LC-{}", (b'A' + i as u8) as char);
+            if !self.props.has_property(&name) {
+                self.props
+                    .define_property(&name, PropertyValue::Float(0.5), false)?;
+                self.props.set_property_limits(&name, 0.0001, 3.0)?;
+            }
+            let abs_name = format!("Retardance LC-{} [in nm.]", (b'A' + i as u8) as char);
+            if !self.props.has_property(&abs_name) {
+                self.props
+                    .define_property(&abs_name, PropertyValue::Float(273.0), true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn get_palette_element(&self, index: usize) -> MmResult<PropertyValue> {
+        if self.initialized {
+            let ans = self.query_cmd("D?")?;
+            let numbers = Self::parse_numbers(&ans);
+            let elem_count = numbers.first().copied().unwrap_or(0.0) as usize;
+            if elem_count == 0 {
+                return Ok(PropertyValue::String(String::new()));
+            }
+            for row in 0..elem_count {
+                let ans = self.call_transport(|t| Ok(t.receive_line()?.trim().to_string()))?;
+                if row == index {
+                    let values = Self::parse_numbers(&ans);
+                    if values.is_empty() {
+                        return Err(MmError::SerialInvalidResponse);
+                    }
+                    let mut formatted = format!("  {}", values[0]);
+                    for value in values.iter().skip(1).take(self.num_active_lcs) {
+                        formatted.push_str(&format!("  {}", value));
+                    }
+                    return Ok(PropertyValue::String(formatted));
+                }
+            }
+        }
+        Ok(PropertyValue::String(
+            self.palette_elements
+                .get(index)
+                .cloned()
+                .unwrap_or_default(),
+        ))
     }
 }
 
@@ -225,6 +330,18 @@ impl Device for VariLC {
         self.min_wavelength = min_wl;
         self.max_wavelength = max_wl;
         self.serial_number = serial.clone();
+        self.set_integer_aliases(
+            &["NumActiveLCs", "Number of Active LCs", "Active LCs"],
+            self.num_active_lcs as i64,
+        );
+        self.set_integer_aliases(
+            &["Total Number of LCs", "Total LCs"],
+            self.num_total_lcs as i64,
+        );
+        self.set_integer_aliases(
+            &["Total Number of Palette Elements"],
+            self.num_palette_elements as i64,
+        );
         self.props
             .entry_mut("Version Number")
             .map(|e| e.value = PropertyValue::String(serial));
@@ -254,6 +371,11 @@ impl Device for VariLC {
         }
         if name == "String from VariLC" {
             return Ok(PropertyValue::String(self.last_response.clone()));
+        }
+        for i in 0..self.num_palette_elements {
+            if name == Self::palette_property_name(i) {
+                return self.get_palette_element(i);
+            }
         }
         for i in 0..self.num_active_lcs {
             let pname = format!("Retardance LC-{}", (b'A' + i as u8) as char);
@@ -290,6 +412,81 @@ impl Device for VariLC {
             self.wavelength = wl;
             return Ok(());
         }
+        if name == "NumActiveLCs" || name == "Number of Active LCs" {
+            if self.initialized {
+                return Err(MmError::InvalidInputParam);
+            }
+            let count = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if count < 1 || count as usize > self.num_total_lcs || count as usize > MAX_LCS {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            self.num_active_lcs = count as usize;
+            self.ensure_lc_properties(self.num_active_lcs)?;
+            self.set_integer_aliases(
+                &["NumActiveLCs", "Number of Active LCs", "Active LCs"],
+                count,
+            );
+            return Ok(());
+        }
+        if name == "Total Number of LCs" {
+            if self.initialized {
+                return Err(MmError::InvalidInputParam);
+            }
+            let count = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if count < 1 || count as usize > MAX_LCS {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            self.num_total_lcs = count as usize;
+            if self.num_active_lcs > self.num_total_lcs {
+                self.num_active_lcs = self.num_total_lcs;
+            }
+            self.ensure_lc_properties(self.num_total_lcs)?;
+            self.set_integer_aliases(&["Total Number of LCs", "Total LCs"], count);
+            self.set_integer_aliases(
+                &["NumActiveLCs", "Number of Active LCs", "Active LCs"],
+                self.num_active_lcs as i64,
+            );
+            return Ok(());
+        }
+        if name == "Total Number of Palette Elements" {
+            if self.initialized {
+                return Err(MmError::InvalidInputParam);
+            }
+            let count = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if count < 1 || count as usize > DEFAULT_NUM_PALETTE_ELEMENTS {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            self.num_palette_elements = count as usize;
+            self.palette_elements
+                .resize(self.num_palette_elements, String::new());
+            self.set_integer_aliases(&["Total Number of Palette Elements"], count);
+            return Ok(());
+        }
+        if name == "Baud" || name == "Baud Rate" {
+            if self.initialized {
+                return Err(MmError::InvalidInputParam);
+            }
+            return self.set_baud_aliases(val.as_str().to_string());
+        }
+        for i in 0..self.num_palette_elements {
+            if name == Self::palette_property_name(i) {
+                let action = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if self.initialized {
+                    match action {
+                        0 => self.send_cmd(&format!("D {}", i))?,
+                        1 => self.send_cmd(&format!("P {}", i))?,
+                        _ => return Err(MmError::InvalidPropertyValue),
+                    }
+                    self.changed_time = Some(Instant::now());
+                } else if action != 0 && action != 1 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.palette_elements[i] = val.to_string();
+                self.props
+                    .set(name, PropertyValue::String(val.to_string()))?;
+                return Ok(());
+            }
+        }
         for i in 0..self.num_active_lcs {
             let pname = format!("Retardance LC-{}", (b'A' + i as u8) as char);
             if name == pname {
@@ -321,7 +518,7 @@ impl Device for VariLC {
                 .map(|e| e.value = PropertyValue::String(response));
             return Ok(());
         }
-        if self.initialized && (name == "Port" || name == "Baud") {
+        if self.initialized && (name == "Port" || name == "Baud" || name == "Baud Rate") {
             return Err(MmError::InvalidInputParam);
         }
         self.props.set(name, val)
@@ -457,6 +654,70 @@ mod tests {
         assert_eq!(
             v.set_property("Wavelength", PropertyValue::Float(633.0)),
             Err(MmError::SerialInvalidResponse)
+        );
+    }
+
+    #[test]
+    fn upstream_preinit_aliases_update_active_total_lc_and_baud() {
+        let mut v = VariLC::new();
+        v.set_property("Total Number of LCs", PropertyValue::Integer(4))
+            .unwrap();
+        v.set_property("Number of Active LCs", PropertyValue::Integer(3))
+            .unwrap();
+        v.set_property("Baud Rate", PropertyValue::String("115200".into()))
+            .unwrap();
+        assert_eq!(
+            v.get_property("Total LCs").unwrap(),
+            PropertyValue::Integer(4)
+        );
+        assert_eq!(
+            v.get_property("Active LCs").unwrap(),
+            PropertyValue::Integer(3)
+        );
+        assert_eq!(
+            v.get_property("Baud").unwrap(),
+            PropertyValue::String("115200".into())
+        );
+    }
+
+    #[test]
+    fn set_retardance_sends_total_lc_width_like_upstream() {
+        let t = MockTransport::new()
+            .expect("B0\r", "B0")
+            .expect("V?\r", "V?")
+            .any("V 0 400 800 SN12345")
+            .expect("L 0.5 0.5 1.25 0.5\r", "L 0.5 0.5 1.25 0.5");
+        let mut v = VariLC::new().with_transport(Box::new(t));
+        v.set_property("Total Number of LCs", PropertyValue::Integer(4))
+            .unwrap();
+        v.set_property("Number of Active LCs", PropertyValue::Integer(3))
+            .unwrap();
+        v.initialize().unwrap();
+        v.set_property("Retardance LC-C", PropertyValue::Float(1.25))
+            .unwrap();
+        assert!((v.retardance[2] - 1.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn palette_properties_define_activate_and_read_rows() {
+        let name = VariLC::palette_property_name(1);
+        let t = MockTransport::new()
+            .expect("B0\r", "B0")
+            .expect("V?\r", "V?")
+            .any("V 0 400 800 SN12345")
+            .expect("D 1\r", "D 1")
+            .expect("P 1\r", "P 1")
+            .expect("D?\r", "D?")
+            .any("D 2")
+            .any("546 0.5 0.5")
+            .any("589 0.75 0.25");
+        let mut v = VariLC::new().with_transport(Box::new(t));
+        v.initialize().unwrap();
+        v.set_property(&name, PropertyValue::Integer(0)).unwrap();
+        v.set_property(&name, PropertyValue::Integer(1)).unwrap();
+        assert_eq!(
+            v.get_property(&name).unwrap(),
+            PropertyValue::String("  589  0.75  0.25".into())
         );
     }
 }

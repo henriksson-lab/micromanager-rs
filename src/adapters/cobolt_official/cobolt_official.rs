@@ -3,6 +3,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 /// Cobolt Official laser controller.
 ///
@@ -10,10 +11,15 @@ use crate::types::{DeviceType, PropertyValue};
 /// This is the official Cobolt adapter that works with all Cobolt laser series.
 pub struct CoboltOfficialLaser {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
-    is_open: bool,
+    is_open: Cell<bool>,
     power_setpoint_mw: f64,
+    model: String,
+    subtype: String,
+    state_property_name: String,
+    cdrh_mode: bool,
+    shutter_supported: bool,
 }
 
 impl CoboltOfficialLaser {
@@ -26,6 +32,9 @@ impl CoboltOfficialLaser {
             .define_property("SerialNumber", PropertyValue::String(String::new()), true)
             .unwrap();
         props
+            .define_property("Serial Number", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
             .define_property(
                 "FirmwareVersion",
                 PropertyValue::String(String::new()),
@@ -33,7 +42,30 @@ impl CoboltOfficialLaser {
             )
             .unwrap();
         props
+            .define_property(
+                "Firmware Version",
+                PropertyValue::String(String::new()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("Model", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("Name", PropertyValue::String("Unknown".into()), true)
+            .unwrap();
+        props
+            .define_property("Wavelength", PropertyValue::String("Unknown".into()), true)
+            .unwrap();
+        props
             .define_property("UsageHours", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property(
+                "Operating Hours",
+                PropertyValue::String(String::new()),
+                true,
+            )
             .unwrap();
         props
             .define_property("PowerSetpoint_mW", PropertyValue::Float(0.0), false)
@@ -47,37 +79,139 @@ impl CoboltOfficialLaser {
         props
             .define_property("LaserState", PropertyValue::String("Off".into()), false)
             .unwrap();
+        props
+            .define_property(
+                "Emission Status",
+                PropertyValue::String("closed".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("Emission Status", &["closed", "open"])
+            .unwrap();
+        props
+            .define_property(
+                "Run Mode",
+                PropertyValue::String("Constant Power".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values(
+                "Run Mode",
+                &["Constant Current", "Constant Power", "Modulation"],
+            )
+            .unwrap();
 
         Self {
             props,
             transport: None,
             initialized: false,
-            is_open: false,
+            is_open: Cell::new(false),
             power_setpoint_mw: 0.0,
+            model: String::new(),
+            subtype: "Unknown".into(),
+            state_property_name: "LaserState".into(),
+            cdrh_mode: false,
+            shutter_supported: true,
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let cmd = command.to_string();
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
         })
+    }
+
+    fn subtype_for(firmware_version: &str, model: &str) -> (&'static str, &'static str) {
+        if model.contains("06-51-")
+            || model.contains("06-53-")
+            || model.contains("06-57-")
+            || model.contains("06-91-")
+            || model.contains("06-93-")
+            || model.contains("06-97-")
+        {
+            ("06-DPL", "Dpl06Laser State")
+        } else if model.contains("06-01-") || model.contains("06-03-") {
+            ("06-MLD", "Mld06Laser State")
+        } else if firmware_version.contains("9.001") {
+            ("Skyra", "LaserState")
+        } else {
+            ("Unknown", "LaserState")
+        }
+    }
+
+    fn wavelength_from_model(model: &str) -> String {
+        model
+            .split('-')
+            .find(|token| token.chars().all(|c| c.is_ascii_digit()) && !token.is_empty())
+            .unwrap_or("Unknown")
+            .to_string()
+    }
+
+    fn state_allows_shutter(&self) -> MmResult<bool> {
+        if !self.cdrh_mode {
+            return Ok(true);
+        }
+        let state = self.cmd("gom?")?;
+        Ok(match (self.subtype.as_str(), state.as_str()) {
+            ("06-DPL", "4") => true,
+            ("06-MLD", "2") | ("06-MLD", "3") | ("06-MLD", "4") => true,
+            _ => false,
+        })
+    }
+
+    fn state_label(&self) -> MmResult<String> {
+        if !self.cdrh_mode {
+            return Ok(match self.cmd("l?")?.as_str() {
+                "0" => "Off".into(),
+                "1" => "On".into(),
+                _ => return Err(MmError::SerialInvalidResponse),
+            });
+        }
+        let state = self.cmd("gom?")?;
+        let label = match self.subtype.as_str() {
+            "06-DPL" => match state.as_str() {
+                "0" => "Off",
+                "1" => "Waiting for TEC",
+                "2" => "Waiting for Key",
+                "3" => "Warming Up",
+                "4" => "Completed",
+                "5" => "Fault",
+                "6" => "Aborted",
+                "7" => "Modulation",
+                _ => return Err(MmError::SerialInvalidResponse),
+            },
+            "06-MLD" => match state.as_str() {
+                "0" => "Off",
+                "1" => "Waiting for Key",
+                "2" => "Completed",
+                "3" => "Completed (On/Off Modulation)",
+                "4" => "Completed (Modulation)",
+                "5" => "Fault",
+                "6" => "Aborted",
+                _ => return Err(MmError::SerialInvalidResponse),
+            },
+            _ => return Err(MmError::SerialInvalidResponse),
+        };
+        Ok(label.into())
     }
 }
 
@@ -101,18 +235,46 @@ impl Device for CoboltOfficialLaser {
             return Err(MmError::NotConnected);
         }
 
-        // Query serial number
+        let firmware_version = self.cmd("gfv?")?;
+        let model = self.cmd("glm?")?;
+        let (subtype, state_property_name) = Self::subtype_for(&firmware_version, &model);
+        self.model = model.clone();
+        self.subtype = subtype.into();
+        self.state_property_name = state_property_name.into();
+        self.props
+            .entry_mut("FirmwareVersion")
+            .map(|e| e.value = PropertyValue::String(firmware_version.clone()));
+        self.props
+            .entry_mut("Firmware Version")
+            .map(|e| e.value = PropertyValue::String(firmware_version));
+        self.props
+            .entry_mut("Model")
+            .map(|e| e.value = PropertyValue::String(model.clone()));
+        self.props
+            .entry_mut("Name")
+            .map(|e| e.value = PropertyValue::String(self.subtype.clone()));
+        self.props
+            .entry_mut("Wavelength")
+            .map(|e| e.value = PropertyValue::String(Self::wavelength_from_model(&model)));
+
+        self.cdrh_mode = self.cmd("gas?").map(|v| v == "1").unwrap_or(false);
+        self.shutter_supported = self.cmd("l0r").map(|v| v.contains("OK")).unwrap_or(false);
+
+        if !self.props.has_property(&self.state_property_name) {
+            let _ = self.props.define_property(
+                self.state_property_name.clone(),
+                PropertyValue::String("Off".into()),
+                true,
+            );
+        }
+
         if let Ok(sn) = self.cmd("gsn?") {
             self.props
                 .entry_mut("SerialNumber")
-                .map(|e| e.value = PropertyValue::String(sn));
-        }
-
-        // Query firmware version
-        if let Ok(ver) = self.cmd("gfv?") {
+                .map(|e| e.value = PropertyValue::String(sn.clone()));
             self.props
-                .entry_mut("FirmwareVersion")
-                .map(|e| e.value = PropertyValue::String(ver));
+                .entry_mut("Serial Number")
+                .map(|e| e.value = PropertyValue::String(sn));
         }
 
         // Query usage hours
@@ -121,15 +283,18 @@ impl Device for CoboltOfficialLaser {
             self.props
                 .entry_mut("UsageHours")
                 .map(|e| e.value = PropertyValue::Float(h));
+            self.props
+                .entry_mut("Operating Hours")
+                .map(|e| e.value = PropertyValue::String(hrs));
         }
 
-        // Query current laser on/off state
-        if let Ok(state) = self.cmd("l?") {
-            self.is_open = state.trim() == "1";
-            let label = if self.is_open { "On" } else { "Off" };
+        if let Ok(label) = self.state_label() {
             self.props
                 .entry_mut("LaserState")
-                .map(|e| e.value = PropertyValue::String(label.into()));
+                .map(|e| e.value = PropertyValue::String(label.clone()));
+            self.props
+                .entry_mut(&self.state_property_name)
+                .map(|e| e.value = PropertyValue::String(label));
         }
 
         // Query power setpoint
@@ -157,7 +322,6 @@ impl Device for CoboltOfficialLaser {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            self.is_open = false;
             self.initialized = false;
         }
         Ok(())
@@ -166,6 +330,20 @@ impl Device for CoboltOfficialLaser {
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "PowerSetpoint_mW" => Ok(PropertyValue::Float(self.power_setpoint_mw)),
+            "PowerReadback_mW" if self.initialized => Ok(PropertyValue::Float(
+                self.cmd("pa?")?
+                    .parse::<f64>()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
+            "LaserState" if self.initialized => Ok(PropertyValue::String(self.state_label()?)),
+            name if name == self.state_property_name && self.initialized => {
+                Ok(PropertyValue::String(self.state_label()?))
+            }
+            "Emission Status" => Ok(PropertyValue::String(if self.is_open.get() {
+                "open".into()
+            } else {
+                "closed".into()
+            })),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -193,14 +371,29 @@ impl Device for CoboltOfficialLaser {
                 };
                 let open = s == "On";
                 if self.initialized {
-                    let cmd = if open { "l1r" } else { "l0r" };
-                    let resp = self.cmd(cmd)?;
+                    self.set_open(open)?;
+                }
+                self.props.set(name, PropertyValue::String(s))
+            }
+            "Emission Status" => match val.as_str() {
+                "open" => self.set_open(true),
+                "closed" => self.set_open(false),
+                _ => Err(MmError::InvalidPropertyValue),
+            },
+            "Run Mode" => {
+                let command = match val.as_str() {
+                    "Constant Current" => "ecc",
+                    "Constant Power" => "ecp",
+                    "Modulation" => "em",
+                    _ => return Err(MmError::InvalidPropertyValue),
+                };
+                if self.initialized {
+                    let resp = self.cmd(command)?;
                     if resp != "OK" {
                         return Err(MmError::SerialInvalidResponse);
                     }
-                    self.is_open = open;
                 }
-                self.props.set(name, PropertyValue::String(s))
+                self.props.set(name, val)
             }
             _ => self.props.set(name, val),
         }
@@ -229,21 +422,27 @@ impl Device for CoboltOfficialLaser {
 
 impl Shutter for CoboltOfficialLaser {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
+        if !self.shutter_supported || !self.state_allows_shutter()? {
+            return Err(MmError::LocallyDefined("laser startup incomplete".into()));
+        }
         let cmd = if open { "l1r" } else { "l0r" };
         let resp = self.cmd(cmd)?;
         if resp != "OK" {
             return Err(MmError::SerialInvalidResponse);
         }
-        self.is_open = open;
+        self.is_open.set(open);
         let label = if open { "On" } else { "Off" };
         self.props
             .entry_mut("LaserState")
             .map(|e| e.value = PropertyValue::String(label.into()));
+        self.props.entry_mut("Emission Status").map(|e| {
+            e.value = PropertyValue::String(if open { "open".into() } else { "closed".into() })
+        });
         Ok(())
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        Ok(self.state_allows_shutter()? && self.is_open.get())
     }
 
     fn fire(&mut self, delta_t: f64) -> MmResult<()> {
@@ -262,8 +461,11 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("gsn?", "ABC-12345")
             .expect("gfv?", "2.0.1")
+            .expect("glm?", "06-01-488")
+            .expect("gas?", "0")
+            .expect("l0r", "OK")
+            .expect("gsn?", "ABC-12345")
             .expect("hrs?", "100.0")
             .expect("l?", "0")
             .expect("glp?", "50.0")
@@ -279,6 +481,14 @@ mod tests {
         assert_eq!(
             laser.get_property("SerialNumber").unwrap(),
             PropertyValue::String("ABC-12345".into())
+        );
+        assert_eq!(
+            laser.get_property("Name").unwrap(),
+            PropertyValue::String("06-MLD".into())
+        );
+        assert_eq!(
+            laser.get_property("Model").unwrap(),
+            PropertyValue::String("06-01-488".into())
         );
     }
 
@@ -317,5 +527,57 @@ mod tests {
         laser.initialize().unwrap();
         laser.fire(0.0).unwrap();
         assert!(!laser.get_open().unwrap());
+    }
+
+    #[test]
+    fn cdrh_state_gates_shutter_open() {
+        let t = MockTransport::new()
+            .expect("gfv?", "2.0.1")
+            .expect("glm?", "06-01-488")
+            .expect("gas?", "1")
+            .expect("l0r", "OK")
+            .expect("gsn?", "ABC-12345")
+            .expect("hrs?", "100.0")
+            .expect("gom?", "1")
+            .expect("glp?", "50.0")
+            .expect("pa?", "0.0")
+            .expect("gom?", "1");
+
+        let mut laser = CoboltOfficialLaser::new().with_transport(Box::new(t));
+        laser.initialize().unwrap();
+        assert!(laser.set_open(true).is_err());
+    }
+
+    #[test]
+    fn cdrh_completed_state_allows_shutter_open() {
+        let t = MockTransport::new()
+            .expect("gfv?", "2.0.1")
+            .expect("glm?", "06-01-488")
+            .expect("gas?", "1")
+            .expect("l0r", "OK")
+            .expect("gsn?", "ABC-12345")
+            .expect("hrs?", "100.0")
+            .expect("gom?", "2")
+            .expect("glp?", "50.0")
+            .expect("pa?", "0.0")
+            .expect("gom?", "2")
+            .expect("l1r", "OK");
+
+        let mut laser = CoboltOfficialLaser::new().with_transport(Box::new(t));
+        laser.initialize().unwrap();
+        laser.set_open(true).unwrap();
+        assert_eq!(
+            laser.get_property("Emission Status").unwrap(),
+            PropertyValue::String("open".into())
+        );
+    }
+
+    #[test]
+    fn shutdown_only_clears_initialized_like_upstream() {
+        let mut laser = CoboltOfficialLaser::new().with_transport(Box::new(make_transport()));
+        laser.initialize().unwrap();
+        laser.is_open.set(true);
+        laser.shutdown().unwrap();
+        assert!(laser.get_open().unwrap());
     }
 }

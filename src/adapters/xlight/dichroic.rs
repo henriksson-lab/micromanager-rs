@@ -1,69 +1,43 @@
-/// CrestOptics X-Light dichroic filter wheel.
-///
-/// 5 positions, 1-based on wire (position 1..5 → MM 0..4).
-/// Query:  `rC\r` → response echoes `rC` followed by 1-based digit.
-/// Set:    `C<n>\r` where n=1..5 → device echoes the same string.
-use crate::error::{MmError, MmResult};
-use crate::property::PropertyMap;
+use super::common::{SharedXLightTransport, XLightSpec, XLightStateCore};
+use crate::error::MmResult;
 use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 
-pub struct XLightDichroic {
-    props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
-    initialized: bool,
-    position: u64,
-    num_positions: u64,
-    labels: Vec<String>,
-    gate_open: bool,
-}
+const LABELS: [&str; 5] = [
+    "Dichroic-0",
+    "Dichroic-1",
+    "Dichroic-2",
+    "Dichroic-3",
+    "Dichroic-4",
+];
+
+const SPEC: XLightSpec = XLightSpec {
+    name: "XLIGHT Dichroic",
+    description: "XLIGHT Dichroic filter",
+    query: "rC",
+    command: "C",
+    num_positions: 5,
+    one_based: true,
+    initial_position: 0,
+    labels: &LABELS,
+};
+
+pub struct XLightDichroic(XLightStateCore);
 
 impl XLightDichroic {
     pub fn new() -> Self {
-        let num_positions: u64 = 5;
-        let labels = (0..num_positions)
-            .map(|i| format!("Dichroic-{}", i))
-            .collect();
-        let mut props = PropertyMap::new();
-        props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
-            .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props
-            .define_property("Label", PropertyValue::String("Undefined".into()), false)
-            .unwrap();
-        Self {
-            props,
-            transport: None,
-            initialized: false,
-            position: 0,
-            num_positions,
-            labels,
-            gate_open: true,
-        }
+        Self(XLightStateCore::new(SPEC))
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.0 = self.0.with_transport(t);
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where
-        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
-    {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
-            None => Err(MmError::NotConnected),
-        }
-    }
-
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let full = format!("{}\r", command);
-        self.call_transport(|t| Ok(t.send_recv(&full)?.trim().to_string()))
+    pub fn with_shared_transport(mut self, transport: SharedXLightTransport) -> Self {
+        self.0 = self.0.with_shared_transport(transport);
+        self
     }
 }
 
@@ -75,127 +49,64 @@ impl Default for XLightDichroic {
 
 impl Device for XLightDichroic {
     fn name(&self) -> &str {
-        "XLight-Dichroic"
+        self.0.name()
     }
     fn description(&self) -> &str {
-        "CrestOptics X-Light dichroic filter wheel"
+        self.0.description()
     }
-
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
-            return Err(MmError::NotConnected);
-        }
-        let resp = self.cmd("rC")?;
-        // response is like "rC3" — last char is 1-based position
-        let digit = resp
-            .chars()
-            .last()
-            .and_then(|c| c.to_digit(10))
-            .unwrap_or(1) as u64;
-        self.position = digit.saturating_sub(1); // convert to 0-based
-        self.initialized = true;
-        Ok(())
+        self.0.initialize()
     }
-
     fn shutdown(&mut self) -> MmResult<()> {
-        self.initialized = false;
-        Ok(())
+        self.0.shutdown()
     }
-
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        match name {
-            "State" => Ok(PropertyValue::Integer(self.position as i64)),
-            "Label" => Ok(PropertyValue::String(
-                self.labels
-                    .get(self.position as usize)
-                    .cloned()
-                    .unwrap_or_default(),
-            )),
-            _ => self.props.get(name).cloned(),
-        }
+        self.0.get_property(name)
     }
-
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        match name {
-            "State" => {
-                let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
-                self.set_position(pos)
-            }
-            "Label" => {
-                let label = val.as_str().to_string();
-                self.set_position_by_label(&label)
-            }
-            _ => self.props.set(name, val),
-        }
+        self.0.set_property(name, val)
     }
-
     fn property_names(&self) -> Vec<String> {
-        self.props.property_names().to_vec()
+        self.0.property_names()
     }
     fn has_property(&self, name: &str) -> bool {
-        self.props.has_property(name)
+        self.0.has_property(name)
     }
     fn is_property_read_only(&self, name: &str) -> bool {
-        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
+        self.0.is_property_read_only(name)
     }
     fn device_type(&self) -> DeviceType {
-        DeviceType::State
+        self.0.device_type()
     }
     fn busy(&self) -> bool {
-        false
+        self.0.busy()
     }
 }
 
 impl StateDevice for XLightDichroic {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
-        if pos >= self.num_positions {
-            return Err(MmError::UnknownPosition);
-        }
-        if self.initialized {
-            // wire is 1-based
-            self.cmd(&format!("C{}", pos + 1))?;
-        }
-        self.position = pos;
-        Ok(())
+        self.0.set_position(pos)
     }
-
     fn get_position(&self) -> MmResult<u64> {
-        Ok(self.position)
+        self.0.get_position()
     }
     fn get_number_of_positions(&self) -> u64 {
-        self.num_positions
+        self.0.get_number_of_positions()
     }
-
     fn get_position_label(&self, pos: u64) -> MmResult<String> {
-        self.labels
-            .get(pos as usize)
-            .cloned()
-            .ok_or(MmError::UnknownPosition)
+        self.0.get_position_label(pos)
     }
-
     fn set_position_by_label(&mut self, label: &str) -> MmResult<()> {
-        let pos = self
-            .labels
-            .iter()
-            .position(|l| l == label)
-            .ok_or_else(|| MmError::UnknownLabel(label.to_string()))? as u64;
-        self.set_position(pos)
+        self.0.set_position_by_label(label)
     }
-
     fn set_position_label(&mut self, pos: u64, label: &str) -> MmResult<()> {
-        if pos >= self.num_positions {
-            return Err(MmError::UnknownPosition);
-        }
-        self.labels[pos as usize] = label.to_string();
-        Ok(())
+        self.0.set_position_label(pos, label)
     }
-
     fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
-        self.gate_open = open;
-        Ok(())
+        self.0.set_gate_open(open)
     }
     fn get_gate_open(&self) -> MmResult<bool> {
-        Ok(self.gate_open)
+        self.0.get_gate_open()
     }
 }
 
@@ -209,7 +120,6 @@ mod tests {
         let t = MockTransport::new().expect("rC\r", "rC3");
         let mut d = XLightDichroic::new().with_transport(Box::new(t));
         d.initialize().unwrap();
-        // 1-based 3 → 0-based 2
         assert_eq!(d.get_position().unwrap(), 2);
     }
 
@@ -220,8 +130,19 @@ mod tests {
             .expect("C3\r", "C3");
         let mut d = XLightDichroic::new().with_transport(Box::new(t));
         d.initialize().unwrap();
-        d.set_position(2).unwrap(); // 0-based 2 → wire "C3"
+        d.set_position(2).unwrap();
         assert_eq!(d.get_position().unwrap(), 2);
+    }
+
+    #[test]
+    fn echo_mismatch_rejected() {
+        let t = MockTransport::new()
+            .expect("rC\r", "rC1")
+            .expect("C3\r", "C2");
+        let mut d = XLightDichroic::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert!(d.set_position(2).is_err());
+        assert_eq!(d.get_position().unwrap(), 0);
     }
 
     #[test]

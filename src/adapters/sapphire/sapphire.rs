@@ -10,6 +10,8 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
 const MIN_POWER_MW: f64 = 0.5;
 const MAX_POWER_MW: f64 = 50.0;
@@ -17,13 +19,15 @@ const WAVELENGTH_NM: f64 = 561.0;
 
 pub struct Sapphire {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
-    is_open: bool,
+    is_open: Cell<bool>,
     power_setpoint_mw: f64,
     min_power_mw: f64,
     max_power_mw: f64,
     wavelength_nm: f64,
+    delay_ms: f64,
+    changed_time: Cell<Instant>,
 }
 
 impl Sapphire {
@@ -62,56 +66,69 @@ impl Sapphire {
         props
             .define_property("Wavelength", PropertyValue::Float(WAVELENGTH_NM), false)
             .unwrap();
+        props
+            .define_property("Delay_ms", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Delay_ms", 0.0, f64::MAX)
+            .unwrap();
 
         Self {
             props,
             transport: None,
             initialized: false,
-            is_open: false,
+            is_open: Cell::new(false),
             power_setpoint_mw: 0.0,
             min_power_mw: MIN_POWER_MW,
             max_power_mw: MAX_POWER_MW,
             wavelength_nm: WAVELENGTH_NM,
+            delay_ms: 0.0,
+            changed_time: Cell::new(Instant::now()),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
     /// Send `?TOKEN` and parse `TOKEN=value` or bare value.
-    fn query(&mut self, token: &str) -> MmResult<String> {
+    fn query(&self, token: &str) -> MmResult<String> {
         let cmd = format!("?{}", token);
         let tok = token.to_string();
         self.call_transport(|t| {
+            t.purge()?;
             let resp = t.send_recv(&cmd)?;
-            let resp = resp.trim();
+            let mut resp = resp.trim().to_string();
+            if resp.is_empty() {
+                resp = t.receive_line()?.trim().to_string();
+            }
             if let Some(eq) = resp.find('=') {
                 let key = &resp[..eq];
                 if key == tok {
                     return Ok(resp[eq + 1..].to_string());
                 }
             }
-            Ok(resp.to_string())
+            Ok(resp)
         })
     }
 
     /// Send `TOKEN=value` and parse the echoed `TOKEN=achieved` response.
-    fn set_token(&mut self, token: &str, value: &str) -> MmResult<String> {
+    fn set_token(&self, token: &str, value: &str) -> MmResult<String> {
         let cmd = format!("{}={}", token, value);
         let tok = token.to_string();
         self.call_transport(|t| {
+            t.purge()?;
             t.send(&cmd)?;
             let resp = t.receive_line()?;
             Self::parse_set_response(&tok, &resp)
@@ -147,7 +164,7 @@ impl Sapphire {
     }
 
     /// Read and discard greeting lines until an empty line is encountered.
-    fn read_greeting(&mut self) -> MmResult<()> {
+    fn read_greeting(&self) -> MmResult<()> {
         loop {
             let line = self.call_transport(|t| t.receive_line())?;
             if line.trim().is_empty() {
@@ -169,7 +186,7 @@ impl Device for Sapphire {
         "Sapphire"
     }
     fn description(&self) -> &str {
-        "Coherent Sapphire laser controller"
+        "Coherent Sapphire Laser"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -184,10 +201,10 @@ impl Device for Sapphire {
         let _ = self.set_token("T", "1"); // enable TEC servo
 
         if let Ok(l) = self.query("L") {
-            self.is_open = l.trim() == "1";
+            self.is_open.set(l.trim() == "1");
             self.props
                 .entry_mut("State")
-                .map(|e| e.value = PropertyValue::Integer(if self.is_open { 1 } else { 0 }));
+                .map(|e| e.value = PropertyValue::Integer(if self.is_open.get() { 1 } else { 0 }));
         }
         if let Ok(p) = self.query("P") {
             self.power_setpoint_mw = p.parse().unwrap_or(0.0);
@@ -209,17 +226,38 @@ impl Device for Sapphire {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(if self.is_open { 1 } else { 0 })),
+            "State" if self.initialized => match self.query("L")?.trim() {
+                "0" => Ok(PropertyValue::Integer(0)),
+                "1" => Ok(PropertyValue::Integer(1)),
+                _ => Err(MmError::SerialInvalidResponse),
+            },
+            "State" => Ok(PropertyValue::Integer(if self.is_open.get() {
+                1
+            } else {
+                0
+            })),
+            "PowerSetpoint" if self.initialized => Ok(PropertyValue::Float(
+                self.query("P")?
+                    .parse()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
             "PowerSetpoint" => Ok(PropertyValue::Float(self.power_setpoint_mw)),
+            "PowerReadback" if self.initialized => Ok(PropertyValue::Float(
+                self.query("P")?
+                    .parse()
+                    .map_err(|_| MmError::SerialInvalidResponse)?,
+            )),
             "Minimum Laser Power" => Ok(PropertyValue::Float(self.min_power_mw)),
             "Maximum Laser Power" => Ok(PropertyValue::Float(self.max_power_mw)),
             "Wavelength" => Ok(PropertyValue::Float(self.wavelength_nm)),
+            "Delay_ms" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "State" => {
                 let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 match state {
@@ -268,6 +306,11 @@ impl Device for Sapphire {
                 self.wavelength_nm = nm;
                 self.props.set(name, PropertyValue::Float(nm))
             }
+            "Delay_ms" => {
+                let ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.delay_ms = ms;
+                self.props.set(name, PropertyValue::Float(ms))
+            }
             _ => self.props.set(name, val),
         }
     }
@@ -285,7 +328,7 @@ impl Device for Sapphire {
         DeviceType::Shutter
     }
     fn busy(&self) -> bool {
-        false
+        self.changed_time.get().elapsed().as_secs_f64() * 1000.0 < self.delay_ms
     }
 }
 
@@ -293,7 +336,8 @@ impl Shutter for Sapphire {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         let val = if open { "1" } else { "0" };
         self.set_token("L", val)?;
-        self.is_open = open;
+        self.is_open.set(open);
+        self.changed_time.set(Instant::now());
         self.props
             .entry_mut("State")
             .map(|e| e.value = PropertyValue::Integer(if open { 1 } else { 0 }));
@@ -301,7 +345,15 @@ impl Shutter for Sapphire {
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        if self.initialized {
+            match self.query("L")?.trim() {
+                "0" => Ok(false),
+                "1" => Ok(true),
+                _ => Err(MmError::SerialInvalidResponse),
+            }
+        } else {
+            Ok(self.is_open.get())
+        }
     }
 
     fn fire(&mut self, delta_t: f64) -> MmResult<()> {
@@ -331,7 +383,7 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let mut dev = Sapphire::new().with_transport(Box::new(make_transport()));
+        let mut dev = Sapphire::new().with_transport(Box::new(make_transport().any("L=0")));
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
         assert_eq!(dev.power_setpoint_mw, 10.0);
@@ -341,6 +393,10 @@ mod tests {
         assert!(dev.has_property("Minimum Laser Power"));
         assert!(dev.has_property("Maximum Laser Power"));
         assert!(dev.has_property("Wavelength"));
+        assert!(dev.has_property("Delay_ms"));
+        assert_eq!(dev.description(), "Coherent Sapphire Laser");
+        assert!(!dev.has_property("HeadID"));
+        assert!(!dev.has_property("Head Usage Hours"));
         assert!(!dev.has_property("PowerSetpoint_mW"));
         assert!(!dev.has_property("PowerReadback_mW"));
         assert!(!dev.has_property("Wavelength_nm"));
@@ -348,7 +404,13 @@ mod tests {
 
     #[test]
     fn open_close() {
-        let t = make_transport().any("L=1").any("L=0");
+        let t = make_transport()
+            .any("L=1")
+            .any("L=1")
+            .any("L=1")
+            .any("L=0")
+            .any("L=0")
+            .any("L=0");
         let mut dev = Sapphire::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_open(true).unwrap();
@@ -377,7 +439,7 @@ mod tests {
 
     #[test]
     fn set_power_keeps_achieved_value_when_echo_is_close_but_different() {
-        let t = make_transport().any("P=23.00000");
+        let t = make_transport().any("P=23.00000").any("P=23.00000");
         let mut dev = Sapphire::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_property("PowerSetpoint", PropertyValue::Float(25.0))
@@ -402,6 +464,45 @@ mod tests {
             MmError::SerialInvalidResponse
         );
         assert_eq!(dev.power_setpoint_mw, 10.0);
+    }
+
+    #[test]
+    fn initialized_live_properties_query_controller() {
+        let t = make_transport()
+            .any("L=1")
+            .any("P=12.5")
+            .any("P=12.25");
+        let mut dev = Sapphire::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.get_property("State").unwrap(),
+            PropertyValue::Integer(1)
+        );
+        assert_eq!(
+            dev.get_property("PowerSetpoint").unwrap(),
+            PropertyValue::Float(12.5)
+        );
+        assert_eq!(
+            dev.get_property("PowerReadback").unwrap(),
+            PropertyValue::Float(12.25)
+        );
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected_and_delay_drives_busy() {
+        let t = make_transport().any("L=1");
+        let mut dev = Sapphire::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        dev.set_property("Delay_ms", PropertyValue::Float(1000.0))
+            .unwrap();
+        dev.set_open(true).unwrap();
+        assert!(dev.busy());
     }
 
     #[test]

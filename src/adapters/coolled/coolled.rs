@@ -60,6 +60,10 @@ impl CoolLedPE300 {
         props
             .set_allowed_values("Global State", &["0", "1"])
             .unwrap();
+        props
+            .define_property("Lock Pod", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("Lock Pod", &["0", "1"]).unwrap();
 
         Self {
             props,
@@ -124,6 +128,28 @@ impl CoolLedPE300 {
         }
         result
     }
+
+    fn refresh_css(&mut self) -> MmResult<()> {
+        let css = self.cmd("CSS?")?;
+        let states = Self::parse_css(&css);
+        self.global_on = false;
+        for (i, (sel, on, intensity)) in states.iter().enumerate() {
+            self.channels[i].selected = *sel;
+            self.channels[i].intensity = *intensity;
+            let ch = self.channels[i].id;
+            self.props
+                .entry_mut(&format!("Intensity{}", ch))
+                .map(|e| e.value = PropertyValue::Integer(*intensity as i64));
+            self.props
+                .entry_mut(&format!("Selection{}", ch))
+                .map(|e| e.value = PropertyValue::Integer(if *sel { 1 } else { 0 }));
+            self.global_on |= *on;
+        }
+        self.props
+            .entry_mut("Global State")
+            .map(|e| e.value = PropertyValue::Integer(if self.global_on { 1 } else { 0 }));
+        Ok(())
+    }
 }
 
 impl Default for CoolLedPE300 {
@@ -158,24 +184,8 @@ impl Device for CoolLedPE300 {
             .entry_mut("Version")
             .map(|e| e.value = PropertyValue::String(ver));
 
-        let css = self.cmd("CSS?")?;
-        let states = Self::parse_css(&css);
-        self.global_on = false;
-        for (i, (sel, on, intensity)) in states.iter().enumerate() {
-            self.channels[i].selected = *sel;
-            self.channels[i].intensity = *intensity;
-            let ch = self.channels[i].id;
-            self.props
-                .entry_mut(&format!("Intensity{}", ch))
-                .map(|e| e.value = PropertyValue::Integer(*intensity as i64));
-            self.props
-                .entry_mut(&format!("Selection{}", ch))
-                .map(|e| e.value = PropertyValue::Integer(if *sel { 1 } else { 0 }));
-            self.global_on |= *on;
-        }
-        self.props
-            .entry_mut("Global State")
-            .map(|e| e.value = PropertyValue::Integer(if self.global_on { 1 } else { 0 }));
+        self.cmd("PORT:P=ON")?;
+        self.refresh_css()?;
 
         self.initialized = true;
         Ok(())
@@ -234,6 +244,20 @@ impl Device for CoolLedPE300 {
                 .props
                 .set(name, PropertyValue::Integer(if open { 1 } else { 0 }));
         }
+        if name == "Lock Pod" {
+            let locked = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if locked != 0 && locked != 1 {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            if self.initialized {
+                self.cmd(if locked == 1 {
+                    "PORT:P=OFF"
+                } else {
+                    "PORT:P=ON"
+                })?;
+            }
+            return self.props.set(name, PropertyValue::Integer(locked));
+        }
         self.props.set(name, val)
     }
 
@@ -283,6 +307,7 @@ mod tests {
         MockTransport::new()
             .expect("XMODEL\r", "pE-300 v1.0")
             .expect("XVER\r", "HW:1.0 FW:2.3")
+            .expect("PORT:P=ON\r", "OK")
             // CSS: A=selected/on/50%, B=not selected/off/0%, C=not selected/off/0%
             .expect("CSS?\r", "CSSASN050BXF000CXF000")
     }
@@ -315,6 +340,19 @@ mod tests {
         dev.set_property("IntensityA", PropertyValue::Integer(75))
             .unwrap();
         assert_eq!(dev.channels[0].intensity, 75);
+    }
+
+    #[test]
+    fn lock_pod_uses_upstream_port_commands() {
+        let t = make_transport().expect("PORT:P=OFF\r", "OK");
+        let mut dev = CoolLedPE300::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("Lock Pod", PropertyValue::Integer(1))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("Lock Pod").unwrap(),
+            PropertyValue::Integer(1)
+        );
     }
 
     #[test]

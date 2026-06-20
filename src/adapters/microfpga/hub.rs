@@ -128,7 +128,7 @@ impl Device for MicroFpgaHub {
         "MicroFPGA-Hub"
     }
     fn description(&self) -> &str {
-        "MicroFPGA Hub (required)"
+        "Hub (required)"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -193,13 +193,9 @@ impl Device for MicroFpgaHub {
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         if name == "Camera trigger" {
-            let mode = match &val {
-                PropertyValue::String(s) if s == "Active" => 1,
-                PropertyValue::String(s) if s == "Passive" => 0,
+            match &val {
+                PropertyValue::String(s) if s == "Active" || s == "Passive" => {}
                 _ => return Err(MmError::InvalidPropertyValue),
-            };
-            if self.initialized {
-                self.write_register(OFFSET_CAM_SYNC_MODE, mode)?;
             }
         }
         self.props.set(name, val)
@@ -239,9 +235,51 @@ impl Hub for MicroFpgaHub {
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     fn le4(v: u32) -> Vec<u8> {
         v.to_le_bytes().to_vec()
+    }
+
+    struct RecordingTransport {
+        responses: VecDeque<Vec<u8>>,
+        sent: Arc<StdMutex<Vec<Vec<u8>>>>,
+    }
+
+    impl RecordingTransport {
+        fn new(responses: Vec<Vec<u8>>, sent: Arc<StdMutex<Vec<Vec<u8>>>>) -> Self {
+            Self {
+                responses: responses.into(),
+                sent,
+            }
+        }
+    }
+
+    impl Transport for RecordingTransport {
+        fn send(&mut self, _cmd: &str) -> MmResult<()> {
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            Err(MmError::SerialTimeout)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            Ok(())
+        }
+
+        fn send_bytes(&mut self, bytes: &[u8]) -> MmResult<()> {
+            self.sent.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+
+        fn receive_bytes(&mut self, n: usize) -> MmResult<Vec<u8>> {
+            match self.responses.pop_front() {
+                Some(data) => Ok(data[..data.len().min(n)].to_vec()),
+                None => Err(MmError::SerialTimeout),
+            }
+        }
     }
 
     fn make_hub() -> MicroFpgaHub {
@@ -339,5 +377,19 @@ mod tests {
             hub.get_property("Camera trigger").unwrap(),
             PropertyValue::String("Passive".into())
         );
+    }
+
+    #[test]
+    fn camera_trigger_property_is_read_only_and_does_not_write() {
+        let sent = Arc::new(StdMutex::new(Vec::new()));
+        let t = RecordingTransport::new(vec![le4(3), le4(ID_AU)], Arc::clone(&sent));
+        let mut hub = MicroFpgaHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+        let writes_after_initialize = sent.lock().unwrap().len();
+
+        assert!(hub.is_property_read_only("Camera trigger"));
+        hub.set_property("Camera trigger", PropertyValue::String("Active".into()))
+            .unwrap();
+        assert_eq!(sent.lock().unwrap().len(), writes_after_initialize);
     }
 }

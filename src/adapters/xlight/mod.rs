@@ -1,3 +1,4 @@
+mod common;
 /// CrestOptics X-Light spinning disk confocal adapter.
 ///
 /// Serial protocol (ASCII, terminated with `\r`, echo-based):
@@ -23,17 +24,16 @@
 ///   - XLightDiskSlider (StateDevice, 3 positions, 0-based on wire)
 ///   - XLightSpinMotor  (StateDevice, 2 positions, 0-based on wire)
 ///   - XLightTouchScreen (StateDevice, 2 positions, 0-based on wire)
-
 pub mod dichroic;
+pub mod disk_slider;
 pub mod emission;
 pub mod excitation;
-pub mod disk_slider;
 pub mod spin_motor;
 pub mod touchscreen;
 
 pub use dichroic::XLightDichroic;
+pub use disk_slider::XLightDiskSlider;
 pub use emission::XLightEmission;
 pub use excitation::XLightExcitation;
-pub use disk_slider::XLightDiskSlider;
 pub use spin_motor::XLightSpinMotor;
 pub use touchscreen::XLightTouchScreen;

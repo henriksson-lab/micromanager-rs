@@ -17,40 +17,74 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 const NM_PER_UM: f64 = 1000.0;
 
 pub struct WSXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
-    x_um: f64,
-    y_um: f64,
+    x_um: Cell<f64>,
+    y_um: Cell<f64>,
+    busy_x: Cell<bool>,
+    busy_y: Cell<bool>,
 }
 
 impl WSXYStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, transport: None, initialized: false, x_um: 0.0, y_um: 0.0 }
+        props
+            .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
+            .unwrap();
+        props
+            .define_property("Velocity (micron/s)", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Velocity (micron/s)", 0.0, 100000.0)
+            .unwrap();
+        props
+            .define_property(
+                "Acceleration (micron/s^2)",
+                PropertyValue::Float(0.0),
+                false,
+            )
+            .unwrap();
+        props
+            .set_property_limits("Acceleration (micron/s^2)", 0.0, 500000.0)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            x_um: Cell::new(0.0),
+            y_um: Cell::new(0.0),
+            busy_x: Cell::new(false),
+            busy_y: Cell::new(false),
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     fn check_ok(resp: &str) -> MmResult<()> {
@@ -61,38 +95,116 @@ impl WSXYStage {
         }
     }
 
-    fn query_axis(&mut self, axis: &str) -> MmResult<f64> {
+    fn query_axis(&self, axis: &str) -> MmResult<f64> {
         let resp = self.cmd(&format!("POS {}", axis))?;
-        let nm: i64 = resp.trim().parse().unwrap_or(0);
+        let nm: i64 = resp
+            .trim()
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
         Ok(nm as f64 / NM_PER_UM)
+    }
+
+    fn query_presence(&self, axis: &str) -> MmResult<bool> {
+        let resp = self.cmd(&format!("PRESENT {}", axis))?;
+        Ok(matches!(resp.as_str(), "1" | "OK" | "PRESENT"))
+    }
+
+    fn query_busy_axis(&self, axis: &str) -> MmResult<bool> {
+        let resp = self.cmd(&format!("BUSY {}", axis))?;
+        Ok(matches!(resp.as_str(), "1" | "BUSY" | "MOVING"))
+    }
+
+    fn query_limit_axis(&self, axis: &str, which: &str) -> MmResult<f64> {
+        let resp = self.cmd(&format!("LIMIT {} {}", axis, which))?;
+        let nm: i64 = resp
+            .trim()
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        Ok(nm as f64 / NM_PER_UM)
+    }
+
+    fn set_motion_property(&self, command: &str, value_um: f64) -> MmResult<()> {
+        let nm = (value_um * NM_PER_UM) as i64;
+        let rx = self.cmd(&format!("{} X {}", command, nm))?;
+        Self::check_ok(&rx)?;
+        let ry = self.cmd(&format!("{} Y {}", command, nm))?;
+        Self::check_ok(&ry)
     }
 }
 
-impl Default for WSXYStage { fn default() -> Self { Self::new() } }
+impl Default for WSXYStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for WSXYStage {
-    fn name(&self) -> &str { "WS-XYStage" }
-    fn description(&self) -> &str { "Wienecke & Sinske WSB PiezoDrive XY stage" }
+    fn name(&self) -> &str {
+        "WS-XYStage"
+    }
+    fn description(&self) -> &str {
+        "Wienecke & Sinske WSB PiezoDrive XY stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
-        self.x_um = self.query_axis("X")?;
-        self.y_um = self.query_axis("Y")?;
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
+        if !(self.query_presence("X")? && self.query_presence("Y")?) {
+            return Err(MmError::DeviceNotFound("WSB PiezoDrive CAN".into()));
+        }
+        self.x_um.set(self.query_axis("X")?);
+        self.y_um.set(self.query_axis("Y")?);
         self.initialized = true;
         Ok(())
     }
 
-    fn shutdown(&mut self) -> MmResult<()> { self.initialized = false; Ok(()) }
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
+        if name == "Velocity (micron/s)" || name == "Acceleration (micron/s^2)" {
+            let value = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            self.props.set(name, PropertyValue::Float(value))?;
+            if self.initialized {
+                let cmd = if name == "Velocity (micron/s)" {
+                    "VEL"
+                } else {
+                    "ACCEL"
+                };
+                self.set_motion_property(cmd, value)?;
+            }
+            return Ok(());
+        }
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::XYStage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::XYStage
+    }
+    fn busy(&self) -> bool {
+        let busy_x = self.query_busy_axis("X").unwrap_or(self.busy_x.get());
+        let busy_y = self.query_busy_axis("Y").unwrap_or(self.busy_y.get());
+        self.busy_x.set(busy_x);
+        self.busy_y.set(busy_y);
+        busy_x || busy_y
+    }
 }
 
 impl XYStage for WSXYStage {
@@ -103,12 +215,20 @@ impl XYStage for WSXYStage {
         Self::check_ok(&rx)?;
         let ry = self.cmd(&format!("MOVE Y {}", ynm))?;
         Self::check_ok(&ry)?;
-        self.x_um = x;
-        self.y_um = y;
+        self.x_um.set(x);
+        self.y_um.set(y);
+        self.busy_x.set(true);
+        self.busy_y.set(true);
         Ok(())
     }
 
-    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> { Ok((self.x_um, self.y_um)) }
+    fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
+        let x = self.query_axis("X")?;
+        let y = self.query_axis("Y")?;
+        self.x_um.set(x);
+        self.y_um.set(y);
+        Ok((x, y))
+    }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let dxnm = (dx * NM_PER_UM).round() as i64;
@@ -117,33 +237,47 @@ impl XYStage for WSXYStage {
         Self::check_ok(&rx)?;
         let ry = self.cmd(&format!("RMOVE Y {}", dynm))?;
         Self::check_ok(&ry)?;
-        self.x_um += dx;
-        self.y_um += dy;
+        self.x_um.set(self.x_um.get() + dx);
+        self.y_um.set(self.y_um.get() + dy);
+        self.busy_x.set(true);
+        self.busy_y.set(true);
         Ok(())
     }
 
     fn home(&mut self) -> MmResult<()> {
-        let r = self.cmd("HOME")?;
+        let r = self.cmd("HOME LOWER")?;
         Self::check_ok(&r)?;
-        self.x_um = 0.0;
-        self.y_um = 0.0;
+        self.busy_x.set(true);
+        self.busy_y.set(true);
         Ok(())
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        let _ = self.cmd("STOP");
+        let rx = self.cmd("STOP X")?;
+        Self::check_ok(&rx)?;
+        let ry = self.cmd("STOP Y")?;
+        Self::check_ok(&ry)?;
+        self.busy_x.set(false);
+        self.busy_y.set(false);
         Ok(())
     }
 
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Ok((-200.0, 200.0, -200.0, 200.0))
+        Ok((
+            self.query_limit_axis("X", "LOWER")?,
+            self.query_limit_axis("X", "UPPER")?,
+            self.query_limit_axis("Y", "LOWER")?,
+            self.query_limit_axis("Y", "UPPER")?,
+        ))
     }
 
-    fn get_step_size_um(&self) -> (f64, f64) { (0.001, 0.001) }
+    fn get_step_size_um(&self) -> (f64, f64) {
+        (0.001, 0.001)
+    }
 
     fn set_origin(&mut self) -> MmResult<()> {
-        self.x_um = 0.0;
-        self.y_um = 0.0;
+        self.x_um.set(0.0);
+        self.y_um.set(0.0);
         Ok(())
     }
 }
@@ -155,13 +289,16 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .any("100000")  // POS X → 100 µm
-            .any("200000")  // POS Y → 200 µm
+            .any("1") // PRESENT X
+            .any("1") // PRESENT Y
+            .any("100000") // POS X → 100 µm
+            .any("200000") // POS Y → 200 µm
     }
 
     #[test]
     fn initialize() {
-        let mut s = WSXYStage::new().with_transport(Box::new(make_transport()));
+        let t = make_transport().any("100000").any("200000");
+        let mut s = WSXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         let (x, y) = s.get_xy_position_um().unwrap();
         assert!((x - 100.0).abs() < 1e-9);
@@ -170,7 +307,11 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = make_transport().any("OK").any("OK");
+        let t = make_transport()
+            .any("OK")
+            .any("OK")
+            .any("50000")
+            .any("75000");
         let mut s = WSXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_xy_position_um(50.0, 75.0).unwrap();
@@ -179,13 +320,48 @@ mod tests {
 
     #[test]
     fn move_relative() {
-        let t = make_transport().any("OK").any("OK");
+        let t = make_transport()
+            .any("OK")
+            .any("OK")
+            .any("110000")
+            .any("205000");
         let mut s = WSXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_xy_position_um(10.0, 5.0).unwrap();
         let (x, y) = s.get_xy_position_um().unwrap();
         assert!((x - 110.0).abs() < 1e-9);
         assert!((y - 205.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn busy_polls_axes() {
+        let t = make_transport().any("1").any("0");
+        let mut s = WSXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
+    }
+
+    #[test]
+    fn limits_are_live_hardware_stops() {
+        let t = make_transport()
+            .any("-1000")
+            .any("2000")
+            .any("-3000")
+            .any("4000");
+        let mut s = WSXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.get_limits_um().unwrap(), (-1.0, 2.0, -3.0, 4.0));
+    }
+
+    #[test]
+    fn initialized_port_change_is_forbidden() {
+        let mut s = WSXYStage::new().with_transport(Box::new(make_transport()));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_property("Port", PropertyValue::String("COM2".into()))
+                .unwrap_err(),
+            MmError::CanNotSetProperty
+        );
     }
 
     #[test]
@@ -197,5 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(WSXYStage::new().initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(WSXYStage::new().initialize().is_err());
+    }
 }

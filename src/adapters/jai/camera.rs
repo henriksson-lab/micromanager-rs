@@ -45,7 +45,7 @@ fn bpp_to_bytes(bpp: u32) -> u32 {
 
 /// Sequence state: one stream + N pre-allocated PvBuffers for continuous grab.
 struct SequenceState {
-    stream:  *mut ffi::JaiStream,
+    stream: *mut ffi::JaiStream,
     buffers: Vec<*mut ffi::JaiBuffer>,
 }
 
@@ -55,126 +55,189 @@ pub struct JAICamera {
     // Raw SDK handles (null when not initialized).
     system: *mut ffi::JaiSystem,
     device: *mut ffi::JaiDevice,
-    seq:    Option<SequenceState>,
+    seq: Option<SequenceState>,
 
     // Cached image data from the last snap.
-    image_buf:      Vec<u8>,
-    width:          u32,
-    height:         u32,
+    image_buf: Vec<u8>,
+    width: u32,
+    height: u32,
     bytes_per_pixel: u32,
-    bit_depth:      u32,
+    bit_depth: u32,
     num_components: u32,
 
     // Pre-init settings.
-    camera_index:  i32,
+    camera_index: i32,
     serial_number: String,
-    exposure_ms:   f64,
-    gain:          f64,
-    pixel_format:  String,
-    binning:       i32,
+    exposure_ms: f64,
+    gain: f64,
+    pixel_format: String,
+    binning: i32,
 }
 
 impl JAICamera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("CameraIndex",   PropertyValue::Integer(0),                false).unwrap();
-        props.define_property("SerialNumber",  PropertyValue::String("".into()),         false).unwrap();
-        props.define_property("Exposure",      PropertyValue::Float(10.0),              false).unwrap();
-        props.define_property("Gain",          PropertyValue::Float(0.0),               false).unwrap();
-        props.define_property("PixelFormat",   PropertyValue::String("Mono8".into()),   false).unwrap();
-        props.define_property("Binning",       PropertyValue::Integer(1),               false).unwrap();
-        props.define_property("Width",         PropertyValue::Integer(0),               true).unwrap();
-        props.define_property("Height",        PropertyValue::Integer(0),               true).unwrap();
-        props.define_property("Temperature",   PropertyValue::Float(0.0),              true).unwrap();
-        props.define_property("Model",         PropertyValue::String("".into()),        true).unwrap();
+        props
+            .define_property("CameraID", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("CameraIndex", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("SerialNumber", PropertyValue::String("".into()), false)
+            .unwrap();
+        props
+            .define_property("Exposure", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props
+            .define_property("Gain", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("PixelFormat", PropertyValue::String("Mono8".into()), false)
+            .unwrap();
+        props
+            .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("Width", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Height", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Temperature", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("Model", PropertyValue::String("".into()), true)
+            .unwrap();
 
         Self {
             props,
             system: std::ptr::null_mut(),
             device: std::ptr::null_mut(),
-            seq:    None,
-            image_buf:      Vec::new(),
-            width:          0,
-            height:         0,
+            seq: None,
+            image_buf: Vec::new(),
+            width: 0,
+            height: 0,
             bytes_per_pixel: 1,
-            bit_depth:      8,
+            bit_depth: 8,
             num_components: 1,
-            camera_index:   0,
-            serial_number:  String::new(),
-            exposure_ms:    10.0,
-            gain:           0.0,
-            pixel_format:   "Mono8".into(),
-            binning:        1,
+            camera_index: 0,
+            serial_number: String::new(),
+            exposure_ms: 10.0,
+            gain: 0.0,
+            pixel_format: "Mono8".into(),
+            binning: 1,
         }
     }
 
     fn check_open(&self) -> MmResult<()> {
-        if self.device.is_null() { Err(MmError::NotConnected) } else { Ok(()) }
+        if self.device.is_null() {
+            Err(MmError::NotConnected)
+        } else {
+            Ok(())
+        }
     }
 
     // ── Device parameter helpers ───────────────────────────────────────────────
 
     fn dev_set_float(&self, name: &str, v: f64) {
-        if self.device.is_null() { return; }
+        if self.device.is_null() {
+            return;
+        }
         let n = cstr(name);
-        unsafe { ffi::jai_device_set_float(self.device, n.as_ptr(), v); }
+        unsafe {
+            ffi::jai_device_set_float(self.device, n.as_ptr(), v);
+        }
     }
 
     fn dev_set_int(&self, name: &str, v: i64) {
-        if self.device.is_null() { return; }
+        if self.device.is_null() {
+            return;
+        }
         let n = cstr(name);
-        unsafe { ffi::jai_device_set_int(self.device, n.as_ptr(), v); }
+        unsafe {
+            ffi::jai_device_set_int(self.device, n.as_ptr(), v);
+        }
     }
 
     fn dev_set_enum(&self, name: &str, v: &str) {
-        if self.device.is_null() { return; }
+        if self.device.is_null() {
+            return;
+        }
         let n = cstr(name);
         let val = cstr(v);
-        unsafe { ffi::jai_device_set_enum(self.device, n.as_ptr(), val.as_ptr()); }
+        unsafe {
+            ffi::jai_device_set_enum(self.device, n.as_ptr(), val.as_ptr());
+        }
     }
 
     fn dev_execute(&self, name: &str) {
-        if self.device.is_null() { return; }
+        if self.device.is_null() {
+            return;
+        }
         let n = cstr(name);
-        unsafe { ffi::jai_device_execute(self.device, n.as_ptr()); }
+        unsafe {
+            ffi::jai_device_execute(self.device, n.as_ptr());
+        }
     }
 
     fn dev_get_float(&self, name: &str) -> Option<f64> {
-        if self.device.is_null() { return None; }
+        if self.device.is_null() {
+            return None;
+        }
         let n = cstr(name);
         let mut v: f64 = 0.0;
         let rc = unsafe { ffi::jai_device_get_float(self.device, n.as_ptr(), &mut v) };
-        if rc == 0 { Some(v) } else { None }
+        if rc == 0 {
+            Some(v)
+        } else {
+            None
+        }
     }
 
     fn dev_get_int(&self, name: &str) -> Option<i64> {
-        if self.device.is_null() { return None; }
+        if self.device.is_null() {
+            return None;
+        }
         let n = cstr(name);
         let mut v: i64 = 0;
         let rc = unsafe { ffi::jai_device_get_int(self.device, n.as_ptr(), &mut v) };
-        if rc == 0 { Some(v) } else { None }
+        if rc == 0 {
+            Some(v)
+        } else {
+            None
+        }
     }
 
     fn dev_get_string(&self, name: &str) -> Option<String> {
-        if self.device.is_null() { return None; }
+        if self.device.is_null() {
+            return None;
+        }
         let n = cstr(name);
         let mut buf = [0i8; BUF];
         let rc = unsafe {
             ffi::jai_device_get_string(self.device, n.as_ptr(), buf.as_mut_ptr(), BUF as i32)
         };
-        if rc != 0 { return None; }
+        if rc != 0 {
+            return None;
+        }
         let s = unsafe { CStr::from_ptr(buf.as_ptr()) };
         Some(s.to_string_lossy().into_owned())
     }
 
     fn dev_get_enum(&self, name: &str) -> Option<String> {
-        if self.device.is_null() { return None; }
+        if self.device.is_null() {
+            return None;
+        }
         let n = cstr(name);
         let mut buf = [0i8; BUF];
         let rc = unsafe {
             ffi::jai_device_get_enum(self.device, n.as_ptr(), buf.as_mut_ptr(), BUF as i32)
         };
-        if rc != 0 { return None; }
+        if rc != 0 {
+            return None;
+        }
         let s = unsafe { CStr::from_ptr(buf.as_ptr()) };
         Some(s.to_string_lossy().into_owned())
     }
@@ -182,33 +245,55 @@ impl JAICamera {
     // ── Sync dimensions from camera ───────────────────────────────────────────
 
     fn sync_dimensions(&mut self) {
-        if let Some(w) = self.dev_get_int("Width")  { self.width  = w as u32; }
-        if let Some(h) = self.dev_get_int("Height") { self.height = h as u32; }
+        if let Some(w) = self.dev_get_int("Width") {
+            self.width = w as u32;
+        }
+        if let Some(h) = self.dev_get_int("Height") {
+            self.height = h as u32;
+        }
         if let Some(fmt) = self.dev_get_enum("PixelFormat") {
             self.pixel_format = fmt;
         }
-        self.bytes_per_pixel = bpp_to_bytes(
-            unsafe { ffi::jai_buffer_bits_per_pixel(std::ptr::null_mut()) }.max(8),
-        );
+        self.bytes_per_pixel =
+            bpp_to_bytes(unsafe { ffi::jai_buffer_bits_per_pixel(std::ptr::null_mut()) }.max(8));
         // Fallback: use bits-per-pixel from current format string
-        self.bytes_per_pixel = if self.pixel_format.contains("16") { 2 }
-            else if self.pixel_format.contains("10") || self.pixel_format.contains("12") { 2 }
-            else if self.pixel_format.contains("8") && self.pixel_format.contains("RGB")  { 3 }
-            else { 1 };
-        self.bit_depth = if self.pixel_format.contains("12") { 12 }
-            else if self.pixel_format.contains("10") { 10 }
-            else if self.pixel_format.contains("16") { 16 }
-            else { 8 };
-        self.num_components = if self.pixel_format.contains("RGB") || self.pixel_format.contains("BGR") { 3 } else { 1 };
-        self.props.entry_mut("Width") .map(|e| e.value = PropertyValue::Integer(self.width  as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.height as i64));
+        self.bytes_per_pixel = if self.pixel_format.contains("16") {
+            2
+        } else if self.pixel_format.contains("10") || self.pixel_format.contains("12") {
+            2
+        } else if self.pixel_format.contains("8") && self.pixel_format.contains("RGB") {
+            3
+        } else {
+            1
+        };
+        self.bit_depth = if self.pixel_format.contains("12") {
+            12
+        } else if self.pixel_format.contains("10") {
+            10
+        } else if self.pixel_format.contains("16") {
+            16
+        } else {
+            8
+        };
+        self.num_components =
+            if self.pixel_format.contains("RGB") || self.pixel_format.contains("BGR") {
+                3
+            } else {
+                1
+            };
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.height as i64));
     }
 
     // ── Apply pre-init settings to open device ────────────────────────────────
 
     fn apply_settings(&mut self) {
-        let ms  = self.exposure_ms;
-        let g   = self.gain;
+        let ms = self.exposure_ms;
+        let g = self.gain;
         let bin = self.binning;
         let fmt = self.pixel_format.clone();
 
@@ -224,7 +309,7 @@ impl JAICamera {
 
         // Binning (symmetric)
         self.dev_set_int("BinningHorizontal", bin as i64);
-        self.dev_set_int("BinningVertical",   bin as i64);
+        self.dev_set_int("BinningVertical", bin as i64);
 
         // Pixel format
         self.dev_set_enum("PixelFormat", &fmt);
@@ -237,10 +322,26 @@ impl JAICamera {
     }
 
     fn dev_set_float_check(&self, name: &str, v: f64) -> MmResult<()> {
-        if self.device.is_null() { return Err(MmError::NotConnected); }
+        if self.device.is_null() {
+            return Err(MmError::NotConnected);
+        }
         let n = cstr(name);
         let rc = unsafe { ffi::jai_device_set_float(self.device, n.as_ptr(), v) };
-        if rc == 0 { Ok(()) } else { Err(MmError::Err) }
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(MmError::Err)
+        }
+    }
+
+    fn ensure_not_capturing_for_property(&self) -> MmResult<()> {
+        if self.seq.is_some() {
+            Err(MmError::LocallyDefined(
+                "This operation is not allowed during live streaming".into(),
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     // ── Single-frame grab ─────────────────────────────────────────────────────
@@ -254,7 +355,9 @@ impl JAICamera {
         let rc = unsafe {
             ffi::jai_device_get_connection_id(self.device, conn_buf.as_mut_ptr(), BUF as i32)
         };
-        if rc != 0 { return Err(MmError::NotConnected); }
+        if rc != 0 {
+            return Err(MmError::NotConnected);
+        }
         let conn = unsafe { CStr::from_ptr(conn_buf.as_ptr()) };
         let conn_cstr = CString::new(conn.to_bytes()).map_err(|_| MmError::Err)?;
 
@@ -307,22 +410,28 @@ impl JAICamera {
     fn copy_from_buffer(&mut self, buf: *mut ffi::JaiBuffer) {
         let size = unsafe { ffi::jai_buffer_data_size(buf) } as usize;
         let data = unsafe { ffi::jai_buffer_data(buf) };
-        if data.is_null() || size == 0 { return; }
+        if data.is_null() || size == 0 {
+            return;
+        }
 
-        self.width          = unsafe { ffi::jai_buffer_width(buf) };
-        self.height         = unsafe { ffi::jai_buffer_height(buf) };
-        let bpp             = unsafe { ffi::jai_buffer_bits_per_pixel(buf) };
-        let bpc             = unsafe { ffi::jai_buffer_bits_per_component(buf) };
-        let is_color        = unsafe { ffi::jai_buffer_is_color(buf) } != 0;
+        self.width = unsafe { ffi::jai_buffer_width(buf) };
+        self.height = unsafe { ffi::jai_buffer_height(buf) };
+        let bpp = unsafe { ffi::jai_buffer_bits_per_pixel(buf) };
+        let bpc = unsafe { ffi::jai_buffer_bits_per_component(buf) };
+        let is_color = unsafe { ffi::jai_buffer_is_color(buf) } != 0;
         self.bytes_per_pixel = bpp_to_bytes(bpp);
-        self.bit_depth       = bpc;
-        self.num_components  = if is_color { 3 } else { 1 };
+        self.bit_depth = bpc;
+        self.num_components = if is_color { 3 } else { 1 };
 
         self.image_buf.resize(size, 0);
         unsafe { std::ptr::copy_nonoverlapping(data, self.image_buf.as_mut_ptr(), size) };
 
-        self.props.entry_mut("Width") .map(|e| e.value = PropertyValue::Integer(self.width  as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.height as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.height as i64));
     }
 
     // ── Sequence: dequeue one frame from the continuous stream ────────────────
@@ -330,7 +439,9 @@ impl JAICamera {
     fn snap_from_sequence(&mut self) -> MmResult<()> {
         let seq = self.seq.as_ref().ok_or(MmError::NotConnected)?;
         let grabbed = unsafe { ffi::jai_stream_retrieve(seq.stream, 4000) };
-        if grabbed.is_null() { return Err(MmError::SnapImageFailed); }
+        if grabbed.is_null() {
+            return Err(MmError::SnapImageFailed);
+        }
         self.copy_from_buffer(grabbed);
         // Re-queue the underlying buffer for reuse.
         let seq = self.seq.as_ref().unwrap();
@@ -342,7 +453,9 @@ impl JAICamera {
 }
 
 impl Default for JAICamera {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for JAICamera {
@@ -365,22 +478,32 @@ impl Drop for JAICamera {
 // ── Device trait ──────────────────────────────────────────────────────────────
 
 impl Device for JAICamera {
-    fn name(&self) -> &str { "JAICamera" }
-    fn description(&self) -> &str { "JAI camera (Pleora eBUS SDK)" }
+    fn name(&self) -> &str {
+        "JAICamera"
+    }
+    fn description(&self) -> &str {
+        "JAI camera (Pleora eBUS SDK)"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if !self.device.is_null() { return Ok(()); }
+        if !self.device.is_null() {
+            return Ok(());
+        }
 
         // Create system + find cameras.
         let sys = unsafe { ffi::jai_system_new() };
         if sys.is_null() {
-            return Err(MmError::LocallyDefined("JAI: failed to create PvSystem".into()));
+            return Err(MmError::LocallyDefined(
+                "JAI: failed to create PvSystem".into(),
+            ));
         }
         self.system = sys;
 
         let count = unsafe { ffi::jai_system_find(sys) };
         if count < 0 {
-            return Err(MmError::LocallyDefined("JAI: device enumeration failed".into()));
+            return Err(MmError::LocallyDefined(
+                "JAI: device enumeration failed".into(),
+            ));
         }
         if count == 0 {
             return Err(MmError::LocallyDefined("JAI: no cameras found".into()));
@@ -396,7 +519,9 @@ impl Device for JAICamera {
                 let rc = unsafe {
                     ffi::jai_system_get_device_serial(sys, i, sn_buf.as_mut_ptr(), BUF as i32)
                 };
-                if rc != 0 { continue; }
+                if rc != 0 {
+                    continue;
+                }
                 let sn = unsafe { CStr::from_ptr(sn_buf.as_ptr()) };
                 if sn.to_string_lossy() == sn_cmp.as_str() {
                     found = i;
@@ -418,7 +543,9 @@ impl Device for JAICamera {
             ffi::jai_system_get_device_id(sys, target_idx, conn_buf.as_mut_ptr(), BUF as i32)
         };
         if rc != 0 {
-            return Err(MmError::LocallyDefined("JAI: failed to get connection ID".into()));
+            return Err(MmError::LocallyDefined(
+                "JAI: failed to get connection ID".into(),
+            ));
         }
         let conn = unsafe { CStr::from_ptr(conn_buf.as_ptr()) };
         let conn_cstr = CString::new(conn.to_bytes()).map_err(|_| MmError::Err)?;
@@ -426,7 +553,9 @@ impl Device for JAICamera {
         // Connect.
         let dev = unsafe { ffi::jai_device_connect(conn_cstr.as_ptr()) };
         if dev.is_null() {
-            return Err(MmError::LocallyDefined("JAI: failed to connect to camera".into()));
+            return Err(MmError::LocallyDefined(
+                "JAI: failed to connect to camera".into(),
+            ));
         }
         self.device = dev;
 
@@ -436,13 +565,16 @@ impl Device for JAICamera {
 
         // Read back model name.
         if let Some(model) = self.dev_get_string("DeviceModelName") {
-            self.props.entry_mut("Model").map(|e| e.value = PropertyValue::String(model));
+            self.props
+                .entry_mut("Model")
+                .map(|e| e.value = PropertyValue::String(model));
         }
         // Read back serial number.
         if self.serial_number.is_empty() {
             if let Some(sn) = self.dev_get_string("DeviceSerialNumber") {
                 self.serial_number = sn.clone();
-                self.props.entry_mut("SerialNumber")
+                self.props
+                    .entry_mut("SerialNumber")
                     .map(|e| e.value = PropertyValue::String(sn));
             }
         }
@@ -461,13 +593,14 @@ impl Device for JAICamera {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "Exposure"     => Ok(PropertyValue::Float(self.exposure_ms)),
-            "Gain"         => Ok(PropertyValue::Float(self.gain)),
-            "PixelFormat"  => Ok(PropertyValue::String(self.pixel_format.clone())),
-            "Binning"      => Ok(PropertyValue::Integer(self.binning as i64)),
-            "CameraIndex"  => Ok(PropertyValue::Integer(self.camera_index as i64)),
+            "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
+            "Gain" => Ok(PropertyValue::Float(self.gain)),
+            "PixelFormat" => Ok(PropertyValue::String(self.pixel_format.clone())),
+            "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
+            "CameraIndex" => Ok(PropertyValue::Integer(self.camera_index as i64)),
+            "CameraID" => Ok(PropertyValue::Integer(self.camera_index as i64)),
             "SerialNumber" => Ok(PropertyValue::String(self.serial_number.clone())),
-            "Temperature"  => Ok(PropertyValue::Float(
+            "Temperature" => Ok(PropertyValue::Float(
                 self.dev_get_float("DeviceTemperature").unwrap_or(0.0),
             )),
             _ => self.props.get(name).cloned(),
@@ -485,24 +618,33 @@ impl Device for JAICamera {
                 self.serial_number = val.as_str().to_string();
                 self.props.set(name, val)
             }
-            "CameraIndex" => {
+            "CameraIndex" | "CameraID" => {
                 if !self.device.is_null() {
-                    return Err(MmError::LocallyDefined(
-                        "CameraIndex cannot be changed after initialize()".into(),
-                    ));
+                    return Err(MmError::LocallyDefined(format!(
+                        "{name} cannot be changed after initialize()"
+                    )));
                 }
                 self.camera_index = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
-                self.props.set(name, PropertyValue::Integer(self.camera_index as i64))
+                self.props.set(
+                    "CameraIndex",
+                    PropertyValue::Integer(self.camera_index as i64),
+                )?;
+                self.props
+                    .set("CameraID", PropertyValue::Integer(self.camera_index as i64))?;
+                Ok(())
             }
             "Exposure" => {
+                self.ensure_not_capturing_for_property()?;
                 self.exposure_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Float(self.exposure_ms))?;
+                self.props
+                    .set(name, PropertyValue::Float(self.exposure_ms))?;
                 let ms = self.exposure_ms;
                 self.dev_set_float("ExposureTimeAbs", ms * 1_000.0);
-                self.dev_set_float("ExposureTime",    ms * 1_000.0);
+                self.dev_set_float("ExposureTime", ms * 1_000.0);
                 Ok(())
             }
             "Gain" => {
+                self.ensure_not_capturing_for_property()?;
                 self.gain = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, PropertyValue::Float(self.gain))?;
                 let g = self.gain;
@@ -512,6 +654,7 @@ impl Device for JAICamera {
                 Ok(())
             }
             "PixelFormat" => {
+                self.ensure_not_capturing_for_property()?;
                 self.pixel_format = val.as_str().to_string();
                 self.props.set(name, val)?;
                 let fmt = self.pixel_format.clone();
@@ -520,11 +663,13 @@ impl Device for JAICamera {
                 Ok(())
             }
             "Binning" => {
+                self.ensure_not_capturing_for_property()?;
                 self.binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
-                self.props.set(name, PropertyValue::Integer(self.binning as i64))?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.binning as i64))?;
                 let bin = self.binning;
                 self.dev_set_int("BinningHorizontal", bin as i64);
-                self.dev_set_int("BinningVertical",   bin as i64);
+                self.dev_set_int("BinningVertical", bin as i64);
                 self.sync_dimensions();
                 Ok(())
             }
@@ -532,13 +677,21 @@ impl Device for JAICamera {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Camera }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Camera
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 // ── Camera trait ──────────────────────────────────────────────────────────────
@@ -560,28 +713,51 @@ impl Camera for JAICamera {
         }
     }
 
-    fn get_image_width(&self) -> u32  { self.width }
-    fn get_image_height(&self) -> u32 { self.height }
-    fn get_image_bytes_per_pixel(&self) -> u32 { self.bytes_per_pixel }
-    fn get_bit_depth(&self) -> u32 { self.bit_depth }
-    fn get_number_of_components(&self) -> u32 { self.num_components }
-    fn get_number_of_channels(&self) -> u32 { 1 }
-    fn get_exposure(&self) -> f64 { self.exposure_ms }
-
-    fn set_exposure(&mut self, exp_ms: f64) {
-        self.exposure_ms = exp_ms;
-        self.props.set("Exposure", PropertyValue::Float(exp_ms)).ok();
-        self.dev_set_float("ExposureTimeAbs", exp_ms * 1_000.0);
-        self.dev_set_float("ExposureTime",    exp_ms * 1_000.0);
+    fn get_image_width(&self) -> u32 {
+        self.width
+    }
+    fn get_image_height(&self) -> u32 {
+        self.height
+    }
+    fn get_image_bytes_per_pixel(&self) -> u32 {
+        self.bytes_per_pixel
+    }
+    fn get_bit_depth(&self) -> u32 {
+        self.bit_depth
+    }
+    fn get_number_of_components(&self) -> u32 {
+        self.num_components
+    }
+    fn get_number_of_channels(&self) -> u32 {
+        1
+    }
+    fn get_exposure(&self) -> f64 {
+        self.exposure_ms
     }
 
-    fn get_binning(&self) -> i32 { self.binning }
+    fn set_exposure(&mut self, exp_ms: f64) {
+        if self.seq.is_some() {
+            return;
+        }
+        self.exposure_ms = exp_ms;
+        self.props
+            .set("Exposure", PropertyValue::Float(exp_ms))
+            .ok();
+        self.dev_set_float("ExposureTimeAbs", exp_ms * 1_000.0);
+        self.dev_set_float("ExposureTime", exp_ms * 1_000.0);
+    }
+
+    fn get_binning(&self) -> i32 {
+        self.binning
+    }
 
     fn set_binning(&mut self, bin: i32) -> MmResult<()> {
+        self.ensure_not_capturing_for_property()?;
         self.binning = bin;
-        self.props.set("Binning", PropertyValue::Integer(bin as i64))?;
+        self.props
+            .set("Binning", PropertyValue::Integer(bin as i64))?;
         self.dev_set_int("BinningHorizontal", bin as i64);
-        self.dev_set_int("BinningVertical",   bin as i64);
+        self.dev_set_int("BinningVertical", bin as i64);
         self.sync_dimensions();
         Ok(())
     }
@@ -592,29 +768,37 @@ impl Camera for JAICamera {
 
     fn set_roi(&mut self, roi: ImageRoi) -> MmResult<()> {
         self.check_open()?;
+        self.ensure_not_capturing_for_property()?;
         // Width/Height before OffsetX/Y (standard GenICam ordering).
-        self.dev_set_int("Width",   roi.width  as i64);
-        self.dev_set_int("Height",  roi.height as i64);
-        self.dev_set_int("OffsetX", roi.x      as i64);
-        self.dev_set_int("OffsetY", roi.y      as i64);
+        self.dev_set_int("Width", roi.width as i64);
+        self.dev_set_int("Height", roi.height as i64);
+        self.dev_set_int("OffsetX", roi.x as i64);
+        self.dev_set_int("OffsetY", roi.y as i64);
         self.sync_dimensions();
         Ok(())
     }
 
     fn clear_roi(&mut self) -> MmResult<()> {
         self.check_open()?;
+        self.ensure_not_capturing_for_property()?;
         self.dev_set_int("OffsetX", 0);
         self.dev_set_int("OffsetY", 0);
         // Set width/height to their hardware maxima via the camera parameter.
-        if let Some(max_w) = self.dev_get_int("WidthMax")  { self.dev_set_int("Width",  max_w); }
-        if let Some(max_h) = self.dev_get_int("HeightMax") { self.dev_set_int("Height", max_h); }
+        if let Some(max_w) = self.dev_get_int("WidthMax") {
+            self.dev_set_int("Width", max_w);
+        }
+        if let Some(max_h) = self.dev_get_int("HeightMax") {
+            self.dev_set_int("Height", max_h);
+        }
         self.sync_dimensions();
         Ok(())
     }
 
     fn start_sequence_acquisition(&mut self, _count: i64, _interval_ms: f64) -> MmResult<()> {
         self.check_open()?;
-        if self.seq.is_some() { return Ok(()); }
+        if self.seq.is_some() {
+            return Ok(());
+        }
 
         self.dev_set_enum("AcquisitionMode", "Continuous");
 
@@ -623,14 +807,18 @@ impl Camera for JAICamera {
         let rc = unsafe {
             ffi::jai_device_get_connection_id(self.device, conn_buf.as_mut_ptr(), BUF as i32)
         };
-        if rc != 0 { return Err(MmError::NotConnected); }
+        if rc != 0 {
+            return Err(MmError::NotConnected);
+        }
         let conn = unsafe { CStr::from_ptr(conn_buf.as_ptr()) };
         let conn_cstr = CString::new(conn.to_bytes()).map_err(|_| MmError::Err)?;
 
         // Open stream.
         let stream = unsafe { ffi::jai_stream_open(conn_cstr.as_ptr()) };
         if stream.is_null() {
-            return Err(MmError::LocallyDefined("JAI: failed to open sequence stream".into()));
+            return Err(MmError::LocallyDefined(
+                "JAI: failed to open sequence stream".into(),
+            ));
         }
 
         // Allocate and queue 8 buffers.
@@ -638,13 +826,17 @@ impl Camera for JAICamera {
         let mut buffers: Vec<*mut ffi::JaiBuffer> = Vec::new();
         for _ in 0..8 {
             let b = unsafe { ffi::jai_buffer_alloc(payload) };
-            if b.is_null() { break; }
+            if b.is_null() {
+                break;
+            }
             unsafe { ffi::jai_stream_queue(stream, b) };
             buffers.push(b);
         }
         if buffers.is_empty() {
             unsafe { ffi::jai_stream_free(stream) };
-            return Err(MmError::LocallyDefined("JAI: buffer allocation failed".into()));
+            return Err(MmError::LocallyDefined(
+                "JAI: buffer allocation failed".into(),
+            ));
         }
 
         unsafe { ffi::jai_device_stream_enable(self.device) };
@@ -655,7 +847,9 @@ impl Camera for JAICamera {
     }
 
     fn stop_sequence_acquisition(&mut self) -> MmResult<()> {
-        if self.seq.is_none() { return Ok(()); }
+        if self.seq.is_none() {
+            return Ok(());
+        }
 
         self.dev_execute("AcquisitionStop");
         if !self.device.is_null() {
@@ -672,7 +866,9 @@ impl Camera for JAICamera {
         Ok(())
     }
 
-    fn is_capturing(&self) -> bool { self.seq.is_some() }
+    fn is_capturing(&self) -> bool {
+        self.seq.is_some()
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -694,21 +890,24 @@ mod tests {
     #[test]
     fn set_camera_index_pre_init() {
         let mut d = JAICamera::new();
-        d.set_property("CameraIndex", PropertyValue::Integer(2)).unwrap();
+        d.set_property("CameraIndex", PropertyValue::Integer(2))
+            .unwrap();
         assert_eq!(d.camera_index, 2);
     }
 
     #[test]
     fn set_serial_number_pre_init() {
         let mut d = JAICamera::new();
-        d.set_property("SerialNumber", PropertyValue::String("ABCDEF".into())).unwrap();
+        d.set_property("SerialNumber", PropertyValue::String("ABCDEF".into()))
+            .unwrap();
         assert_eq!(d.serial_number, "ABCDEF");
     }
 
     #[test]
     fn set_exposure_pre_init() {
         let mut d = JAICamera::new();
-        d.set_property("Exposure", PropertyValue::Float(50.0)).unwrap();
+        d.set_property("Exposure", PropertyValue::Float(50.0))
+            .unwrap();
         assert_eq!(d.exposure_ms, 50.0);
         assert_eq!(d.get_exposure(), 50.0);
     }

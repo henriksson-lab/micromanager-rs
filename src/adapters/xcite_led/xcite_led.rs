@@ -21,16 +21,31 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
+
+const LED_METADATA_PROPERTIES: &[(&str, &str)] = &[
+    ("L.00 Device ", "ln?"),
+    ("L.02 Device Type", "lt?"),
+    ("L.03 Serial Number", "ls?"),
+    ("L.04 Manufacturing Date", "md?"),
+    ("L.05 WaveLength", "lw?"),
+    ("L.06 FWHM Value", "lf?"),
+    ("L.08 Hours Elapsed", "lh?"),
+    ("L.18 Current Temperature (Deg.C)", "gt?"),
+    ("L.19 Max Allowed Temperature (Deg.C)", "mt?"),
+    ("L.20 Min Allowed Temperature (Deg.C)", "nt?"),
+    ("L.21 Temperature Hysteresis (Deg.C)", "th?"),
+];
 
 pub struct XCiteLedShutter {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
-    is_open: bool,
+    is_open: Cell<bool>,
     /// 0-based LED device number (0 = LED1, 1 = LED2, …)
     led_number: u8,
     /// Intensity 0–100 %
-    intensity: u32,
+    intensity: Cell<u32>,
 }
 
 impl XCiteLedShutter {
@@ -42,34 +57,73 @@ impl XCiteLedShutter {
         props
             .define_property("Intensity", PropertyValue::Integer(50), false)
             .unwrap();
+        props
+            .define_property(
+                "L.10 Intensity (0.0 or 5.0 - 100.0)%",
+                PropertyValue::Integer(50),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("SerialNumber", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("UnitStatus", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property(
+                "LED-On-State",
+                PropertyValue::String("Unknown".into()),
+                true,
+            )
+            .unwrap();
+        for (name, _) in LED_METADATA_PROPERTIES {
+            props
+                .define_property(*name, PropertyValue::String(String::new()), true)
+                .unwrap();
+        }
         Self {
             props,
             transport: None,
             initialized: false,
-            is_open: false,
+            is_open: Cell::new(false),
             led_number,
-            intensity: 50,
+            intensity: Cell::new(50),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let full = format!("{}\r", command);
         self.call_transport(|t| Ok(t.send_recv(&full)?.trim().to_string()))
+    }
+
+    fn led_field(&self, response: &str) -> String {
+        response
+            .split(',')
+            .nth(self.led_number as usize)
+            .unwrap_or(response)
+            .trim()
+            .to_string()
+    }
+
+    fn read_led_field(&self, command: &str) -> MmResult<String> {
+        let response = self.cmd(command)?;
+        Ok(self.led_field(&response))
     }
 
     /// Turn this LED on or off.  Command: `on=<1|0><N+1>\r`
@@ -96,6 +150,18 @@ impl XCiteLedShutter {
         Ok(())
     }
 
+    fn live_open(&self) -> MmResult<bool> {
+        let response = self.cmd("on?")?;
+        let idx = self.led_number as usize;
+        let open = response
+            .as_bytes()
+            .get(idx)
+            .map(|b| *b == b'1' || *b == b'Y' || *b == b'y')
+            .unwrap_or_else(|| response.trim() == "1");
+        self.is_open.set(open);
+        Ok(open)
+    }
+
     pub fn set_intensity(&mut self, percent: u32) -> MmResult<()> {
         // C++ XLedDev::OnLedIntensity converts percent to tenths and selects
         // channels by comma-padding before the value: LED0 -> ip=750,
@@ -107,8 +173,110 @@ impl XCiteLedShutter {
         tenths = tenths.min(1000);
         let cmd = format!("ip={}{}", ",".repeat(self.led_number as usize), tenths);
         self.cmd(&cmd)?;
-        self.intensity = percent;
+        self.intensity.set(percent);
         Ok(())
+    }
+}
+
+pub struct XCiteLedController {
+    props: PropertyMap,
+    transport: Option<RefCell<Box<dyn Transport>>>,
+    initialized: bool,
+}
+
+impl XCiteLedController {
+    pub fn new() -> Self {
+        let mut props = PropertyMap::new();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("SerialNumber", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("UnitStatus", PropertyValue::String(String::new()), true)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+        }
+    }
+
+    pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
+        self.transport = Some(RefCell::new(t));
+        self
+    }
+
+    fn cmd(&self, command: &str) -> MmResult<String> {
+        let full = format!("{}\r", command);
+        match self.transport.as_ref() {
+            Some(t) => Ok(t.borrow_mut().send_recv(&full)?.trim().to_string()),
+            None => Err(MmError::NotConnected),
+        }
+    }
+}
+
+impl Default for XCiteLedController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Device for XCiteLedController {
+    fn name(&self) -> &str {
+        "XCiteLedController"
+    }
+    fn description(&self) -> &str {
+        "X-Cite LED controller"
+    }
+
+    fn initialize(&mut self) -> MmResult<()> {
+        let serial = self.cmd("sn?")?;
+        let status = self.cmd("us?")?;
+        self.props
+            .entry_mut("SerialNumber")
+            .map(|e| e.value = PropertyValue::String(serial));
+        self.props
+            .entry_mut("UnitStatus")
+            .map(|e| e.value = PropertyValue::String(status));
+        self.initialized = true;
+        Ok(())
+    }
+
+    fn shutdown(&mut self) -> MmResult<()> {
+        self.initialized = false;
+        Ok(())
+    }
+
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if self.initialized {
+            match name {
+                "SerialNumber" => return Ok(PropertyValue::String(self.cmd("sn?")?)),
+                "UnitStatus" => return Ok(PropertyValue::String(self.cmd("us?")?)),
+                _ => {}
+            }
+        }
+        self.props.get(name).cloned()
+    }
+
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
+    fn is_property_read_only(&self, name: &str) -> bool {
+        self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
+    }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Generic
+    }
+    fn busy(&self) -> bool {
+        false
     }
 }
 
@@ -131,10 +299,18 @@ impl Device for XCiteLedShutter {
             return Err(MmError::NotConnected);
         }
         // Query serial number to verify connection: "sn?\r"
-        self.cmd("sn?")?;
+        let serial = self.cmd("sn?")?;
+        self.props
+            .entry_mut("SerialNumber")
+            .map(|e| e.value = PropertyValue::String(serial));
+        if let Ok(status) = self.cmd("us?") {
+            self.props
+                .entry_mut("UnitStatus")
+                .map(|e| e.value = PropertyValue::String(status));
+        }
         // Turn LED off at init
         self.set_led_on_off(false)?;
-        self.is_open = false;
+        self.is_open.set(false);
         self.initialized = true;
         Ok(())
     }
@@ -142,25 +318,53 @@ impl Device for XCiteLedShutter {
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
             let _ = self.set_led_on_off(false);
-            self.is_open = false;
+            self.is_open.set(false);
             self.initialized = false;
         }
         Ok(())
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if self.initialized {
+            match name {
+                "SerialNumber" => return Ok(PropertyValue::String(self.cmd("sn?")?)),
+                "UnitStatus" => return Ok(PropertyValue::String(self.cmd("us?")?)),
+                "L.10 Intensity (0.0 or 5.0 - 100.0)%" => {
+                    return Ok(PropertyValue::String(self.read_led_field("ip?")?))
+                }
+                "LED-On-State" => {
+                    return Ok(PropertyValue::String(
+                        if self.live_open()? { "On" } else { "Off" }.into(),
+                    ))
+                }
+                _ => {
+                    if let Some((_, command)) = LED_METADATA_PROPERTIES
+                        .iter()
+                        .find(|(prop_name, _)| *prop_name == name)
+                    {
+                        return Ok(PropertyValue::String(self.read_led_field(command)?));
+                    }
+                }
+            }
+        }
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "Intensity" => {
+            "Intensity" | "L.10 Intensity (0.0 or 5.0 - 100.0)%" => {
                 let percent = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if percent < 0 {
                     return Err(MmError::InvalidPropertyValue);
                 }
                 self.set_intensity(percent as u32)?;
-                self.props
-                    .set(name, PropertyValue::Integer(self.intensity as i64))
+                self.props.set(
+                    "Intensity",
+                    PropertyValue::Integer(self.intensity.get() as i64),
+                )?;
+                self.props.set(
+                    "L.10 Intensity (0.0 or 5.0 - 100.0)%",
+                    PropertyValue::Integer(self.intensity.get() as i64),
+                )
             }
             _ => self.props.set(name, val),
         }
@@ -185,12 +389,16 @@ impl Device for XCiteLedShutter {
 impl Shutter for XCiteLedShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         self.set_led_on_off(open)?;
-        self.is_open = open;
+        self.is_open.set(open);
         Ok(())
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        if self.initialized {
+            self.live_open()
+        } else {
+            Ok(self.is_open.get())
+        }
     }
 
     fn fire(&mut self, _dt: f64) -> MmResult<()> {
@@ -205,7 +413,7 @@ mod tests {
 
     fn make_initialized() -> XCiteLedShutter {
         // init: "sn?\r" → any, "of=1\r" → any (LED0 = channel '1')
-        let t = MockTransport::new().any("SN12345").any("ok");
+        let t = MockTransport::new().any("SN12345").any("0").any("ok");
         let mut s = XCiteLedShutter::new(0).with_transport(Box::new(t));
         s.initialize().unwrap();
         s
@@ -215,13 +423,17 @@ mod tests {
     fn initialize_succeeds() {
         let s = make_initialized();
         assert!(s.initialized);
-        assert!(!s.get_open().unwrap());
+        assert!(!s.is_open.get());
     }
 
     #[test]
     fn set_open_true() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(MockTransport::new().expect("on=1\r", "ok")));
+        s.transport = Some(RefCell::new(Box::new(
+            MockTransport::new()
+                .expect("on=1\r", "ok")
+                .expect("on?\r", "1"),
+        )));
         s.set_open(true).unwrap();
         assert!(s.get_open().unwrap());
     }
@@ -229,7 +441,11 @@ mod tests {
     #[test]
     fn set_open_false() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(MockTransport::new().expect("of=1\r", "ok")));
+        s.transport = Some(RefCell::new(Box::new(
+            MockTransport::new()
+                .expect("of=1\r", "ok")
+                .expect("on?\r", "0"),
+        )));
         s.set_open(false).unwrap();
         assert!(!s.get_open().unwrap());
     }
@@ -245,26 +461,75 @@ mod tests {
     fn fire_is_unsupported() {
         let mut s = make_initialized();
         assert_eq!(s.fire(1.0), Err(MmError::UnsupportedCommand));
-        assert!(!s.get_open().unwrap());
+        assert!(!s.is_open.get());
     }
 
     #[test]
     fn set_intensity() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(MockTransport::new().expect("ip=750\r", "ok")));
+        s.transport = Some(RefCell::new(Box::new(
+            MockTransport::new().expect("ip=750\r", "ok"),
+        )));
         s.set_intensity(75).unwrap();
-        assert_eq!(s.intensity, 75);
+        assert_eq!(s.intensity.get(), 75);
     }
 
     #[test]
     fn intensity_property_sends_command() {
         let mut s = make_initialized();
-        s.transport = Some(Box::new(MockTransport::new().expect("ip=750\r", "ok")));
+        s.transport = Some(RefCell::new(Box::new(
+            MockTransport::new().expect("ip=750\r", "ok"),
+        )));
         s.set_property("Intensity", PropertyValue::Integer(75))
             .unwrap();
         assert_eq!(
             s.get_property("Intensity").unwrap(),
             PropertyValue::Integer(75)
+        );
+    }
+
+    #[test]
+    fn metadata_and_state_are_live_reads() {
+        let t = MockTransport::new()
+            .any("SN12345")
+            .any("0")
+            .any("ok")
+            .expect("sn?\r", "SN67890")
+            .expect("us?\r", "READY")
+            .expect("on?\r", "1");
+        let mut s = XCiteLedShutter::new(0).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.get_property("SerialNumber").unwrap(),
+            PropertyValue::String("SN67890".into())
+        );
+        assert_eq!(
+            s.get_property("UnitStatus").unwrap(),
+            PropertyValue::String("READY".into())
+        );
+        assert_eq!(
+            s.get_property("LED-On-State").unwrap(),
+            PropertyValue::String("On".into())
+        );
+    }
+
+    #[test]
+    fn upstream_led_metadata_uses_indexed_query_fields() {
+        let t = MockTransport::new()
+            .any("SN12345")
+            .any("0")
+            .any("ok")
+            .expect("lw?\r", "385,470,550,635")
+            .expect("gt?\r", "31,32,33,34");
+        let mut s = XCiteLedShutter::new(2).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.get_property("L.05 WaveLength").unwrap(),
+            PropertyValue::String("550".into())
+        );
+        assert_eq!(
+            s.get_property("L.18 Current Temperature (Deg.C)").unwrap(),
+            PropertyValue::String("33".into())
         );
     }
 

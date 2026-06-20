@@ -16,18 +16,26 @@
 
 pub mod prizmatix;
 
-pub use prizmatix::PrizmatixController;
+pub use prizmatix::{PrizmatixController, PrizmatixHub};
 
 use crate::traits::{AdapterModule, AnyDevice, DeviceInfo};
 use crate::types::DeviceType;
 
 pub const DEVICE_NAME_PRIZMATIX: &str = "Prizmatix Ctrl";
+pub const DEVICE_NAME_HUB: &str = "prizmatix-Hub";
 
-static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
-    name: DEVICE_NAME_PRIZMATIX,
-    description: "Prizmatix LED Controller",
-    device_type: DeviceType::Generic,
-}];
+static DEVICE_LIST: &[DeviceInfo] = &[
+    DeviceInfo {
+        name: DEVICE_NAME_HUB,
+        description: "Hub (required)",
+        device_type: DeviceType::Hub,
+    },
+    DeviceInfo {
+        name: DEVICE_NAME_PRIZMATIX,
+        description: "Prizmatix LED Controller",
+        device_type: DeviceType::Generic,
+    },
+];
 
 pub struct PrizmatixAdapter;
 
@@ -42,6 +50,7 @@ impl AdapterModule for PrizmatixAdapter {
 
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
+            DEVICE_NAME_HUB => Some(AnyDevice::Hub(Box::new(PrizmatixHub::new()))),
             DEVICE_NAME_PRIZMATIX => Some(AnyDevice::Generic(Box::new(PrizmatixController::new()))),
             _ => None,
         }

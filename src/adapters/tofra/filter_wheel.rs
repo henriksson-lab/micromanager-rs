@@ -35,9 +35,16 @@ pub struct TofraFilterWheel {
     initialized: bool,
     ctrl: String,
     num_positions: u64,
+    home_offset: i64,
+    slew_velocity: i64,
+    init_velocity: i64,
+    acceleration: i64,
+    hold_current: i64,
+    run_current: i64,
     position: u64,
     labels: Vec<String>,
     gate_open: bool,
+    port: String,
 }
 
 impl TofraFilterWheel {
@@ -48,7 +55,31 @@ impl TofraFilterWheel {
             .collect();
         let mut props = PropertyMap::new();
         props
-            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .define_pre_init_property("Port", PropertyValue::String(String::new()))
+            .unwrap();
+        props
+            .define_pre_init_property("NumPos", PropertyValue::Integer(DEFAULT_NUM_POS as i64))
+            .unwrap();
+        props
+            .define_pre_init_property("ControllerName", PropertyValue::String("1".into()))
+            .unwrap();
+        props
+            .define_pre_init_property("HomeOffset", PropertyValue::Integer(0))
+            .unwrap();
+        props
+            .define_pre_init_property("SlewVelocity", PropertyValue::Integer(DEFAULT_SV))
+            .unwrap();
+        props
+            .define_pre_init_property("InitVelocity", PropertyValue::Integer(DEFAULT_IV))
+            .unwrap();
+        props
+            .define_pre_init_property("Acceleration", PropertyValue::Integer(DEFAULT_ACC))
+            .unwrap();
+        props
+            .define_pre_init_property("HoldCurrent", PropertyValue::Integer(DEFAULT_HC))
+            .unwrap();
+        props
+            .define_pre_init_property("RunCurrent", PropertyValue::Integer(DEFAULT_RC))
             .unwrap();
         Self {
             props,
@@ -56,9 +87,16 @@ impl TofraFilterWheel {
             initialized: false,
             ctrl: "1".into(),
             num_positions,
+            home_offset: 0,
+            slew_velocity: DEFAULT_SV,
+            init_velocity: DEFAULT_IV,
+            acceleration: DEFAULT_ACC,
+            hold_current: DEFAULT_HC,
+            run_current: DEFAULT_RC,
             position: 0,
             labels,
             gate_open: true,
+            port: String::new(),
         }
     }
 
@@ -103,6 +141,16 @@ impl TofraFilterWheel {
     fn msteps_for_pos(num_pos: u64, i: u64) -> i64 {
         (TURN_MSTEPS as f64 / num_pos as f64 * i as f64 + 0.5).floor() as i64
     }
+
+    fn clear_port(&self) -> MmResult<()> {
+        self.call_transport(|t| t.purge())
+    }
+
+    fn rebuild_labels(&mut self) {
+        self.labels = (0..self.num_positions)
+            .map(|i| format!("Filter-{:02}", i + 1))
+            .collect();
+    }
 }
 
 impl Default for TofraFilterWheel {
@@ -123,10 +171,22 @@ impl Device for TofraFilterWheel {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
+        self.rebuild_labels();
+        let home = match self.home_offset.cmp(&0) {
+            std::cmp::Ordering::Greater => format!("D{}", self.home_offset),
+            std::cmp::Ordering::Less => format!("P{}", -self.home_offset),
+            std::cmp::Ordering::Equal => String::new(),
+        };
         let init_cmd = format!(
-            "j16h{}m{}V{}v{}L{}f0n0gD10S13G0D1gD1S03G0R",
-            DEFAULT_HC, DEFAULT_RC, DEFAULT_SV, DEFAULT_IV, DEFAULT_ACC
+            "j16h{}m{}V{}v{}L{}f0n0gD10S13G0D1gD1S03G0{}R",
+            self.hold_current,
+            self.run_current,
+            self.slew_velocity,
+            self.init_velocity,
+            self.acceleration,
+            home
         );
+        self.clear_port()?;
         let resp = self.cmd(&init_cmd)?;
         Self::check_response(&resp)?;
         self.position = 0;
@@ -141,6 +201,15 @@ impl Device for TofraFilterWheel {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
+            "Port" => Ok(PropertyValue::String(self.port.clone())),
+            "NumPos" => Ok(PropertyValue::Integer(self.num_positions as i64)),
+            "ControllerName" => Ok(PropertyValue::String(self.ctrl.clone())),
+            "HomeOffset" => Ok(PropertyValue::Integer(self.home_offset)),
+            "SlewVelocity" => Ok(PropertyValue::Integer(self.slew_velocity)),
+            "InitVelocity" => Ok(PropertyValue::Integer(self.init_velocity)),
+            "Acceleration" => Ok(PropertyValue::Integer(self.acceleration)),
+            "HoldCurrent" => Ok(PropertyValue::Integer(self.hold_current)),
+            "RunCurrent" => Ok(PropertyValue::Integer(self.run_current)),
             "State" => Ok(PropertyValue::Integer(self.position as i64)),
             "Label" => Ok(PropertyValue::String(
                 self.labels
@@ -154,6 +223,61 @@ impl Device for TofraFilterWheel {
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => {
+                if let Some(e) = self.props.entry_mut("Port") {
+                    e.value = PropertyValue::String(self.port.clone());
+                }
+                Ok(())
+            }
+            "Port" => {
+                self.port = val.as_str().to_string();
+                self.props
+                    .set(name, PropertyValue::String(self.port.clone()))
+            }
+            "ControllerName" if !self.initialized => {
+                self.ctrl = val.as_str().to_string();
+                self.props
+                    .set(name, PropertyValue::String(self.ctrl.clone()))
+            }
+            "NumPos" if !self.initialized => {
+                let n = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if n <= 0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.num_positions = n as u64;
+                self.rebuild_labels();
+                self.props.set(name, PropertyValue::Integer(n))
+            }
+            "HomeOffset" if !self.initialized => {
+                self.home_offset = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.home_offset))
+            }
+            "SlewVelocity" if !self.initialized => {
+                self.slew_velocity = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.slew_velocity))
+            }
+            "InitVelocity" if !self.initialized => {
+                self.init_velocity = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.init_velocity))
+            }
+            "Acceleration" if !self.initialized => {
+                self.acceleration = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.acceleration))
+            }
+            "HoldCurrent" if !self.initialized => {
+                self.hold_current = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.hold_current))
+            }
+            "RunCurrent" if !self.initialized => {
+                self.run_current = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.run_current))
+            }
             "State" => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
                 self.set_position(pos)
@@ -206,6 +330,7 @@ impl StateDevice for TofraFilterWheel {
             } else {
                 format!("D{}R", -d)
             };
+            self.clear_port()?;
             let resp = self.cmd(&move_cmd)?;
             Self::check_response(&resp)?;
         }
@@ -327,5 +452,48 @@ mod tests {
         let mut fw = TofraFilterWheel::new().with_transport(Box::new(t));
         fw.initialize().unwrap();
         assert!(fw.busy());
+    }
+
+    #[test]
+    fn preinit_config_changes_homing_command_and_port_reverts_after_init() {
+        let t = MockTransport::new()
+            .expect("/7j16h10m65V6000v600L8f0n0gD10S13G0D1gD1S03G0D42R\r", "/00");
+        let mut fw = TofraFilterWheel::new().with_transport(Box::new(t));
+        fw.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        fw.set_property("ControllerName", PropertyValue::String("7".into()))
+            .unwrap();
+        fw.set_property("NumPos", PropertyValue::Integer(12))
+            .unwrap();
+        fw.set_property("HomeOffset", PropertyValue::Integer(42))
+            .unwrap();
+        fw.set_property("SlewVelocity", PropertyValue::Integer(6000))
+            .unwrap();
+        fw.set_property("InitVelocity", PropertyValue::Integer(600))
+            .unwrap();
+        fw.set_property("Acceleration", PropertyValue::Integer(8))
+            .unwrap();
+        fw.set_property("HoldCurrent", PropertyValue::Integer(10))
+            .unwrap();
+        fw.set_property("RunCurrent", PropertyValue::Integer(65))
+            .unwrap();
+        fw.initialize().unwrap();
+        fw.set_property("Port", PropertyValue::String("COM2".into()))
+            .unwrap();
+        assert_eq!(
+            fw.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
+        assert_eq!(fw.get_number_of_positions(), 12);
+    }
+
+    #[test]
+    fn negative_home_offset_uses_reverse_home_segment() {
+        let t = MockTransport::new()
+            .expect("/1j16h5m60V5000v500L10f0n0gD10S13G0D1gD1S03G0P4R\r", "/00");
+        let mut fw = TofraFilterWheel::new().with_transport(Box::new(t));
+        fw.set_property("HomeOffset", PropertyValue::Integer(-4))
+            .unwrap();
+        fw.initialize().unwrap();
     }
 }

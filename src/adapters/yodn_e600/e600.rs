@@ -3,6 +3,8 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
+use std::time::{Duration, Instant};
 
 /// Number of channels in the E600.
 const NUM_CHANNELS: usize = 3;
@@ -18,7 +20,7 @@ const CHANNEL_IDS: [u8; NUM_CHANNELS] = [0x01, 0x02, 0x03];
 /// Uses binary `send_bytes`/`receive_bytes` transport methods.
 pub struct YodnE600 {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
     is_open: bool,
     /// Intensity per channel (0-100).
@@ -27,6 +29,9 @@ pub struct YodnE600 {
     channel_use: [bool; NUM_CHANNELS],
     /// Last read error code.
     error_code: u8,
+    disconnected: Cell<bool>,
+    delay_ms: Cell<f64>,
+    changed_time: Cell<Instant>,
 }
 
 impl YodnE600 {
@@ -48,6 +53,12 @@ impl YodnE600 {
             .define_property("Lamp", PropertyValue::Integer(0), false)
             .unwrap();
         props.set_allowed_values("Lamp", &["0", "1"]).unwrap();
+        props
+            .define_property("Delay_ms", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Delay_ms", 0.0, f64::MAX)
+            .unwrap();
 
         // Per-channel properties
         for i in 1..=NUM_CHANNELS {
@@ -84,50 +95,61 @@ impl YodnE600 {
             intensities: [0u8; NUM_CHANNELS],
             channel_use: [false; NUM_CHANNELS],
             error_code: 0,
+            disconnected: Cell::new(false),
+            delay_ms: Cell::new(0.0),
+            changed_time: Cell::new(Instant::now()),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        if self.disconnected.get() {
+            return Err(MmError::NotConnected);
+        }
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
     /// Send raw bytes and receive a fixed-length response.
-    fn send_recv_bytes(&mut self, cmd: &[u8], resp_len: usize) -> MmResult<Vec<u8>> {
+    fn send_recv_bytes(&self, cmd: &[u8], resp_len: usize) -> MmResult<Vec<u8>> {
         let cmd_owned = cmd.to_vec();
-        self.call_transport(|t| {
+        let ret = self.call_transport(|t| {
+            t.purge()?;
             t.send_bytes(&cmd_owned)?;
-            let resp = t.receive_bytes(resp_len)?;
-            Ok(resp)
-        })
+            t.receive_bytes(resp_len)
+        });
+        if matches!(ret, Err(MmError::SerialTimeout)) {
+            self.disconnected.set(true);
+        }
+        ret
     }
 
     /// Send raw bytes without expecting a specific response.
-    fn send_bytes_only(&mut self, cmd: &[u8]) -> MmResult<()> {
+    fn send_bytes_only(&self, cmd: &[u8]) -> MmResult<()> {
         let cmd_owned = cmd.to_vec();
         self.call_transport(|t| {
+            t.purge()?;
             t.send_bytes(&cmd_owned)?;
             Ok(())
         })
     }
 
     /// Get lamp state. Returns 0 (off) or 1 (on).
-    fn get_lamp_state(&mut self) -> MmResult<u8> {
+    fn get_lamp_state(&self) -> MmResult<u8> {
         let resp = self.send_recv_bytes(&[0x57, 0x00], 3)?;
         Ok(resp.get(2).copied().unwrap_or(0))
     }
 
-    fn get_version(&mut self, command: u8) -> MmResult<String> {
+    fn get_version(&self, command: u8) -> MmResult<String> {
         let resp = self.send_recv_bytes(&[command], 128)?;
         Ok(String::from_utf8_lossy(&resp)
             .trim_matches(char::from(0))
@@ -135,28 +157,28 @@ impl YodnE600 {
     }
 
     /// Get channel intensity (0-100).
-    fn get_channel_intensity(&mut self, ch_idx: usize) -> MmResult<u8> {
+    fn get_channel_intensity(&self, ch_idx: usize) -> MmResult<u8> {
         let ch_id = CHANNEL_IDS[ch_idx];
         let resp = self.send_recv_bytes(&[0x56, ch_id], 3)?;
         Ok(resp.get(2).copied().unwrap_or(0))
     }
 
     /// Get channel temperature in degrees C.
-    fn get_channel_temperature(&mut self, ch_idx: usize) -> MmResult<u8> {
+    fn get_channel_temperature(&self, ch_idx: usize) -> MmResult<u8> {
         let ch_id = CHANNEL_IDS[ch_idx];
         let resp = self.send_recv_bytes(&[0x55, ch_id], 3)?;
         Ok(resp.get(2).copied().unwrap_or(0))
     }
 
     /// Get channel use state (0=off, 1=on).
-    fn get_channel_use_state(&mut self, ch_idx: usize) -> MmResult<u8> {
+    fn get_channel_use_state(&self, ch_idx: usize) -> MmResult<u8> {
         let ch_id = CHANNEL_IDS[ch_idx];
         let resp = self.send_recv_bytes(&[0x57, ch_id], 3)?;
         Ok(resp.get(2).copied().unwrap_or(0))
     }
 
     /// Get channel use time in hours.
-    fn get_channel_use_time(&mut self, ch_idx: usize) -> MmResult<u16> {
+    fn get_channel_use_time(&self, ch_idx: usize) -> MmResult<u16> {
         let ch_id = CHANNEL_IDS[ch_idx];
         let resp = self.send_recv_bytes(&[0x53, ch_id], 4)?;
         let high = resp.get(2).copied().unwrap_or(0) as u16;
@@ -165,7 +187,7 @@ impl YodnE600 {
     }
 
     /// Get error code.
-    fn get_error_code(&mut self) -> MmResult<u8> {
+    fn get_error_code(&self) -> MmResult<u8> {
         let resp = self.send_recv_bytes(&[0x52], 2)?;
         Ok(resp.get(1).copied().unwrap_or(0))
     }
@@ -184,6 +206,25 @@ impl YodnE600 {
         } else {
             raw as i64
         }
+    }
+
+    fn channel_index(name: &str, prefix: &str) -> Option<usize> {
+        name.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix("(Deg.C)").or(Some(rest)))
+            .and_then(|rest| rest.trim().parse::<usize>().ok())
+            .and_then(|n| n.checked_sub(1))
+            .filter(|&idx| idx < NUM_CHANNELS)
+    }
+
+    fn mark_changed(&self) {
+        self.changed_time.set(Instant::now());
+    }
+
+    fn refresh_error_side_effects(&self, code: u8) -> MmResult<()> {
+        if code == 1 {
+            self.send_bytes_only(&[0x60, 0x00, 0x00])?;
+        }
+        Ok(())
     }
 }
 
@@ -273,6 +314,7 @@ impl Device for YodnE600 {
             .map(|e| e.value = PropertyValue::String(Self::error_code_str(err)));
 
         self.initialized = true;
+        self.disconnected.set(false);
         Ok(())
     }
 
@@ -287,12 +329,59 @@ impl Device for YodnE600 {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if name == "Delay_ms" {
+            return Ok(PropertyValue::Float(self.delay_ms.get()));
+        }
+        if name == "Lamp" && self.initialized {
+            return Ok(PropertyValue::Integer(self.get_lamp_state()? as i64));
+        }
+        if name == "Error" && self.initialized {
+            let err = self.get_error_code()?;
+            self.refresh_error_side_effects(err)?;
+            return Ok(PropertyValue::String(Self::error_code_str(err)));
+        }
+        if let Some(ch) = Self::channel_index(name, "Intensity CH") {
+            if self.initialized {
+                return Ok(PropertyValue::Integer(
+                    self.get_channel_intensity(ch)? as i64
+                ));
+            }
+        }
+        if let Some(ch) = Self::channel_index(name, "Use CH") {
+            if self.initialized {
+                return Ok(PropertyValue::Integer(
+                    self.get_channel_use_state(ch)? as i64
+                ));
+            }
+        }
+        if let Some(ch) = Self::channel_index(name, "Temperature CH") {
+            if self.initialized {
+                return Ok(PropertyValue::Integer(Self::temperature_transform(
+                    self.get_channel_temperature(ch)?,
+                )));
+            }
+        }
+        if let Some(ch) = Self::channel_index(name, "Use Time CH") {
+            if self.initialized {
+                return Ok(PropertyValue::Integer(self.get_channel_use_time(ch)? as i64));
+            }
+        }
         self.props.get(name).cloned()
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
+        if name == "Delay_ms" {
+            let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            self.props.set(name, PropertyValue::Float(delay))?;
+            self.delay_ms.set(delay);
+            return Ok(());
+        }
         if name == "Lamp" {
             let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            self.props.set(name, PropertyValue::Integer(v))?;
             if self.initialized {
                 if v == 1 {
                     self.send_bytes_only(&[0x60, 0x00, 0x01])?;
@@ -301,22 +390,25 @@ impl Device for YodnE600 {
                     self.send_bytes_only(&[0x60, 0x00, 0x00])?;
                     self.is_open = false;
                 }
+                self.mark_changed();
             }
-            return self.props.set(name, PropertyValue::Integer(v));
+            return Ok(());
         }
 
         // Handle intensity: "Intensity CH<N>"
         if let Some(rest) = name.strip_prefix("Intensity CH") {
             if let Ok(n) = rest.parse::<usize>() {
                 if let Some(ch) = n.checked_sub(1).filter(|&ch| ch < NUM_CHANNELS) {
-                    let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
+                    let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                    self.props.set(name, PropertyValue::Integer(v))?;
                     if self.initialized {
                         // Set intensity command.
                         let ch_id = CHANNEL_IDS[ch];
-                        let _ = self.send_bytes_only(&[0x61, ch_id, v]);
+                        self.send_bytes_only(&[0x61, ch_id, v as u8])?;
+                        self.mark_changed();
                     }
-                    self.intensities[ch] = v;
-                    return self.props.set(name, PropertyValue::Integer(v as i64));
+                    self.intensities[ch] = v as u8;
+                    return Ok(());
                 }
             }
         }
@@ -326,13 +418,15 @@ impl Device for YodnE600 {
             if let Ok(n) = rest.parse::<usize>() {
                 if let Some(ch) = n.checked_sub(1).filter(|&ch| ch < NUM_CHANNELS) {
                     let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                    self.props.set(name, PropertyValue::Integer(v))?;
                     let on = v != 0;
                     if self.initialized {
                         let ch_id = CHANNEL_IDS[ch];
-                        let _ = self.send_bytes_only(&[0x60, ch_id, if on { 1 } else { 0 }]);
+                        self.send_bytes_only(&[0x60, ch_id, if on { 1 } else { 0 }])?;
+                        self.mark_changed();
                     }
                     self.channel_use[ch] = on;
-                    return self.props.set(name, PropertyValue::Integer(v));
+                    return Ok(());
                 }
             }
         }
@@ -357,7 +451,7 @@ impl Device for YodnE600 {
     }
 
     fn busy(&self) -> bool {
-        false
+        self.changed_time.get().elapsed() < Duration::from_millis(self.delay_ms.get() as u64)
     }
 }
 
@@ -369,6 +463,7 @@ impl Shutter for YodnE600 {
             self.send_bytes_only(&[0x60, 0x00, 0x00])?;
         }
         self.is_open = open;
+        self.mark_changed();
         self.props
             .entry_mut("Lamp")
             .map(|e| e.value = PropertyValue::Integer(if open { 1 } else { 0 }));
@@ -376,6 +471,9 @@ impl Shutter for YodnE600 {
     }
 
     fn get_open(&self) -> MmResult<bool> {
+        if self.initialized {
+            return Ok(self.get_lamp_state()? != 0);
+        }
         Ok(self.is_open)
     }
 
@@ -420,7 +518,10 @@ mod tests {
 
     #[test]
     fn initialize_no_error() {
-        let mut dev = YodnE600::new().with_transport(Box::new(make_transport()));
+        let t = make_transport()
+            .expect_binary(b"\x57\x00\x00")
+            .expect_binary(b"\x52\x00");
+        let mut dev = YodnE600::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
         assert_eq!(
@@ -436,7 +537,9 @@ mod tests {
     #[test]
     fn open_close_lamp() {
         // The lamp on/off commands use send_bytes_only (no response expected)
-        let t = make_transport();
+        let t = make_transport()
+            .expect_binary(b"\x57\x00\x01")
+            .expect_binary(b"\x57\x00\x00");
         let mut dev = YodnE600::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_open(true).unwrap();
@@ -456,5 +559,66 @@ mod tests {
         let mut dev = YodnE600::new().with_transport(Box::new(make_transport()));
         dev.initialize().unwrap();
         assert_eq!(dev.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn live_property_reads_query_device() {
+        let t = make_transport()
+            .expect_binary(b"\x56\x02\x2A")
+            .expect_binary(b"\x55\x01\xF6")
+            .expect_binary(b"\x53\x03\x01\x02");
+        let mut dev = YodnE600::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.get_property("Intensity CH2").unwrap(),
+            PropertyValue::Integer(42)
+        );
+        assert_eq!(
+            dev.get_property("Temperature CH1(Deg.C)").unwrap(),
+            PropertyValue::Integer(-10)
+        );
+        assert_eq!(
+            dev.get_property("Use Time CH3").unwrap(),
+            PropertyValue::Integer(258)
+        );
+    }
+
+    #[test]
+    fn read_timeout_marks_disconnected() {
+        let mut dev = YodnE600::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+        assert_eq!(dev.get_open().unwrap_err(), MmError::SerialTimeout);
+        assert_eq!(dev.set_open(true).unwrap_err(), MmError::NotConnected);
+    }
+
+    #[test]
+    fn busy_uses_delay_after_lamp_change() {
+        let t = make_transport();
+        let mut dev = YodnE600::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("Delay_ms", PropertyValue::Float(1000.0))
+            .unwrap();
+        dev.set_open(true).unwrap();
+        assert!(dev.busy());
+    }
+
+    #[test]
+    fn invalid_bounded_property_values_do_not_send_commands() {
+        let t = make_transport();
+        let mut dev = YodnE600::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("Lamp", PropertyValue::Integer(2)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.set_property("Use CH1", PropertyValue::Integer(2)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.set_property("Intensity CH1", PropertyValue::Integer(101)),
+            Err(MmError::InvalidPropertyValue)
+        );
     }
 }

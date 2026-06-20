@@ -9,17 +9,28 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 pub struct CarviiShutter {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
-    open: bool,
+    open: Cell<bool>,
 }
 
 impl CarviiShutter {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
+        props
+            .define_property("Name", PropertyValue::String("CARVII Shutter".into()), true)
+            .unwrap();
+        props
+            .define_property(
+                "Description",
+                PropertyValue::String("CARVII Shutter".into()),
+                true,
+            )
+            .unwrap();
         props
             .define_property("State", PropertyValue::String("Closed".into()), false)
             .unwrap();
@@ -28,33 +39,42 @@ impl CarviiShutter {
             .unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
-            open: false,
+            open: Cell::new(false),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        let mut transport = self.transport.borrow_mut();
+        match transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let full = format!("{}\r", command);
         self.call_transport(|t| {
+            t.purge()?;
             let r = t.send_recv(&full)?;
             Ok(r.trim().to_string())
         })
+    }
+
+    fn query_open(&self) -> MmResult<bool> {
+        let resp = self.cmd("rS")?;
+        let open = resp.as_bytes().get(2) == Some(&b'1');
+        self.open.set(open);
+        Ok(open)
     }
 }
 
@@ -73,11 +93,10 @@ impl Device for CarviiShutter {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
-        let resp = self.cmd("rS")?;
-        self.open = resp.as_bytes().get(2) == Some(&b'1');
+        self.query_open()?;
         self.initialized = true;
         Ok(())
     }
@@ -92,7 +111,7 @@ impl Device for CarviiShutter {
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "State" => Ok(PropertyValue::String(
-                if self.open { "Open" } else { "Closed" }.into(),
+                if self.query_open()? { "Open" } else { "Closed" }.into(),
             )),
             _ => self.props.get(name).cloned(),
         }
@@ -127,11 +146,11 @@ impl Device for CarviiShutter {
 impl Shutter for CarviiShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         self.cmd(if open { "S1" } else { "S0" })?;
-        self.open = open;
+        self.open.set(open);
         Ok(())
     }
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.open)
+        self.query_open()
     }
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
         Err(MmError::UnsupportedCommand)
@@ -148,7 +167,15 @@ mod tests {
         let t = MockTransport::new().expect("rS\r", "rS0");
         let mut s = CarviiShutter::new().with_transport(Box::new(t));
         s.initialize().unwrap();
-        assert!(!s.get_open().unwrap());
+        assert!(!s.open.get());
+        assert_eq!(
+            s.get_property("Name").unwrap(),
+            PropertyValue::String("CARVII Shutter".into())
+        );
+        assert_eq!(
+            s.get_property("Description").unwrap(),
+            PropertyValue::String("CARVII Shutter".into())
+        );
     }
 
     #[test]
@@ -156,13 +183,14 @@ mod tests {
         let t = MockTransport::new()
             .expect("rS\r", "rS0")
             .expect("S1\r", "S1")
+            .expect("rS\r", "rS1")
             .expect("S0\r", "S0");
         let mut s = CarviiShutter::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
         assert!(s.get_open().unwrap());
         s.set_open(false).unwrap();
-        assert!(!s.get_open().unwrap());
+        assert!(!s.open.get());
     }
 
     #[test]
@@ -180,11 +208,25 @@ mod tests {
     fn shutdown_does_not_close_like_upstream() {
         let t = MockTransport::new()
             .expect("rS\r", "rS0")
-            .expect("S1\r", "S1");
+            .expect("S1\r", "S1")
+            .expect("rS\r", "rS1");
         let mut s = CarviiShutter::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
         s.shutdown().unwrap();
         assert!(s.get_open().unwrap());
+    }
+
+    #[test]
+    fn get_property_state_queries_live_state() {
+        let t = MockTransport::new()
+            .expect("rS\r", "rS0")
+            .expect("rS\r", "rS1");
+        let mut s = CarviiShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.get_property("State").unwrap(),
+            PropertyValue::String("Open".into())
+        );
     }
 }

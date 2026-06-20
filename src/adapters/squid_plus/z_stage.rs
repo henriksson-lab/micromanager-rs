@@ -20,6 +20,8 @@ const MICROSTEPPING_Z: f64 = 256.0;
 const FULLSTEPS_PER_REV_Z: f64 = 200.0;
 const USTEPS_PER_MM_Z: f64 = MICROSTEPPING_Z * FULLSTEPS_PER_REV_Z / SCREW_PITCH_Z_MM;
 const DIRECTION_Z: f64 = -1.0;
+const DEFAULT_MAX_VELOCITY_MM_S: f64 = 5.0;
+const DEFAULT_ACCELERATION_MM_S2: f64 = 100.0;
 
 pub struct SquidPlusZStage {
     props: PropertyMap,
@@ -27,6 +29,12 @@ pub struct SquidPlusZStage {
     initialized: bool,
     z_pos_um: f64,
     cmd_id: u8,
+    max_velocity_mm_s: f64,
+    acceleration_mm_s2: f64,
+    full_steps_per_rev_z: f64,
+    screw_pitch_z_mm: f64,
+    microstepping_z: f64,
+    direction_z: f64,
 }
 
 impl SquidPlusZStage {
@@ -35,6 +43,21 @@ impl SquidPlusZStage {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
+        define_stage_config_props(&mut props);
+        props
+            .define_property(
+                "Acceleration",
+                PropertyValue::Float(DEFAULT_ACCELERATION_MM_S2),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "MaxVelocity",
+                PropertyValue::Float(DEFAULT_MAX_VELOCITY_MM_S),
+                false,
+            )
+            .unwrap();
 
         Self {
             props,
@@ -42,6 +65,12 @@ impl SquidPlusZStage {
             initialized: false,
             z_pos_um: 0.0,
             cmd_id: 0,
+            max_velocity_mm_s: DEFAULT_MAX_VELOCITY_MM_S,
+            acceleration_mm_s2: DEFAULT_ACCELERATION_MM_S2,
+            full_steps_per_rev_z: FULLSTEPS_PER_REV_Z,
+            screw_pitch_z_mm: SCREW_PITCH_Z_MM,
+            microstepping_z: MICROSTEPPING_Z,
+            direction_z: DIRECTION_Z,
         }
     }
 
@@ -60,8 +89,51 @@ impl SquidPlusZStage {
         common::send_and_wait(t.as_mut(), pkt)
     }
 
+    fn configure_velocity(&mut self) -> MmResult<()> {
+        let id = self.next_cmd_id();
+        let pkt = protocol::build_set_max_velocity_acceleration(
+            id,
+            protocol::AXIS_Z,
+            self.max_velocity_mm_s,
+            self.acceleration_mm_s2,
+        );
+        self.send_and_wait(&pkt)
+    }
+
     fn um_to_usteps(um: f64) -> i32 {
         (um / 1000.0 * USTEPS_PER_MM_Z / DIRECTION_Z) as i32
+    }
+
+    fn read_configuration(&mut self) -> MmResult<()> {
+        self.full_steps_per_rev_z = self
+            .props
+            .get("FullStepsPerRevZ")?
+            .as_f64()
+            .unwrap_or(FULLSTEPS_PER_REV_Z);
+        self.screw_pitch_z_mm = self
+            .props
+            .get("ScrewPitchZmm")?
+            .as_f64()
+            .unwrap_or(SCREW_PITCH_Z_MM);
+        self.microstepping_z = self
+            .props
+            .get("MicroSteppingDefaultZ")?
+            .as_i64()
+            .unwrap_or(MICROSTEPPING_Z as i64) as f64;
+        self.direction_z = if self.props.get("DirectionZ")?.as_str() == "Positive" {
+            1.0
+        } else {
+            -1.0
+        };
+        Ok(())
+    }
+
+    fn usteps_per_mm(&self) -> f64 {
+        self.microstepping_z * self.full_steps_per_rev_z / self.screw_pitch_z_mm
+    }
+
+    fn pos_to_usteps(&self, um: f64) -> i32 {
+        (um / 1000.0 * self.usteps_per_mm() / self.direction_z) as i32
     }
 }
 
@@ -83,7 +155,19 @@ impl Device for SquidPlusZStage {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
+        self.read_configuration()?;
         self.z_pos_um = 0.0;
+        self.max_velocity_mm_s = self
+            .props
+            .get("MaxVelocity")?
+            .as_f64()
+            .unwrap_or(DEFAULT_MAX_VELOCITY_MM_S);
+        self.acceleration_mm_s2 = self
+            .props
+            .get("Acceleration")?
+            .as_f64()
+            .unwrap_or(DEFAULT_ACCELERATION_MM_S2);
+        self.configure_velocity()?;
         self.initialized = true;
         Ok(())
     }
@@ -94,11 +178,41 @@ impl Device for SquidPlusZStage {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "MaxVelocity" => Ok(PropertyValue::Float(self.max_velocity_mm_s)),
+            "Acceleration" => Ok(PropertyValue::Float(self.acceleration_mm_s2)),
+            _ => self.props.get(name).cloned(),
+        }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "MaxVelocity" => {
+                let value = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(1.0..=655.35).contains(&value) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.max_velocity_mm_s = value;
+                self.props.set(name, PropertyValue::Float(value))?;
+                if self.initialized {
+                    self.configure_velocity()?;
+                }
+                Ok(())
+            }
+            "Acceleration" => {
+                let value = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(1.0..=6553.5).contains(&value) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.acceleration_mm_s2 = value;
+                self.props.set(name, PropertyValue::Float(value))?;
+                if self.initialized {
+                    self.configure_velocity()?;
+                }
+                Ok(())
+            }
+            _ => self.props.set(name, val),
+        }
     }
 
     fn property_names(&self) -> Vec<String> {
@@ -122,9 +236,43 @@ impl Device for SquidPlusZStage {
     }
 }
 
+fn define_stage_config_props(props: &mut PropertyMap) {
+    props
+        .define_property(
+            "FullStepsPerRevZ",
+            PropertyValue::Float(FULLSTEPS_PER_REV_Z),
+            false,
+        )
+        .unwrap();
+    props
+        .define_property(
+            "ScrewPitchZmm",
+            PropertyValue::Float(SCREW_PITCH_Z_MM),
+            false,
+        )
+        .unwrap();
+    props
+        .define_property(
+            "MicroSteppingDefaultZ",
+            PropertyValue::Integer(MICROSTEPPING_Z as i64),
+            false,
+        )
+        .unwrap();
+    props
+        .define_property(
+            "DirectionZ",
+            PropertyValue::String("Negative".into()),
+            false,
+        )
+        .unwrap();
+    props
+        .set_allowed_values("DirectionZ", &["Positive", "Negative"])
+        .unwrap();
+}
+
 impl Stage for SquidPlusZStage {
     fn set_position_um(&mut self, pos: f64) -> MmResult<()> {
-        let usteps = Self::um_to_usteps(pos);
+        let usteps = self.pos_to_usteps(pos);
         let id = self.next_cmd_id();
         let pkt = protocol::build_move(id, protocol::CMD_MOVETO_Z, usteps);
         self.send_and_wait(&pkt)?;
@@ -137,7 +285,7 @@ impl Stage for SquidPlusZStage {
     }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
-        let usteps = Self::um_to_usteps(d);
+        let usteps = self.pos_to_usteps(d);
         let id = self.next_cmd_id();
         let pkt = protocol::build_move(id, protocol::CMD_MOVE_Z, usteps);
         self.send_and_wait(&pkt)?;
@@ -184,7 +332,7 @@ mod tests {
     }
 
     fn make_init_transport() -> MockTransport {
-        MockTransport::new()
+        MockTransport::new().expect_binary(&ok_response(1))
     }
 
     #[test]
@@ -197,7 +345,7 @@ mod tests {
 
     #[test]
     fn set_position_um() {
-        let t = make_init_transport().expect_binary(&ok_response(1));
+        let t = make_init_transport().expect_binary(&ok_response(2));
         let mut dev = SquidPlusZStage::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_position_um(10.0).unwrap();
@@ -207,8 +355,8 @@ mod tests {
     #[test]
     fn relative_move() {
         let t = make_init_transport()
-            .expect_binary(&ok_response(1))
-            .expect_binary(&ok_response(2));
+            .expect_binary(&ok_response(2))
+            .expect_binary(&ok_response(3));
         let mut dev = SquidPlusZStage::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_relative_position_um(5.0).unwrap();
@@ -218,7 +366,7 @@ mod tests {
 
     #[test]
     fn home() {
-        let t = make_init_transport().expect_binary(&ok_response(1));
+        let t = make_init_transport().expect_binary(&ok_response(2));
         let mut dev = SquidPlusZStage::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.z_pos_um = 100.0;
@@ -236,5 +384,29 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(SquidPlusZStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn acceleration_property_sends_axis_after_init() {
+        let t = make_init_transport().expect_binary(&ok_response(2));
+        let mut dev = SquidPlusZStage::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("Acceleration", PropertyValue::Float(50.0))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("Acceleration").unwrap(),
+            PropertyValue::Float(50.0)
+        );
+    }
+
+    #[test]
+    fn exposes_upstream_stage_configuration_properties() {
+        let dev = SquidPlusZStage::new();
+        assert!(dev.has_property("FullStepsPerRevZ"));
+        assert!(dev.has_property("ScrewPitchZmm"));
+        assert!(dev.has_property("MicroSteppingDefaultZ"));
+        assert!(dev.has_property("DirectionZ"));
+        assert!(dev.has_property("Acceleration"));
+        assert!(dev.has_property("MaxVelocity"));
     }
 }
