@@ -56,6 +56,11 @@ extern "C" {
     pub fn jai_device_connect(connection_id: *const c_char) -> *mut JaiDevice;
     pub fn jai_device_free(d: *mut JaiDevice);
     pub fn jai_device_get_int(d: *mut JaiDevice, name: *const c_char, out: *mut i64) -> c_int;
+    pub fn jai_device_get_int_increment(
+        d: *mut JaiDevice,
+        name: *const c_char,
+        out: *mut i64,
+    ) -> c_int;
     pub fn jai_device_set_int(d: *mut JaiDevice, name: *const c_char, value: i64) -> c_int;
     pub fn jai_device_get_float(d: *mut JaiDevice, name: *const c_char, out: *mut f64) -> c_int;
     pub fn jai_device_set_float(d: *mut JaiDevice, name: *const c_char, value: f64) -> c_int;
@@ -66,6 +71,12 @@ extern "C" {
         len: c_int,
     ) -> c_int;
     pub fn jai_device_get_enum(
+        d: *mut JaiDevice,
+        name: *const c_char,
+        buf: *mut c_char,
+        len: c_int,
+    ) -> c_int;
+    pub fn jai_device_get_enum_entries(
         d: *mut JaiDevice,
         name: *const c_char,
         buf: *mut c_char,
@@ -97,6 +108,7 @@ extern "C" {
     pub fn jai_buffer_height(buf: *mut JaiBuffer) -> c_uint;
     pub fn jai_buffer_bits_per_pixel(buf: *mut JaiBuffer) -> c_uint;
     pub fn jai_buffer_bits_per_component(buf: *mut JaiBuffer) -> c_uint;
+    pub fn jai_buffer_padding_x(buf: *mut JaiBuffer) -> c_uint;
     pub fn jai_buffer_is_color(buf: *mut JaiBuffer) -> c_int;
     pub fn jai_buffer_data(buf: *mut JaiBuffer) -> *const u8;
     pub fn jai_buffer_data_size(buf: *mut JaiBuffer) -> u64;

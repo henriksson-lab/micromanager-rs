@@ -90,14 +90,17 @@ W = Windows, M = macOS, L = Linux. SDK-wrapped adapters are feature-gated; all o
 Open-source Linux packages:
 
 - Aravis: `sudo apt-get install libaravis-dev libusb-1.0-0-dev` (`aravis-0.8.pc` and its libusb pkg-config dependency for `--features aravis`).
+- IIDC/libdc1394: `sudo apt-get install libdc1394-dev pkg-config` (`libdc1394-2.pc` for `--features iidc`).
 - OpenCV: `sudo apt-get install libopencv-dev pkg-config clang libclang-dev` (`opencv4.pc` or `OpenCVConfig.cmake` for `--features opencv`).
 
 Vendor SDKs:
 
 - Andor SDK3: set `ANDOR_SDK3_ROOT`; Linux expects `include/`, `lib/libatcore.so`, and `lib/libatutility.so`. Use `ANDOR_SDK3_STUB=1` only for compile-only tests without hardware.
-- Basler Pylon: install Pylon and set `PYLON_ROOT` if not under `/opt/pylon`.
-- Daheng Galaxy: install Galaxy SDK and set `DAHENG_SDK_ROOT` or `GALAXY_ROOT`, or otherwise make `libgxiapi.so` visible to the linker/runtime loader. Use `DAHENG_STUB=1` only for compile-only tests without hardware.
-- PVCAM/PICAM: set `PVCAM_ROOT`; Linux expects `include/pvcam/master.h`, `include/pvcam/pvcam.h`, and `lib/libpvcam.so`. Use `PVCAM_STUB=1` only for compile-only tests without hardware.
+- Basler Pylon: install Pylon from Basler's pylon downloads page (https://www.baslerweb.com/de-de/downloads/software/?downloadCategory.values.label.data=pylon) and set `PYLON_ROOT` if not under `/opt/pylon`. The current `pylon-cxx` wrapper targets Pylon 5/6 layouts; newer Pylon installs may require wrapper updates.
+- Daheng Galaxy: install Galaxy SDK and set `DAHENG_SDK_ROOT` or `GALAXY_ROOT`, or otherwise make `libgxiapi.so` visible to the linker/runtime loader. Linux installs use `lib/<arch>/libgxiapi.so` and need that same directory in `LD_LIBRARY_PATH` at runtime for `liblog4cplus_gx.so`; `DAHENG_LIB_DIR` can point directly at that directory for unpacked SDK validation. Use `DAHENG_STUB=1` only for compile-only tests without hardware.
+- FLIR Scientific Camera SDK / Spinnaker: FLIR's Science Camera SDK at https://www.flir.com/en-eu/products/flir-science-camera-sdk/ is a paid/commercial SDK path. For reproducible open-source builds, users are advised not to buy hardware that depends on this paid SDK path.
+- JAI eBUS: install the JAI eBUS SDK from JAI's support software pages and set `EBUS_SDK_ROOT` to the platform root containing `include/` and `lib/` or `Includes/` and `Libraries/`. The Ubuntu 22.04 x86_64 JAI package unpacks under `/opt/jai/ebus_sdk/Ubuntu-22.04-x86_64`. The underlying Pleora eBUS SDK from https://www.pleora.com/ may require paid access; for reproducible open-source builds, users are advised not to buy hardware that depends on this paid SDK path.
+- PVCAM/PICAM: download PVCAM from Teledyne Vision Solutions' software and firmware downloads page. Set `PVCAM_ROOT` to `/opt/pvcam` for a normal Linux install; the build looks for `sdk/include/master.h`, `sdk/include/pvcam.h`, and `library/<arch>/libpvcam.so`. For an unpacked SDK/runtime pair, set `PVCAM_ROOT` to the extracted SDK `opt/pvcam` and `PVCAM_LIB_DIR` to the extracted runtime `opt/pvcam/library/<arch>`. Use `PVCAM_STUB=1` only for compile-only tests without hardware.
 - Thorlabs TSI: set `TSI_SDK_ROOT` or Thorlabs' `THORLABS_TSI_SDK_PATH_64_BIT` / `THORLABS_TSI_SDK_PATH_32_BIT`; the root must contain `tl_camera_sdk.h` and `libtl_camera_sdk.*`. Use `TSI_STUB=1` only for compile-only tests without hardware.
 
 #### Implemented (114 crates)
@@ -325,8 +328,8 @@ These adapters need proprietary SDKs or closed hardware interfaces not available
 | [Skyra](https://micro-manager.org/Skyra) | Cobolt Skyra SDK | ✓ | ✗ | ✓ |
 | [SmarActHCU-3D](https://micro-manager.org/SmarActHCU-3D) | SmarAct SDK | ✓ | ✗ | ✓ |
 | [SouthPort](https://micro-manager.org/SouthPort_MicroZ) | Check protocol | ✓ | ✗ | ✓ |
-| [Spinnaker](https://micro-manager.org/Spinnaker) | FLIR Spinnaker SDK | ✓ | ✗ | ✓ |
-| [SpinnakerC](https://micro-manager.org/SpinnakerC) | FLIR Spinnaker C SDK | ✓ | ✗ | ✗ |
+| [Spinnaker](https://micro-manager.org/Spinnaker) | FLIR Spinnaker / Scientific Camera SDK; paid SDK path, avoid buying dependent hardware | ✓ | ✗ | ✓ |
+| [SpinnakerC](https://micro-manager.org/SpinnakerC) | FLIR Spinnaker C / Scientific Camera SDK; paid SDK path, avoid buying dependent hardware | ✓ | ✗ | ✗ |
 | [Standa](https://micro-manager.org/Standa) | Standa 8SMC SDK (`USMCDLL.h`) | ✓ | ✗ | ✗ |
 | [Standa8SMC4](https://micro-manager.org/Standa8SMC4) | Standa 8SMC4 SDK | ✓ | ✗ | ✗ |
 | [StandaStage](https://micro-manager.org/StandaStage) | Standa SDK | ✓ | ✗ | ✗ |

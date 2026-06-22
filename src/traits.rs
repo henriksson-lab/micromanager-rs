@@ -1,5 +1,7 @@
+use crate::circular_buffer::ImageFrame;
 use crate::error::MmResult;
 use crate::types::{DeviceType, FocusDirection, ImageRoi, PropertyValue};
+use std::sync::Arc;
 
 // ─── Base device trait ──────────────────────────────────────────────────────
 
@@ -23,6 +25,13 @@ pub trait Device: Send {
 }
 
 // ─── Camera ─────────────────────────────────────────────────────────────────
+
+/// Pointer-free sink used by sequence-capable cameras to deliver frames to Core.
+pub trait SequenceImageSink: Send + Sync {
+    /// Insert a frame into the Core sequence buffer.
+    /// Returns true when the insertion overflowed the buffer.
+    fn insert_sequence_image(&self, frame: ImageFrame) -> bool;
+}
 
 /// Camera device trait mirroring `MM::Camera`.
 pub trait Camera: Device {
@@ -52,6 +61,20 @@ pub trait Camera: Device {
     fn start_sequence_acquisition(&mut self, count: i64, interval_ms: f64) -> MmResult<()>;
     fn stop_sequence_acquisition(&mut self) -> MmResult<()>;
     fn is_capturing(&self) -> bool;
+
+    /// Register Core's sequence image sink. Adapters with their own acquisition
+    /// threads should call the sink for each completed frame.
+    fn set_sequence_image_sink(
+        &mut self,
+        _sink: Option<Arc<dyn SequenceImageSink>>,
+    ) -> MmResult<()> {
+        Ok(())
+    }
+
+    /// True when the camera inserts each sequence frame into the registered sink.
+    fn sequence_images_delivered_to_sink(&self) -> bool {
+        false
+    }
 }
 
 // ─── Stage (single-axis Z) ───────────────────────────────────────────────────

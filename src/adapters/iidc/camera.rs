@@ -1,9 +1,12 @@
 use super::ffi::*;
+use crate::circular_buffer::ImageFrame;
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Camera, Device};
+use crate::traits::{Camera, Device, SequenceImageSink};
 use crate::types::{DeviceType, ImageRoi, PropertyValue};
+use std::os::raw::c_int;
 use std::ptr;
+use std::sync::Arc;
 
 // Safety: dc1394 camera handles are not shared across threads in this adapter.
 unsafe impl Send for IIDCCamera {}
@@ -282,6 +285,7 @@ pub struct IIDCCamera {
     capturing: bool,
     camera_index: usize,
     video_mode_id: dc1394video_mode_t,
+    sequence_image_sink: Option<Arc<dyn SequenceImageSink>>,
 }
 
 impl IIDCCamera {
@@ -326,6 +330,7 @@ impl IIDCCamera {
             capturing: false,
             camera_index: 0,
             video_mode_id: DC1394_VIDEO_MODE_640x480_MONO8,
+            sequence_image_sink: None,
         }
     }
 
@@ -471,6 +476,21 @@ impl IIDCCamera {
             }
         }
     }
+
+    fn emit_sequence_frame_to_sink(&mut self) -> MmResult<()> {
+        if let Some(sink) = &self.sequence_image_sink {
+            if sink.insert_sequence_image(ImageFrame::new(
+                self.image_buf.clone(),
+                self.width,
+                self.height,
+                self.bytes_per_pixel,
+            )) {
+                self.stop_sequence_acquisition()?;
+                return Err(MmError::BufferOverflow);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for IIDCCamera {
@@ -558,7 +578,7 @@ impl Device for IIDCCamera {
 
         let id_ptr = unsafe { (*list).ids.add(self.camera_index) };
         let guid = unsafe { (*id_ptr).guid };
-        let unit = unsafe { (*id_ptr).unit };
+        let unit = unsafe { (*id_ptr).unit as c_int };
         unsafe { dc1394_camera_free_list(list) };
 
         let camera = unsafe { dc1394_camera_new_unit(ctx, guid, unit) };
@@ -650,7 +670,11 @@ impl Device for IIDCCamera {
                         "CameraIndex cannot be changed after initialize()".into(),
                     ));
                 }
-                self.camera_index = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as usize;
+                let index = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if index < 0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.camera_index = index as usize;
                 self.props.set(name, val)
             }
             "VideoMode" => {
@@ -672,6 +696,9 @@ impl Device for IIDCCamera {
             }
             "Exposure" => {
                 let exp = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !exp.is_finite() || exp < 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 self.props.set(name, PropertyValue::Float(exp))?;
                 if !self.camera.is_null() {
                     self.apply_exposure();
@@ -680,6 +707,9 @@ impl Device for IIDCCamera {
             }
             "Gain" => {
                 let g = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if g < 0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 self.props.set(name, PropertyValue::Integer(g))?;
                 if !self.camera.is_null() {
                     self.apply_gain();
@@ -725,6 +755,7 @@ impl Camera for IIDCCamera {
             if err == DC1394_SUCCESS && !frame.is_null() {
                 self.copy_frame(frame);
                 unsafe { dc1394_capture_enqueue(camera, frame) };
+                self.emit_sequence_frame_to_sink()?;
             }
             Ok(())
         } else {
@@ -781,6 +812,9 @@ impl Camera for IIDCCamera {
     }
 
     fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()> {
+        if !exp_ms.is_finite() || exp_ms < 0.0 {
+            return Err(MmError::InvalidPropertyValue);
+        }
         self.props.set("Exposure", PropertyValue::Float(exp_ms))?;
         if !self.camera.is_null() {
             self.apply_exposure();
@@ -856,6 +890,18 @@ impl Camera for IIDCCamera {
     fn is_capturing(&self) -> bool {
         self.capturing
     }
+
+    fn set_sequence_image_sink(
+        &mut self,
+        sink: Option<Arc<dyn SequenceImageSink>>,
+    ) -> MmResult<()> {
+        self.sequence_image_sink = sink;
+        Ok(())
+    }
+
+    fn sequence_images_delivered_to_sink(&self) -> bool {
+        self.sequence_image_sink.is_some()
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -902,6 +948,34 @@ mod tests {
         d.set_property("CameraIndex", PropertyValue::Integer(2))
             .unwrap();
         assert_eq!(d.camera_index, 2);
+    }
+
+    #[test]
+    fn invalid_numeric_properties_rejected_pre_init() {
+        let mut d = IIDCCamera::new();
+
+        assert_eq!(
+            d.set_property("CameraIndex", PropertyValue::Integer(-1)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            d.set_property("Exposure", PropertyValue::Float(-1.0)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            d.set_property("Exposure", PropertyValue::Float(f64::NAN)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            d.set_property("Gain", PropertyValue::Integer(-1)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(d.camera_index, 0);
+        assert_eq!(
+            d.get_property("Exposure").unwrap(),
+            PropertyValue::Float(10.0)
+        );
+        assert_eq!(d.get_property("Gain").unwrap(), PropertyValue::Integer(0));
     }
 
     #[test]

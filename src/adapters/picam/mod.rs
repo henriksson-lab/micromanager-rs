@@ -15,14 +15,17 @@ pub mod camera;
 ///
 /// # Setup
 ///
-/// 1. Install the [PVCAM SDK](https://www.princetoninstruments.com/products/software-library/pvcam)
-///    for your platform.
+/// 1. Install PVCAM from Teledyne Vision Solutions' software and firmware
+///    downloads page. Current Linux SDK downloads require a Teledyne account.
 /// 2. Build with: `cargo build -p mm-adapter-picam --features picam`
 ///
-/// Set `PVCAM_ROOT` to override the default SDK search path. Linux builds
-/// expect `$PVCAM_ROOT/include/pvcam/master.h`, `$PVCAM_ROOT/include/pvcam/pvcam.h`,
-/// and `$PVCAM_ROOT/lib/libpvcam.so`. Use `PVCAM_STUB=1` only for local
-/// compile/test runs without the vendor SDK; it does not exercise real PVCAM.
+/// Set `PVCAM_ROOT` to override the default SDK search path. Linux defaults
+/// to `/opt/pvcam` and expects the installed SDK/runtime layout:
+/// `$PVCAM_ROOT/sdk/include/master.h`, `$PVCAM_ROOT/sdk/include/pvcam.h`, and
+/// `$PVCAM_ROOT/library/<arch>/libpvcam.so`. For an unpacked SDK/runtime pair,
+/// set `PVCAM_LIB_DIR` directly to the directory containing `libpvcam.so`.
+/// Use `PVCAM_STUB=1` only for local compile/test runs without the vendor SDK;
+/// it does not exercise real PVCAM.
 ///
 /// # Properties
 ///

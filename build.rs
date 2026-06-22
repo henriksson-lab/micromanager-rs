@@ -32,8 +32,19 @@ fn build_daheng() {
         .ok()
         .map(PathBuf::from);
 
-    if let Some(root) = root {
-        for sub in &["lib", "lib64", "Libraries", "Bin", "bin"] {
+    if let Ok(lib_dir) = std::env::var("DAHENG_LIB_DIR") {
+        println!("cargo:rustc-link-search=native={}", lib_dir);
+    } else if let Some(root) = root {
+        let arch = daheng_arch_dir();
+        for sub in &[
+            "lib",
+            "lib64",
+            "Libraries",
+            "Bin",
+            "bin",
+            &format!("lib/{}", arch),
+            &format!("lib/{}", if arch == "x86_64" { "x64" } else { arch }),
+        ] {
             let p = root.join(sub);
             if p.exists() {
                 println!("cargo:rustc-link-search=native={}", p.display());
@@ -45,6 +56,17 @@ fn build_daheng() {
     println!("cargo:rerun-if-env-changed=DAHENG_STUB");
     println!("cargo:rerun-if-env-changed=DAHENG_SDK_ROOT");
     println!("cargo:rerun-if-env-changed=GALAXY_ROOT");
+    println!("cargo:rerun-if-env-changed=DAHENG_LIB_DIR");
+}
+
+fn daheng_arch_dir() -> &'static str {
+    match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "x86_64",
+        Ok("x86") => "x86",
+        Ok("aarch64") => "aarch64",
+        Ok("arm") => "armv7l",
+        _ => "x86_64",
+    }
 }
 
 fn build_andor_sdk3() {
@@ -126,14 +148,31 @@ fn build_jai() {
         return;
     }
 
+    let use_stub = std::env::var("JAI_STUB").is_ok();
+    if use_stub {
+        cc::Build::new()
+            .cpp(true)
+            .file("vendor/jai_stub/jai_stub.cpp")
+            .flag_if_supported("-std=c++14")
+            .warnings(false)
+            .compile("jai_shim");
+        println!("cargo:rerun-if-env-changed=JAI_STUB");
+        println!("cargo:rerun-if-changed=vendor/jai_stub/jai_stub.cpp");
+        return;
+    }
+
     let sdk_root = find_jai_sdk_root();
+    let include_dir = first_existing_dir(&sdk_root, &["Includes", "include"]);
+    let lib_dir = first_existing_dir(&sdk_root, &["Libraries", "lib"]);
 
     let mut build = cc::Build::new();
     build
         .cpp(true)
         .file("src/adapters/jai/shim.cpp")
-        .include(format!("{}/Includes", sdk_root))
+        .include(&include_dir)
         .flag_if_supported("-std=c++14")
+        .define("_UNIX_", None)
+        .define("_LINUX_", None)
         .flag_if_supported("-Wno-deprecated-declarations");
 
     if cfg!(target_os = "macos") {
@@ -142,23 +181,38 @@ fn build_jai() {
 
     build.compile("jai_shim");
 
-    let lib_dir = format!("{}/Libraries", sdk_root);
     println!("cargo:rustc-link-search=native={}", lib_dir);
 
     for lib in &[
+        "PvAppUtils",
         "PvBase",
         "PvDevice",
         "PvBuffer",
         "PvStream",
         "PvGenICam",
+        "PvSystem",
+        "PvVirtualDevice",
+        "PvPersistence",
+        "PvSerial",
+        "PvCameraBridge",
+        "PtConvertersLib",
+        "SimpleImagingLib",
+        "EbTransportLayerLib",
+        "EbUtilsLib",
         "EbNetworkLib",
         "EbUSBLib",
         "PvTransmitter",
     ] {
-        println!("cargo:rustc-link-lib={}", lib);
+        if std::path::Path::new(&format!("{}/lib{}.so", lib_dir, lib)).exists()
+            || std::path::Path::new(&format!("{}/lib{}.dylib", lib_dir, lib)).exists()
+            || std::path::Path::new(&format!("{}/{}.lib", lib_dir, lib)).exists()
+        {
+            println!("cargo:rustc-link-lib={}", lib);
+        }
     }
 
     println!("cargo:rerun-if-env-changed=EBUS_SDK_ROOT");
+    println!("cargo:rerun-if-env-changed=JAI_STUB");
     println!("cargo:rerun-if-changed=src/adapters/jai/shim.cpp");
 }
 
@@ -182,12 +236,13 @@ fn find_jai_sdk_root() -> String {
     }
     #[cfg(target_os = "linux")]
     {
-        let base = "/opt/pleora/ebus_sdk";
-        if let Ok(entries) = std::fs::read_dir(base) {
-            let mut candidates: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-            candidates.sort_by_key(|e| e.file_name());
-            if let Some(last) = candidates.last() {
-                return last.path().to_string_lossy().into_owned();
+        for base in ["/opt/jai/ebus_sdk", "/opt/pleora/ebus_sdk"] {
+            if let Ok(entries) = std::fs::read_dir(base) {
+                let mut candidates: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+                candidates.sort_by_key(|e| e.file_name());
+                if let Some(last) = candidates.last() {
+                    return last.path().to_string_lossy().into_owned();
+                }
             }
         }
     }
@@ -199,6 +254,16 @@ fn find_jai_sdk_root() -> String {
         }
     }
     panic!("eBUS SDK not found. Set EBUS_SDK_ROOT to its root directory.");
+}
+
+fn first_existing_dir(root: &str, names: &[&str]) -> String {
+    for name in names {
+        let path = format!("{}/{}", root, name);
+        if std::path::Path::new(&path).is_dir() {
+            return path;
+        }
+    }
+    format!("{}/{}", root, names[0])
 }
 
 fn build_picam() {
@@ -234,11 +299,32 @@ fn build_picam() {
     }
     #[cfg(target_os = "linux")]
     {
-        let root = std::env::var("PVCAM_ROOT").unwrap_or_else(|_| "/usr/local".into());
-        build.include(format!("{}/include", root));
-        build.include(format!("{}/include/pvcam", root));
+        let root = std::env::var("PVCAM_ROOT").unwrap_or_else(|_| "/opt/pvcam".into());
+        let arch = pvcam_arch_dir();
+        for include_dir in [
+            format!("{}/include", root),
+            format!("{}/include/pvcam", root),
+            format!("{}/sdk/include", root),
+            format!("{}/sdk/include/pvcam", root),
+        ] {
+            if std::path::Path::new(&include_dir).is_dir() {
+                build.include(include_dir);
+            }
+        }
         build.compile("picam_shim");
-        println!("cargo:rustc-link-search=native={}/lib", root);
+        let lib_dir = std::env::var("PVCAM_LIB_DIR")
+            .ok()
+            .or_else(|| {
+                [
+                    format!("{}/lib", root),
+                    format!("{}/library/{}", root, arch),
+                    format!("{}/sdk/library/{}", root, arch),
+                ]
+                .into_iter()
+                .find(|p| std::path::Path::new(p).is_dir())
+            })
+            .unwrap_or_else(|| format!("{}/lib", root));
+        println!("cargo:rustc-link-search=native={}", lib_dir);
         println!("cargo:rustc-link-lib=pvcam");
     }
     #[cfg(target_os = "windows")]
@@ -252,8 +338,19 @@ fn build_picam() {
     }
 
     println!("cargo:rerun-if-env-changed=PVCAM_ROOT");
+    println!("cargo:rerun-if-env-changed=PVCAM_LIB_DIR");
     println!("cargo:rerun-if-env-changed=PVCAM_STUB");
     println!("cargo:rerun-if-changed=src/adapters/picam/shim.c");
+}
+
+fn pvcam_arch_dir() -> &'static str {
+    match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+        Ok("x86_64") => "x86_64",
+        Ok("x86") => "i686",
+        Ok("aarch64") => "aarch64",
+        Ok("arm") => "armv7l",
+        _ => "x86_64",
+    }
 }
 
 fn build_spot() {
@@ -457,9 +554,26 @@ fn build_iidc() {
         return;
     }
 
-    if cfg!(target_os = "macos") {
-        println!("cargo:rustc-link-search=/opt/homebrew/lib");
-        println!("cargo:rustc-link-search=/usr/local/lib");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if pkg_config::Config::new()
+        .atleast_version("2.0")
+        .probe("libdc1394-2")
+        .is_ok()
+    {
+        return;
     }
-    println!("cargo:rustc-link-lib=dc1394");
+
+    match target_os.as_str() {
+        "macos" => {
+            println!("cargo:rustc-link-search=/opt/homebrew/lib");
+            println!("cargo:rustc-link-search=/usr/local/lib");
+            println!("cargo:rustc-link-lib=dc1394");
+        }
+        "linux" => {
+            panic!("libdc1394-2 was not found by pkg-config; install libdc1394-dev and pkg-config");
+        }
+        _ => {
+            println!("cargo:rustc-link-lib=dc1394");
+        }
+    }
 }

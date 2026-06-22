@@ -64,13 +64,16 @@ impl CircularBuffer {
     }
 
     /// Push a frame; drops oldest frame if at capacity.
-    pub fn push(&self, frame: ImageFrame) {
+    /// Returns true when this push overflowed the buffer.
+    pub fn push(&self, frame: ImageFrame) -> bool {
         let mut g = self.inner.lock();
-        if g.buf.len() == g.capacity {
+        let overflowed = g.buf.len() == g.capacity;
+        if overflowed {
             g.buf.pop_front();
             g.overflow_count += 1;
         }
         g.buf.push_back(frame);
+        overflowed
     }
 
     /// Pop the oldest frame, or None if empty.

@@ -92,6 +92,40 @@ fn failed_sequence_start_preserves_existing_buffer() {
     assert!(core.pop_next_image().is_some());
 }
 
+#[test]
+fn sequence_frame_hook_requires_active_sequence() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+    core.initialize_all_devices().unwrap();
+    core.set_camera_device("Camera").unwrap();
+
+    assert_eq!(
+        core.snap_sequence_image_to_buffer().unwrap_err(),
+        MmError::SequenceNotRunning
+    );
+}
+
+#[test]
+fn sequence_buffer_overflow_stops_camera_and_reports_overflow() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+    core.initialize_all_devices().unwrap();
+    core.set_camera_device("Camera").unwrap();
+    core.set_exposure(0.0).unwrap();
+    core.start_sequence_acquisition(300, 0.0).unwrap();
+
+    for _ in 0..256 {
+        core.snap_sequence_image_to_buffer().unwrap();
+    }
+
+    assert_eq!(
+        core.snap_sequence_image_to_buffer().unwrap_err(),
+        MmError::BufferOverflow
+    );
+    assert!(!core.is_sequence_running().unwrap());
+    assert_eq!(core.get_buffer_overflow_count(), 1);
+}
+
 // ─── Stage movement ───────────────────────────────────────────────────────────
 
 #[test]
@@ -329,6 +363,49 @@ fn config_parent_lines_are_applied_and_saved() {
         .save_system_configuration()
         .unwrap()
         .contains("Parent,Camera,Shutter"));
+}
+
+#[test]
+fn config_initialize_records_replay_at_source_position() {
+    let mut core = make_core();
+    core.load_system_configuration(
+        "Device,Camera,demo,DCam\n\
+         Property,Core,Initialize,1\n\
+         Device,LateCamera,demo,DCam\n\
+         Property,Core,Camera,LateCamera\n",
+    )
+    .unwrap();
+
+    assert_eq!(core.snap_image().unwrap_err(), MmError::NotConnected);
+}
+
+#[test]
+fn config_initialize_zero_replays_at_source_position_and_continues() {
+    let mut core = make_core();
+    core.load_device("OldCamera", "demo", "DCam").unwrap();
+    core.set_camera_device("OldCamera").unwrap();
+
+    core.load_system_configuration(
+        "Property,Core,Initialize,0\n\
+         Device,NewCamera,demo,DCam\n\
+         Property,Core,Camera,NewCamera\n\
+         Property,Core,Initialize,1\n",
+    )
+    .unwrap();
+
+    assert!(!core.device_labels().contains(&"OldCamera"));
+    core.snap_image().unwrap();
+}
+
+#[test]
+fn parent_self_reference_is_rejected() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+
+    assert_eq!(
+        core.set_parent_label("Camera", "Camera").unwrap_err(),
+        MmError::SelfReference
+    );
 }
 
 #[test]

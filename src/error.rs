@@ -71,6 +71,8 @@ pub enum MmError {
     CoreConfigFailed,
     #[error("camera busy acquiring")]
     CameraBusyAcquiring,
+    #[error("sequence acquisition is not running")]
+    SequenceNotRunning,
     #[error("incompatible image")]
     IncompatibleImage,
     #[error("cannot set property")]

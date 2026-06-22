@@ -151,6 +151,20 @@ int jai_device_get_int(JaiDevice* d, const char* name, int64_t* out) {
     } catch (...) { return -1; }
 }
 
+int jai_device_get_int_increment(JaiDevice* d, const char* name, int64_t* out) {
+    if (!d || !d->pvDevice || !name || !out) return -1;
+    try {
+        PvGenParameterArray* p = d->pvDevice->GetParameters();
+        PvGenInteger* node = p->GetInteger(PvString(name));
+        if (!node) return -1;
+        int64_t v = 1;
+        PvResult r = node->GetIncrement(v);
+        if (!r.IsOK()) return -1;
+        *out = v > 0 ? v : 1;
+        return 0;
+    } catch (...) { return -1; }
+}
+
 int jai_device_set_int(JaiDevice* d, const char* name, int64_t value) {
     if (!d || !d->pvDevice || !name) return -1;
     try {
@@ -199,6 +213,34 @@ int jai_device_get_enum(JaiDevice* d, const char* name, char* buf, int len) {
         PvResult r = p->GetEnumValue(PvString(name), v);
         if (!r.IsOK()) return -1;
         safe_copy(v.GetAscii(), buf, len);
+        return 0;
+    } catch (...) { return -1; }
+}
+
+int jai_device_get_enum_entries(JaiDevice* d, const char* name, char* buf, int len) {
+    if (!d || !d->pvDevice || !name || !buf) return -1;
+    try {
+        PvGenParameterArray* p = d->pvDevice->GetParameters();
+        PvGenEnum* e = p->GetEnum(PvString(name));
+        if (!e) return -1;
+        int64_t count = 0;
+        if (!e->GetEntriesCount(count).IsOK()) return -1;
+        std::string joined;
+        for (int64_t i = 0; i < count; ++i) {
+            const PvGenEnumEntry* entry = nullptr;
+            if (!e->GetEntryByIndex(static_cast<uint32_t>(i), &entry).IsOK() || !entry)
+                continue;
+            if (!entry->IsAvailable())
+                continue;
+            PvString entry_name;
+            if (!entry->GetName(entry_name).IsOK())
+                continue;
+            if (!joined.empty())
+                joined.push_back(';');
+            joined.append(entry_name.GetAscii());
+        }
+        if (joined.empty()) return -1;
+        safe_copy(joined.c_str(), buf, len);
         return 0;
     } catch (...) { return -1; }
 }
@@ -361,9 +403,7 @@ uint32_t jai_buffer_bits_per_component(JaiBuffer* buf) {
     try {
         PvImage* img = buf->pvBuffer->GetImage();
         if (!img) return 8;
-        uint32_t bpc = 8;
-        PvImage::GetBitsPerComponent(img->GetPixelType(), bpc);
-        return bpc;
+        return PvImage::GetBitsPerComponent(img->GetPixelType());
     } catch (...) { return 8; }
 }
 
@@ -373,6 +413,14 @@ int jai_buffer_is_color(JaiBuffer* buf) {
         PvImage* img = buf->pvBuffer->GetImage();
         if (!img) return 0;
         return PvImage::IsPixelColor(img->GetPixelType()) ? 1 : 0;
+    } catch (...) { return 0; }
+}
+
+uint32_t jai_buffer_padding_x(JaiBuffer* buf) {
+    if (!buf || !buf->pvBuffer) return 0;
+    try {
+        PvImage* img = buf->pvBuffer->GetImage();
+        return img ? img->GetPaddingX() : 0;
     } catch (...) { return 0; }
 }
 

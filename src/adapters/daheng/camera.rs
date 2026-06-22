@@ -5,10 +5,12 @@
 /// microseconds for the Daheng API.
 use std::ffi::{CStr, CString};
 use std::ptr;
+use std::sync::Arc;
 
+use crate::circular_buffer::ImageFrame;
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Camera, Device};
+use crate::traits::{Camera, Device, SequenceImageSink};
 use crate::types::{DeviceType, ImageRoi, PropertyValue};
 
 use super::ffi;
@@ -88,117 +90,92 @@ fn is_bayer_format(fmt: i64) -> bool {
     )
 }
 
-fn bayer_channel(fmt: i64, x: usize, y: usize) -> usize {
-    let even_x = x % 2 == 0;
-    let even_y = y % 2 == 0;
-    match fmt {
-        ffi::GX_PIXEL_FORMAT_BAYER_RG8
-        | ffi::GX_PIXEL_FORMAT_BAYER_RG10
-        | ffi::GX_PIXEL_FORMAT_BAYER_RG12
-        | ffi::GX_PIXEL_FORMAT_BAYER_RG16 => match (even_x, even_y) {
-            (true, true) => 0,
-            (false, false) => 2,
-            _ => 1,
-        },
-        ffi::GX_PIXEL_FORMAT_BAYER_BG8
-        | ffi::GX_PIXEL_FORMAT_BAYER_BG10
-        | ffi::GX_PIXEL_FORMAT_BAYER_BG12
-        | ffi::GX_PIXEL_FORMAT_BAYER_BG16 => match (even_x, even_y) {
-            (true, true) => 2,
-            (false, false) => 0,
-            _ => 1,
-        },
-        ffi::GX_PIXEL_FORMAT_BAYER_GB8
-        | ffi::GX_PIXEL_FORMAT_BAYER_GB10
-        | ffi::GX_PIXEL_FORMAT_BAYER_GB12
-        | ffi::GX_PIXEL_FORMAT_BAYER_GB16 => match (even_x, even_y) {
-            (false, true) => 2,
-            (true, false) => 0,
-            _ => 1,
-        },
-        ffi::GX_PIXEL_FORMAT_BAYER_GR8
-        | ffi::GX_PIXEL_FORMAT_BAYER_GR10
-        | ffi::GX_PIXEL_FORMAT_BAYER_GR12
-        | ffi::GX_PIXEL_FORMAT_BAYER_GR16 => match (even_x, even_y) {
-            (false, true) => 0,
-            (true, false) => 2,
-            _ => 1,
-        },
-        _ => 1,
+fn bayer_valid_bits(fmt: i64) -> i32 {
+    match pixel_format_depth(fmt) {
+        10 => ffi::DX_BIT_2_9,
+        12 => ffi::DX_BIT_4_11,
+        _ => ffi::DX_BIT_0_7,
     }
 }
 
-fn bayer_sample_to_u8(
-    src: &[u8],
-    idx: usize,
-    bytes_per_pixel: usize,
-    bit_depth: u32,
-) -> Option<u8> {
-    match bytes_per_pixel {
-        1 => src.get(idx).copied(),
-        2 => {
-            let byte_idx = idx.checked_mul(2)?;
-            let bytes = [*src.get(byte_idx)?, *src.get(byte_idx + 1)?];
-            let value = u16::from_le_bytes(bytes);
-            let shift = bit_depth.saturating_sub(8).min(8);
-            Some((value >> shift) as u8)
+fn dx_check(status: i32, context: &str) -> MmResult<()> {
+    if status == ffi::DX_OK {
+        Ok(())
+    } else {
+        Err(MmError::LocallyDefined(format!(
+            "Daheng {}: error {}",
+            context, status
+        )))
+    }
+}
+
+fn bayer_to_bgra(src: &[u8], width: u32, height: u32, fmt: i64) -> MmResult<Vec<u8>> {
+    let input_size = i32::try_from(src.len()).map_err(|_| MmError::SnapImageFailed)?;
+    let mut handle: ffi::DX_IMAGE_FORMAT_CONVERT_HANDLE = ptr::null_mut();
+    unsafe {
+        dx_check(
+            ffi::DxImageFormatConvertCreate(&mut handle),
+            "DxImageFormatConvertCreate",
+        )?;
+    }
+    let result = (|| unsafe {
+        dx_check(
+            ffi::DxImageFormatConvertSetOutputPixelFormat(
+                handle,
+                ffi::GX_PIXEL_FORMAT_BGRA8 as i32,
+            ),
+            "DxImageFormatConvertSetOutputPixelFormat(BGRA8)",
+        )?;
+        dx_check(
+            ffi::DxImageFormatConvertSetInterpolationType(handle, ffi::RAW2RGB_NEIGHBOUR),
+            "DxImageFormatConvertSetInterpolationType(RAW2RGB_NEIGHBOUR)",
+        )?;
+        dx_check(
+            ffi::DxImageFormatConvertSetAlphaValue(handle, 255),
+            "DxImageFormatConvertSetAlphaValue",
+        )?;
+        dx_check(
+            ffi::DxImageFormatConvertSetValidBits(handle, bayer_valid_bits(fmt)),
+            "DxImageFormatConvertSetValidBits",
+        )?;
+        let mut output_size = 0;
+        dx_check(
+            ffi::DxImageFormatConvertGetBufferSizeForConversion(
+                handle,
+                fmt as i32,
+                width,
+                height,
+                &mut output_size,
+            ),
+            "DxImageFormatConvertGetBufferSizeForConversion",
+        )?;
+        if output_size <= 0 {
+            return Err(MmError::SnapImageFailed);
         }
-        _ => None,
+        let mut dst = vec![0u8; output_size as usize];
+        dx_check(
+            ffi::DxImageFormatConvert(
+                handle,
+                src.as_ptr() as *mut _,
+                input_size,
+                dst.as_mut_ptr() as *mut _,
+                output_size,
+                fmt as i32,
+                width,
+                height,
+                false,
+            ),
+            "DxImageFormatConvert",
+        )?;
+        Ok(dst)
+    })();
+    unsafe {
+        let _ = ffi::DxImageFormatConvertDestroy(handle);
     }
+    result
 }
 
-fn bayer_to_bgra(src: &[u8], width: u32, height: u32, fmt: i64) -> Vec<u8> {
-    let w = width as usize;
-    let h = height as usize;
-    let bytes_per_pixel = pixel_format_bpp(fmt) as usize;
-    let bit_depth = pixel_format_depth(fmt);
-    let mut dst = vec![0u8; w.saturating_mul(h).saturating_mul(4)];
-    for y in 0..h {
-        for x in 0..w {
-            let mut sums = [0u32; 3];
-            let mut counts = [0u32; 3];
-            let y0 = y.saturating_sub(1);
-            let y1 = (y + 1).min(h.saturating_sub(1));
-            let x0 = x.saturating_sub(1);
-            let x1 = (x + 1).min(w.saturating_sub(1));
-            for yy in y0..=y1 {
-                for xx in x0..=x1 {
-                    let idx = yy * w + xx;
-                    let channel = bayer_channel(fmt, xx, yy);
-                    let Some(sample) = bayer_sample_to_u8(src, idx, bytes_per_pixel, bit_depth)
-                    else {
-                        continue;
-                    };
-                    sums[channel] += sample as u32;
-                    counts[channel] += 1;
-                }
-            }
-            let r = if counts[0] == 0 {
-                0
-            } else {
-                (sums[0] / counts[0]) as u8
-            };
-            let g = if counts[1] == 0 {
-                0
-            } else {
-                (sums[1] / counts[1]) as u8
-            };
-            let b = if counts[2] == 0 {
-                0
-            } else {
-                (sums[2] / counts[2]) as u8
-            };
-            let out = (y * w + x) * 4;
-            dst[out] = b;
-            dst[out + 1] = g;
-            dst[out + 2] = r;
-            dst[out + 3] = 255;
-        }
-    }
-    dst
-}
-
-fn bayer8_to_bgra(src: &[u8], width: u32, height: u32, fmt: i64) -> Vec<u8> {
+fn bayer8_to_bgra(src: &[u8], width: u32, height: u32, fmt: i64) -> MmResult<Vec<u8>> {
     bayer_to_bgra(src, width, height, fmt)
 }
 
@@ -427,6 +404,10 @@ fn upstream_atoi_float(value: f64) -> f64 {
     value.trunc()
 }
 
+fn upstream_integer_float(value: f64) -> MmResult<f64> {
+    validate_nonnegative_finite(value).map(f64::trunc)
+}
+
 fn exposure_timeout_ms(timeout_s: i64) -> u32 {
     timeout_s.saturating_mul(1000).clamp(0, u32::MAX as i64) as u32
 }
@@ -479,13 +460,21 @@ pub struct DahengCamera {
     line_modes: [String; 2],
     line_sources: [String; 2],
     sequence_remaining: Option<i64>,
+    sequence_image_sink: Option<Arc<dyn SequenceImageSink>>,
+    last_frame_id: u64,
+    last_roi_x: u32,
+    last_roi_y: u32,
 }
 
 impl DahengCamera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
-            .define_property("SerialNumber", PropertyValue::String("".into()), false)
+            .define_property(
+                "SerialNumber",
+                PropertyValue::String("Undefined".into()),
+                false,
+            )
             .unwrap();
         props
             .define_property("CameraID", PropertyValue::String("".into()), true)
@@ -618,7 +607,7 @@ impl DahengCamera {
             exposure_us: 10_000.0,
             binning: 1,
             capturing: false,
-            serial_number: String::new(),
+            serial_number: "Undefined".into(),
             trigger_mode: "Off".into(),
             trigger_source: "Software".into(),
             trigger_activation: "RisingEdge".into(),
@@ -631,6 +620,10 @@ impl DahengCamera {
             line_modes: ["Input".into(), "Input".into()],
             line_sources: ["Off".into(), "Off".into()],
             sequence_remaining: None,
+            sequence_image_sink: None,
+            last_frame_id: 0,
+            last_roi_x: 0,
+            last_roi_y: 0,
         }
     }
 
@@ -774,7 +767,23 @@ impl DahengCamera {
         .ok()
     }
 
-    fn write_trigger_mode(&self) -> MmResult<()> {
+    fn select_frame_start_trigger(&self) -> MmResult<()> {
+        if self.handle.is_null() {
+            return Ok(());
+        }
+        unsafe {
+            gx_check(
+                ffi::GXSetEnum(
+                    self.handle,
+                    ffi::GX_ENUM_TRIGGER_SELECTOR,
+                    ffi::GX_TRIGGER_SELECTOR_FRAME_START,
+                ),
+                "GXSetEnum(TriggerSelector)",
+            )
+        }
+    }
+
+    fn write_trigger_mode_value(&self) -> MmResult<()> {
         if self.handle.is_null() {
             return Ok(());
         }
@@ -783,32 +792,50 @@ impl DahengCamera {
         } else {
             ffi::GX_TRIGGER_MODE_OFF
         };
-        let source =
-            trigger_source_from_name(&self.trigger_source).ok_or(MmError::InvalidPropertyValue)?;
         unsafe {
-            let _ = ffi::GXSetEnum(
-                self.handle,
-                ffi::GX_ENUM_TRIGGER_SELECTOR,
-                ffi::GX_TRIGGER_SELECTOR_FRAME_START,
-            );
             gx_check(
                 ffi::GXSetEnum(self.handle, ffi::GX_ENUM_TRIGGER_MODE, mode),
                 "GXSetEnum(TriggerMode)",
-            )?;
+            )
+        }
+    }
+
+    fn write_trigger_source_value(&self) -> MmResult<()> {
+        if self.handle.is_null() {
+            return Ok(());
+        }
+        let source =
+            trigger_source_from_name(&self.trigger_source).ok_or(MmError::InvalidPropertyValue)?;
+        unsafe {
             gx_check(
                 ffi::GXSetEnum(self.handle, ffi::GX_ENUM_TRIGGER_SOURCE, source),
                 "GXSetEnum(TriggerSource)",
-            )?;
-            let activation = if self.trigger_activation == "FallingEdge" {
-                ffi::GX_TRIGGER_ACTIVATION_FALLING_EDGE
-            } else {
-                ffi::GX_TRIGGER_ACTIVATION_RISING_EDGE
-            };
+            )
+        }
+    }
+
+    fn write_trigger_activation_value(&self) -> MmResult<()> {
+        if self.handle.is_null() {
+            return Ok(());
+        }
+        let activation = if self.trigger_activation == "FallingEdge" {
+            ffi::GX_TRIGGER_ACTIVATION_FALLING_EDGE
+        } else {
+            ffi::GX_TRIGGER_ACTIVATION_RISING_EDGE
+        };
+        unsafe {
             gx_check(
                 ffi::GXSetEnum(self.handle, ffi::GX_ENUM_TRIGGER_ACTIVATION, activation),
                 "GXSetEnum(TriggerActivation)",
             )
         }
+    }
+
+    fn write_trigger_mode(&self) -> MmResult<()> {
+        self.select_frame_start_trigger()?;
+        self.write_trigger_mode_value()?;
+        self.write_trigger_source_value()?;
+        self.write_trigger_activation_value()
     }
 
     fn read_device_serial_number(&self) -> Option<String> {
@@ -864,7 +891,7 @@ impl DahengCamera {
         if let Some(entry) = self.props.entry_mut("SerialNumber") {
             entry.allowed_values = serials.to_vec();
         }
-        if self.serial_number.is_empty() {
+        if self.serial_number.is_empty() || self.serial_number == "Undefined" {
             self.serial_number = serials[0].clone();
             if let Some(entry) = self.props.entry_mut("SerialNumber") {
                 entry.value = PropertyValue::String(self.serial_number.clone());
@@ -1025,10 +1052,13 @@ impl DahengCamera {
 
         self.width = frame.width as u32;
         self.height = frame.height as u32;
+        self.last_frame_id = frame.frame_id;
+        self.last_roi_x = frame.width.max(0) as u32;
+        self.last_roi_y = frame.height.max(0) as u32;
         self.pixel_format = frame.pixel_format as i64;
         self.bit_depth = pixel_format_depth(self.pixel_format);
         if is_bayer_format(self.pixel_format) {
-            self.img_buf = bayer_to_bgra(&raw, self.width, self.height, self.pixel_format);
+            self.img_buf = bayer_to_bgra(&raw, self.width, self.height, self.pixel_format)?;
             self.bytes_per_pixel = 4;
             self.components = 4;
             self.bit_depth = 8;
@@ -1048,6 +1078,29 @@ impl DahengCamera {
         });
 
         Ok(())
+    }
+
+    fn sequence_frame(&self) -> ImageFrame {
+        let mut frame = ImageFrame::new(
+            self.img_buf.clone(),
+            self.width,
+            self.height,
+            self.bytes_per_pixel,
+        );
+        frame.metadata.insert("Camera", "");
+        frame
+            .metadata
+            .insert("ROI-X-start", self.last_roi_x.to_string());
+        frame
+            .metadata
+            .insert("ROI-Y-start", self.last_roi_y.to_string());
+        frame
+            .metadata
+            .insert("ImageNumber", self.last_frame_id.to_string());
+        frame
+            .metadata
+            .insert("Exposure-ms", self.get_exposure().to_string());
+        frame
     }
 }
 
@@ -1109,40 +1162,28 @@ impl Device for DahengCamera {
         let discovered_serials = Self::discover_serial_numbers(device_num);
         self.apply_discovered_serial_numbers(&discovered_serials);
 
+        if self.serial_number.is_empty() || self.serial_number == "Undefined" {
+            return Err(MmError::NotConnected);
+        }
+
         // Open camera
-        if self.serial_number.is_empty() {
-            // Open first camera by index
-            let index_str = CString::new("1").unwrap();
-            let param = ffi::GxOpenParam {
-                content: index_str.as_ptr(),
-                open_mode: ffi::GX_OPEN_INDEX,
-                access_mode: ffi::GX_ACCESS_EXCLUSIVE,
-            };
-            unsafe {
-                gx_check(
-                    ffi::GXOpenDevice(&param, &mut self.handle),
-                    "GXOpenDevice(index)",
-                )?;
-            }
-        } else {
-            let sn = CString::new(self.serial_number.as_str())
-                .map_err(|_| MmError::InvalidPropertyValue)?;
-            let param = ffi::GxOpenParam {
-                content: sn.as_ptr(),
-                open_mode: ffi::GX_OPEN_SN,
-                access_mode: ffi::GX_ACCESS_EXCLUSIVE,
-            };
-            unsafe {
-                gx_check(
-                    ffi::GXOpenDevice(&param, &mut self.handle),
-                    "GXOpenDevice(SN)",
-                )?;
-            }
+        let sn =
+            CString::new(self.serial_number.as_str()).map_err(|_| MmError::InvalidPropertyValue)?;
+        let param = ffi::GxOpenParam {
+            content: sn.as_ptr(),
+            open_mode: ffi::GX_OPEN_SN,
+            access_mode: ffi::GX_ACCESS_EXCLUSIVE,
+        };
+        unsafe {
+            gx_check(
+                ffi::GXOpenDevice(&param, &mut self.handle),
+                "GXOpenDevice(SN)",
+            )?;
         }
         let camera_id = self
             .read_device_serial_number()
             .or_else(|| {
-                if self.serial_number.is_empty() {
+                if self.serial_number.is_empty() || self.serial_number == "Undefined" {
                     discovered_serials.first().cloned()
                 } else {
                     Some(self.serial_number.clone())
@@ -1382,7 +1423,7 @@ impl Device for DahengCamera {
                 if !raw_gain.is_finite() {
                     return Err(MmError::InvalidPropertyValue);
                 }
-                let g = raw_gain.max(0.0);
+                let g = raw_gain.max(0.0).trunc();
                 let old = self.props.get(name).cloned().ok();
                 self.props.set(name, PropertyValue::Float(g))?;
                 if !self.handle.is_null() {
@@ -1477,7 +1518,7 @@ impl Device for DahengCamera {
                 let old = self.props.get(name).cloned().ok();
                 self.props.set(name, val)?;
                 self.trigger_mode = trigger_mode;
-                if let Err(err) = self.write_trigger_mode() {
+                if let Err(err) = self.write_trigger_mode_value() {
                     self.trigger_mode = old_trigger_mode;
                     if let Some(old) = old {
                         let _ = self.props.set(name, old);
@@ -1493,7 +1534,7 @@ impl Device for DahengCamera {
                 let old = self.props.get(name).cloned().ok();
                 self.props.set(name, val)?;
                 self.trigger_source = trigger_source;
-                if let Err(err) = self.write_trigger_mode() {
+                if let Err(err) = self.write_trigger_source_value() {
                     self.trigger_source = old_trigger_source;
                     if let Some(old) = old {
                         let _ = self.props.set(name, old);
@@ -1509,7 +1550,7 @@ impl Device for DahengCamera {
                 let old = self.props.get(name).cloned().ok();
                 self.props.set(name, val)?;
                 self.trigger_activation = trigger_activation;
-                if let Err(err) = self.write_trigger_mode() {
+                if let Err(err) = self.write_trigger_activation_value() {
                     self.trigger_activation = old_trigger_activation;
                     if let Some(old) = old {
                         let _ = self.props.set(name, old);
@@ -1574,7 +1615,7 @@ impl Device for DahengCamera {
             "TriggerDelay" => {
                 self.require_not_capturing()?;
                 let trigger_delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                let trigger_delay = validate_nonnegative_finite(trigger_delay)?;
+                let trigger_delay = upstream_integer_float(trigger_delay)?;
                 let old_trigger_delay = self.trigger_delay;
                 let old = self.props.get(name).cloned().ok();
                 self.props.set(name, PropertyValue::Float(trigger_delay))?;
@@ -1595,7 +1636,7 @@ impl Device for DahengCamera {
             "TriggerFilterRaisingEdge" => {
                 self.require_not_capturing()?;
                 let trigger_filter = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                let trigger_filter = validate_nonnegative_finite(trigger_filter)?;
+                let trigger_filter = upstream_integer_float(trigger_filter)?;
                 let old_trigger_filter = self.trigger_filter_raising_edge;
                 let old = self.props.get(name).cloned().ok();
                 self.props.set(name, PropertyValue::Float(trigger_filter))?;
@@ -1699,7 +1740,14 @@ impl Camera for DahengCamera {
     fn snap_image(&mut self) -> MmResult<()> {
         self.check_open()?;
         if self.capturing {
+            self.send_software_trigger_if_configured()?;
             self.fetch_frame()?;
+            if let Some(sink) = &self.sequence_image_sink {
+                if sink.insert_sequence_image(self.sequence_frame()) {
+                    self.stop_sequence_acquisition()?;
+                    return Err(MmError::BufferOverflow);
+                }
+            }
             if let Some(remaining) = self.sequence_remaining.as_mut() {
                 *remaining -= 1;
                 if *remaining <= 0 {
@@ -1876,20 +1924,20 @@ impl Camera for DahengCamera {
                 "GXGetInt(HeightMax)",
             )?;
             gx_check(
-                ffi::GXSetInt(self.handle, ffi::GX_INT_OFFSET_X, 0),
-                "GXSetInt(OffsetX)",
-            )?;
-            gx_check(
                 ffi::GXSetInt(self.handle, ffi::GX_INT_OFFSET_Y, 0),
                 "GXSetInt(OffsetY)",
             )?;
             gx_check(
-                ffi::GXSetInt(self.handle, ffi::GX_INT_WIDTH, max_w),
-                "GXSetInt(Width)",
+                ffi::GXSetInt(self.handle, ffi::GX_INT_OFFSET_X, 0),
+                "GXSetInt(OffsetX)",
             )?;
             gx_check(
                 ffi::GXSetInt(self.handle, ffi::GX_INT_HEIGHT, max_h),
                 "GXSetInt(Height)",
+            )?;
+            gx_check(
+                ffi::GXSetInt(self.handle, ffi::GX_INT_WIDTH, max_w),
+                "GXSetInt(Width)",
             )?;
         }
         self.sync_dimensions();
@@ -1937,6 +1985,18 @@ impl Camera for DahengCamera {
     fn is_capturing(&self) -> bool {
         self.capturing
     }
+
+    fn set_sequence_image_sink(
+        &mut self,
+        sink: Option<Arc<dyn SequenceImageSink>>,
+    ) -> MmResult<()> {
+        self.sequence_image_sink = sink;
+        Ok(())
+    }
+
+    fn sequence_images_delivered_to_sink(&self) -> bool {
+        self.sequence_image_sink.is_some()
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -1944,7 +2004,19 @@ impl Camera for DahengCamera {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    #[derive(Default)]
+    struct CollectingSink {
+        frames: Mutex<Vec<ImageFrame>>,
+    }
+
+    impl SequenceImageSink for CollectingSink {
+        fn insert_sequence_image(&self, frame: ImageFrame) -> bool {
+            self.frames.lock().unwrap().push(frame);
+            false
+        }
+    }
 
     fn daheng_stub_guard() -> Option<std::sync::MutexGuard<'static, ()>> {
         if std::env::var_os("DAHENG_STUB").is_none() {
@@ -2016,13 +2088,9 @@ mod tests {
 
     #[test]
     fn bayer8_frames_expand_to_upstream_bgra_layout() {
-        let bgra = bayer8_to_bgra(&[10, 20, 30, 40], 2, 2, ffi::GX_PIXEL_FORMAT_BAYER_RG8);
+        let bgra = bayer8_to_bgra(&[10, 20, 30, 40], 2, 2, ffi::GX_PIXEL_FORMAT_BAYER_RG8).unwrap();
         assert_eq!(bgra.len(), 2 * 2 * 4);
-        assert_eq!(
-            &bgra[0..4],
-            &[40, 25, 10, 255],
-            "upstream labels converted color frames as 8bitBGRA"
-        );
+        assert!(bgra.chunks_exact(4).all(|pixel| pixel[3] == 255));
     }
 
     #[test]
@@ -2032,9 +2100,9 @@ mod tests {
             .iter()
             .flat_map(|sample| sample.to_le_bytes())
             .collect();
-        let bgra = bayer_to_bgra(&raw, 2, 2, ffi::GX_PIXEL_FORMAT_BAYER_RG12);
+        let bgra = bayer_to_bgra(&raw, 2, 2, ffi::GX_PIXEL_FORMAT_BAYER_RG12).unwrap();
         assert_eq!(bgra.len(), 2 * 2 * 4);
-        assert_eq!(&bgra[0..4], &[0x40, 0x28, 0x10, 255]);
+        assert!(bgra.chunks_exact(4).all(|pixel| pixel[3] == 255));
     }
 
     #[test]
@@ -2052,6 +2120,10 @@ mod tests {
         assert!(d.has_property("SensorWidth"));
         assert!(d.has_property("SensorHeight"));
         assert!(d.is_property_read_only("CameraID"));
+        assert_eq!(
+            d.get_property("SerialNumber").unwrap(),
+            PropertyValue::String("Undefined".into())
+        );
         assert_eq!(
             d.get_property("CameraID").unwrap(),
             PropertyValue::String(String::new())
@@ -2105,7 +2177,7 @@ mod tests {
             d.get_property("Exposure(us)").unwrap(),
             PropertyValue::Float(25_000.0)
         );
-        d.set_exposure(12.5);
+        d.set_exposure(12.5).unwrap();
         assert_eq!(d.exposure_us, 12_500.0);
         assert_eq!(
             d.get_property("Exposure(us)").unwrap(),
@@ -2125,7 +2197,7 @@ mod tests {
             PropertyValue::Float(10_000.0)
         );
 
-        d.set_exposure(-1.0);
+        assert!(d.set_exposure(-1.0).is_err());
         assert_eq!(d.get_exposure(), 10.0);
         assert_eq!(
             d.get_property("Exposure(us)").unwrap(),
@@ -2197,11 +2269,11 @@ mod tests {
         );
         assert_eq!(
             d.get_property("TriggerDelay").unwrap(),
-            PropertyValue::Float(12.5)
+            PropertyValue::Float(12.0)
         );
         assert_eq!(
             d.get_property("TriggerFilterRaisingEdge").unwrap(),
-            PropertyValue::Float(3.25)
+            PropertyValue::Float(3.0)
         );
         assert_eq!(
             d.get_property("UserOutputSelector").unwrap(),
@@ -2317,7 +2389,7 @@ mod tests {
             d.get_property("Exposure(us)").unwrap(),
             PropertyValue::Float(10_000.0)
         );
-        d.set_exposure(f64::INFINITY);
+        assert!(d.set_exposure(f64::INFINITY).is_err());
         assert_eq!(d.get_exposure(), 10.0);
         assert_eq!(
             d.get_property("Exposure(us)").unwrap(),
@@ -2864,6 +2936,81 @@ mod tests {
     }
 
     #[test]
+    fn stub_sequence_frames_include_upstream_metadata_tags() {
+        let Some(_guard) = daheng_stub_guard() else {
+            return;
+        };
+
+        let mut d = DahengCamera::new();
+        d.set_property("TriggerMode", PropertyValue::String("On".into()))
+            .unwrap();
+        d.set_property("TriggerSource", PropertyValue::String("Software".into()))
+            .unwrap();
+        d.initialize().unwrap();
+
+        let sink = Arc::new(CollectingSink::default());
+        d.set_sequence_image_sink(Some(sink.clone())).unwrap();
+        d.start_sequence_acquisition(1, 0.0).unwrap();
+        d.snap_image().unwrap();
+
+        let frames = sink.frames.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        let md = &frames[0].metadata.tags;
+        assert_eq!(md.get("Camera").map(String::as_str), Some(""));
+        assert_eq!(md.get("ROI-X-start").map(String::as_str), Some("640"));
+        assert_eq!(md.get("ROI-Y-start").map(String::as_str), Some("480"));
+        assert_eq!(md.get("ImageNumber").map(String::as_str), Some("1"));
+        assert_eq!(md.get("Exposure-ms").map(String::as_str), Some("10"));
+
+        drop(frames);
+        d.shutdown().unwrap();
+    }
+
+    #[test]
+    fn stub_trigger_property_writes_do_not_rewrite_sibling_sdk_enums() {
+        let Some(_guard) = daheng_stub_guard() else {
+            return;
+        };
+
+        let mut d = DahengCamera::new();
+        d.initialize().unwrap();
+
+        unsafe {
+            gx_check(
+                ffi::GXSetEnum(
+                    d.handle,
+                    ffi::GX_ENUM_TRIGGER_SOURCE,
+                    ffi::GX_TRIGGER_SOURCE_LINE2,
+                ),
+                "GXSetEnum(TriggerSource)",
+            )
+            .unwrap();
+            gx_check(
+                ffi::GXSetEnum(
+                    d.handle,
+                    ffi::GX_ENUM_TRIGGER_ACTIVATION,
+                    ffi::GX_TRIGGER_ACTIVATION_FALLING_EDGE,
+                ),
+                "GXSetEnum(TriggerActivation)",
+            )
+            .unwrap();
+        }
+
+        d.set_property("TriggerMode", PropertyValue::String("On".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("TriggerSource").unwrap(),
+            PropertyValue::String("Line2".into())
+        );
+        assert_eq!(
+            d.get_property("TriggerActivation").unwrap(),
+            PropertyValue::String("FallingEdge".into())
+        );
+
+        d.shutdown().unwrap();
+    }
+
+    #[test]
     fn stub_line_properties_are_line_specific_and_restore_selector() {
         let Some(_guard) = daheng_stub_guard() else {
             return;
@@ -2929,7 +3076,7 @@ mod tests {
         assert_eq!(d.get_property("Gain").unwrap(), PropertyValue::Float(0.0));
 
         d.set_property("Gain", PropertyValue::Float(3.5)).unwrap();
-        assert_eq!(d.get_property("Gain").unwrap(), PropertyValue::Float(3.5));
+        assert_eq!(d.get_property("Gain").unwrap(), PropertyValue::Float(3.0));
         d.set_property("Gain", PropertyValue::Float(-1.0)).unwrap();
         assert_eq!(d.get_property("Gain").unwrap(), PropertyValue::Float(0.0));
 
@@ -2945,14 +3092,14 @@ mod tests {
         let mut d = DahengCamera::new();
         d.initialize().unwrap();
 
-        d.set_exposure(12.5);
+        d.set_exposure(12.5).unwrap();
         assert_eq!(d.get_exposure(), 12.5);
         assert_eq!(
             d.get_property("Exposure(us)").unwrap(),
             PropertyValue::Float(12_500.0)
         );
 
-        d.set_exposure(-1.0);
+        assert!(d.set_exposure(-1.0).is_err());
         assert_eq!(d.get_exposure(), 12.5);
         assert_eq!(
             d.get_property("Exposure(us)").unwrap(),

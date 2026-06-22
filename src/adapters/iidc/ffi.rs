@@ -5,7 +5,7 @@
 
 #![allow(non_camel_case_types, non_upper_case_globals, dead_code)]
 
-use std::os::raw::{c_int, c_uint};
+use std::os::raw::{c_int, c_uint, c_void};
 
 // ─── Basic types ─────────────────────────────────────────────────────────────
 
@@ -106,8 +106,8 @@ pub struct dc1394camera_t {
 
 #[repr(C)]
 pub struct dc1394camera_id_t {
+    pub unit: u16,
     pub guid: u64,
-    pub unit: c_int,
 }
 
 #[repr(C)]
@@ -118,29 +118,30 @@ pub struct dc1394camera_list_t {
 
 /// Frame buffer returned by `dc1394_capture_dequeue`.
 ///
-/// Layout matches `dc1394video_frame_t` from libdc1394 ≥ 2.2 on 64-bit
-/// platforms.  `#[repr(C)]` ensures the same padding rules as the C struct.
+/// Layout matches `dc1394video_frame_t` from libdc1394 2.x.  Dequeued
+/// frames borrow their `image` buffer from libdc1394 and must be returned with
+/// `dc1394_capture_enqueue`; Rust must not free the frame or image.
 #[repr(C)]
 pub struct dc1394video_frame_t {
     pub image: *mut u8,
     pub size: [u32; 2],     // [width, height]
     pub position: [u32; 2], // [x, y]
-    pub color_filter: u32,
-    pub stride: u32, // bytes per row
     pub color_coding: dc1394color_coding_t,
+    pub color_filter: u32,
+    pub yuv_byte_order: u32,
     pub data_depth: u32, // bits per component
-    pub id: u32,
-    // implicit 4-byte pad here (C aligns u64 to 8 bytes)
-    pub allocated_image_bytes: u64,
+    pub stride: u32,     // bytes per row
+    pub video_mode: dc1394video_mode_t,
     pub total_bytes: u64,
+    pub image_bytes: u32,
     pub padding_bytes: u32,
     pub packet_size: u32,
     pub packets_per_frame: u32,
-    // implicit 4-byte pad here
     pub timestamp: u64,
     pub frames_behind: u32,
-    pub video_mode: dc1394video_mode_t,
-    pub allocated_image_bytes_backup: u64,
+    pub camera: *mut c_void,
+    pub id: u32,
+    pub allocated_image_bytes: u64,
     pub little_endian: dc1394bool_t,
     pub data_in_padding: dc1394bool_t,
 }

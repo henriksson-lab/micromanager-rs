@@ -1,8 +1,10 @@
 use std::ffi::{CStr, CString};
+use std::sync::Arc;
 
+use crate::circular_buffer::ImageFrame;
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Camera, Device};
+use crate::traits::{Camera, Device, SequenceImageSink};
 use crate::types::{DeviceType, ImageRoi, PropertyValue};
 
 use super::ffi;
@@ -17,20 +19,6 @@ unsafe impl Send for JAICamera {}
 
 const BUF: usize = 256;
 
-/// Call an FFI function that fills a fixed-size char buffer.
-/// Returns an owned String on success, or an error.
-macro_rules! get_str {
-    ($fn:expr) => {{
-        let mut buf = [0i8; BUF];
-        let rc = unsafe { $fn(buf.as_mut_ptr(), BUF as i32) };
-        if rc != 0 {
-            return Err(MmError::LocallyDefined("jai_get_str failed".into()));
-        }
-        let s = unsafe { CStr::from_ptr(buf.as_ptr()) };
-        s.to_string_lossy().into_owned()
-    }};
-}
-
 fn cstr(s: &str) -> CString {
     CString::new(s).unwrap_or_default()
 }
@@ -39,6 +27,95 @@ fn cstr(s: &str) -> CString {
 
 fn bpp_to_bytes(bpp: u32) -> u32 {
     (bpp + 7) / 8
+}
+
+fn pixel_type_to_format(pixel_type: &str) -> Option<&'static str> {
+    match pixel_type {
+        "8bit" => Some("Mono8"),
+        "10bit" => Some("Mono10"),
+        "12bit" => Some("Mono12"),
+        "16bit" => Some("Mono16"),
+        "32bitRGB" => Some("BGR8"),
+        "64bitRGB-10bit" => Some("BGR10p"),
+        "64bitRGB-12bit" => Some("BGR12p"),
+        _ => None,
+    }
+}
+
+fn pixel_format_to_pixel_type(format: &str) -> &'static str {
+    match format {
+        "Mono10" | "Mono10p" => "10bit",
+        "Mono12" | "Mono12p" => "12bit",
+        "Mono16" => "16bit",
+        "BGR8" => "32bitRGB",
+        "BGR10p" => "64bitRGB-10bit",
+        "BGR12p" => "64bitRGB-12bit",
+        _ => "8bit",
+    }
+}
+
+fn bgr8_to_bgra32(src: &[u8], width: u32, height: u32, padding_x: u32) -> Vec<u8> {
+    let npix = (width as usize).saturating_mul(height as usize);
+    let mut dst = vec![0u8; npix.saturating_mul(4)];
+    let src_row_bytes = (width as usize)
+        .saturating_mul(3)
+        .saturating_add(padding_x as usize);
+    for row in 0..height as usize {
+        let start = row.saturating_mul(src_row_bytes);
+        let end = src.len().min(start.saturating_add(width as usize * 3));
+        let row_src = src.get(start..end).unwrap_or(&[]);
+        for (col, bgr) in row_src.chunks_exact(3).take(width as usize).enumerate() {
+            let out = &mut dst[(row * width as usize + col) * 4..][..4];
+            out[0] = bgr[0];
+            out[1] = bgr[1];
+            out[2] = bgr[2];
+            out[3] = 0;
+        }
+    }
+    dst
+}
+
+fn read_u16_window(src: &[u8], byte_index: usize) -> u16 {
+    let lo = src.get(byte_index).copied().unwrap_or_default() as u16;
+    let hi = src.get(byte_index + 1).copied().unwrap_or_default() as u16;
+    lo | (hi << 8)
+}
+
+fn packed_bgrp_to_bgra64(
+    src: &[u8],
+    width: u32,
+    height: u32,
+    bits_per_component: u32,
+    padding_x: u32,
+) -> Vec<u8> {
+    let bits_per_pixel = 3usize.saturating_mul(bits_per_component as usize);
+    let bytes_per_row = (width as usize)
+        .saturating_mul(bits_per_pixel)
+        .saturating_add(7)
+        / 8;
+    let padded_bytes_per_row = bytes_per_row.saturating_add(padding_x as usize);
+    let npix = (width as usize).saturating_mul(height as usize);
+    let mut dst = vec![0u8; npix.saturating_mul(8)];
+    let mask = ((1u32 << bits_per_component) - 1) as u16;
+
+    for row in 0..height as usize {
+        let start = row.saturating_mul(padded_bytes_per_row);
+        let end = src.len().min(start.saturating_add(bytes_per_row));
+        let row_src = src.get(start..end).unwrap_or(&[]);
+        for col in 0..width as usize {
+            let base_bit = col.saturating_mul(bits_per_pixel);
+            let out = &mut dst[(row * width as usize + col) * 8..][..8];
+            for component in 0..3usize {
+                let bit = base_bit + component * bits_per_component as usize;
+                let byte = bit / 8;
+                let shift = bit % 8;
+                let value = (read_u16_window(row_src, byte) >> shift) & mask;
+                out[component * 2..component * 2 + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            out[6..8].copy_from_slice(&0u16.to_le_bytes());
+        }
+    }
+    dst
 }
 
 // ── Camera struct ─────────────────────────────────────────────────────────────
@@ -64,6 +141,7 @@ pub struct JAICamera {
     bytes_per_pixel: u32,
     bit_depth: u32,
     num_components: u32,
+    sequence_image_sink: Option<Arc<dyn SequenceImageSink>>,
 
     // Pre-init settings.
     camera_index: i32,
@@ -71,7 +149,18 @@ pub struct JAICamera {
     exposure_ms: f64,
     gain: f64,
     pixel_format: String,
+    pixel_type: String,
     binning: i32,
+    frame_rate: f64,
+    gamma: f64,
+    black_level: f64,
+    test_pattern: String,
+    white_balance: String,
+    common_exposure_selector: Option<String>,
+    individual_exposure_selectors: Vec<String>,
+    common_gain_selector: Option<String>,
+    individual_gain_selectors: Vec<String>,
+    black_level_selectors: Vec<String>,
 }
 
 impl JAICamera {
@@ -93,10 +182,34 @@ impl JAICamera {
             .define_property("Gain", PropertyValue::Float(0.0), false)
             .unwrap();
         props
-            .define_property("PixelFormat", PropertyValue::String("Mono8".into()), false)
+            .define_property("PixelFormat", PropertyValue::String("BGR8".into()), false)
+            .unwrap();
+        props
+            .define_property("PixelType", PropertyValue::String("32bitRGB".into()), false)
+            .unwrap();
+        props
+            .set_allowed_values(
+                "PixelType",
+                &["32bitRGB", "64bitRGB-10bit", "64bitRGB-12bit"],
+            )
             .unwrap();
         props
             .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("FrameRate", PropertyValue::Float(30.0), false)
+            .unwrap();
+        props
+            .define_property("Gamma", PropertyValue::Float(1.0), false)
+            .unwrap();
+        props
+            .define_property("BlackLevel", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("TestPattern", PropertyValue::String("Off".into()), false)
+            .unwrap();
+        props
+            .define_property("WhiteBalance", PropertyValue::String("Off".into()), false)
             .unwrap();
         props
             .define_property("Width", PropertyValue::Integer(0), true)
@@ -122,12 +235,24 @@ impl JAICamera {
             bytes_per_pixel: 1,
             bit_depth: 8,
             num_components: 1,
+            sequence_image_sink: None,
             camera_index: 0,
             serial_number: String::new(),
             exposure_ms: 10.0,
             gain: 0.0,
-            pixel_format: "Mono8".into(),
+            pixel_format: "BGR8".into(),
+            pixel_type: "32bitRGB".into(),
             binning: 1,
+            frame_rate: 30.0,
+            gamma: 1.0,
+            black_level: 0.0,
+            test_pattern: "Off".into(),
+            white_balance: "Off".into(),
+            common_exposure_selector: None,
+            individual_exposure_selectors: Vec::new(),
+            common_gain_selector: None,
+            individual_gain_selectors: Vec::new(),
+            black_level_selectors: Vec::new(),
         }
     }
 
@@ -210,6 +335,20 @@ impl JAICamera {
         }
     }
 
+    fn dev_get_int_increment(&self, name: &str) -> i64 {
+        if self.device.is_null() {
+            return 1;
+        }
+        let n = cstr(name);
+        let mut v: i64 = 1;
+        let rc = unsafe { ffi::jai_device_get_int_increment(self.device, n.as_ptr(), &mut v) };
+        if rc == 0 && v > 0 {
+            v
+        } else {
+            1
+        }
+    }
+
     fn dev_get_string(&self, name: &str) -> Option<String> {
         if self.device.is_null() {
             return None;
@@ -242,6 +381,201 @@ impl JAICamera {
         Some(s.to_string_lossy().into_owned())
     }
 
+    fn dev_get_enum_entries(&self, name: &str) -> Vec<String> {
+        if self.device.is_null() {
+            return Vec::new();
+        }
+        let n = cstr(name);
+        let mut buf = [0i8; 2048];
+        let rc = unsafe {
+            ffi::jai_device_get_enum_entries(
+                self.device,
+                n.as_ptr(),
+                buf.as_mut_ptr(),
+                buf.len() as i32,
+            )
+        };
+        if rc != 0 {
+            return Vec::new();
+        }
+        let s = unsafe { CStr::from_ptr(buf.as_ptr()) };
+        s.to_string_lossy()
+            .split(';')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    fn define_property_if_missing(
+        &mut self,
+        name: &str,
+        value: PropertyValue,
+        read_only: bool,
+    ) -> MmResult<()> {
+        if !self.props.has_property(name) {
+            self.props.define_property(name, value, read_only)?;
+        }
+        Ok(())
+    }
+
+    fn set_allowed_values_from_strings(&mut self, name: &str, values: &[String]) -> MmResult<()> {
+        let refs = values.iter().map(String::as_str).collect::<Vec<_>>();
+        self.props.set_allowed_values(name, &refs)
+    }
+
+    fn get_selector_float(
+        &self,
+        selector_node: &str,
+        selector: &str,
+        restore_selector: Option<&str>,
+        value_node: &str,
+        scale: f64,
+    ) -> Option<f64> {
+        self.dev_set_enum(selector_node, selector);
+        let value = self.dev_get_float(value_node).map(|v| v * scale);
+        if let Some(restore_selector) = restore_selector {
+            self.dev_set_enum(selector_node, restore_selector);
+        }
+        value
+    }
+
+    fn set_selector_float(
+        &self,
+        selector_node: &str,
+        selector: &str,
+        restore_selector: Option<&str>,
+        value_node: &str,
+        value: f64,
+        inverse_scale: f64,
+    ) {
+        self.dev_set_enum(selector_node, selector);
+        self.dev_set_float(value_node, value * inverse_scale);
+        if let Some(restore_selector) = restore_selector {
+            self.dev_set_enum(selector_node, restore_selector);
+        }
+    }
+
+    fn sync_dynamic_properties(&mut self) -> MmResult<()> {
+        let pixel_types = self
+            .dev_get_enum_entries("PixelFormat")
+            .into_iter()
+            .filter_map(|format| match format.as_str() {
+                "BGR8" | "BGR10p" | "BGR12p" => Some(pixel_format_to_pixel_type(&format).into()),
+                _ => None,
+            })
+            .collect::<Vec<String>>();
+        if !pixel_types.is_empty() {
+            self.set_allowed_values_from_strings("PixelType", &pixel_types)?;
+            if !pixel_types.iter().any(|v| v == &self.pixel_type) {
+                self.pixel_type = pixel_types[0].clone();
+                if let Some(format) = pixel_type_to_format(&self.pixel_type) {
+                    self.pixel_format = format.to_string();
+                    self.dev_set_enum("PixelFormat", &self.pixel_format);
+                }
+                self.props
+                    .set("PixelType", PropertyValue::String(self.pixel_type.clone()))?;
+                self.props.set(
+                    "PixelFormat",
+                    PropertyValue::String(self.pixel_format.clone()),
+                )?;
+            }
+        }
+
+        let exposure_selectors = self.dev_get_enum_entries("ExposureTimeSelector");
+        self.common_exposure_selector = exposure_selectors
+            .iter()
+            .find(|selector| selector.as_str() == "Common")
+            .cloned();
+        self.individual_exposure_selectors = exposure_selectors
+            .iter()
+            .filter(|selector| Some(selector.as_str()) != self.common_exposure_selector.as_deref())
+            .cloned()
+            .collect();
+        if self.common_exposure_selector.is_some() && !self.individual_exposure_selectors.is_empty()
+        {
+            let mode = match self.dev_get_enum("ExposureTimeMode").as_deref() {
+                Some("Individual") => "On",
+                _ => "Off",
+            };
+            self.define_property_if_missing(
+                "ExposureIsIndividual",
+                PropertyValue::String(mode.into()),
+                false,
+            )?;
+            self.props
+                .set_allowed_values("ExposureIsIndividual", &["Off", "On"])?;
+            self.props
+                .set("ExposureIsIndividual", PropertyValue::String(mode.into()))?;
+            for selector in self.individual_exposure_selectors.clone() {
+                let name = format!("Exposure_{selector}");
+                let value = self
+                    .get_selector_float(
+                        "ExposureTimeSelector",
+                        &selector,
+                        self.common_exposure_selector.as_deref(),
+                        "ExposureTime",
+                        0.001,
+                    )
+                    .unwrap_or(self.exposure_ms);
+                self.define_property_if_missing(&name, PropertyValue::Float(value), false)?;
+                self.props.set(&name, PropertyValue::Float(value))?;
+            }
+        }
+
+        let gain_selectors = self.dev_get_enum_entries("GainSelector");
+        self.common_gain_selector = gain_selectors
+            .iter()
+            .find(|selector| selector.as_str() == "AnalogAll")
+            .cloned();
+        self.individual_gain_selectors = gain_selectors
+            .iter()
+            .filter(|selector| Some(selector.as_str()) != self.common_gain_selector.as_deref())
+            .cloned()
+            .collect();
+        if self.common_gain_selector.is_some() && !self.individual_gain_selectors.is_empty() {
+            let mode = match self.dev_get_enum("IndividualGainMode").as_deref() {
+                Some("On") => "On",
+                _ => "Off",
+            };
+            self.define_property_if_missing(
+                "GainIsIndividual",
+                PropertyValue::String(mode.into()),
+                false,
+            )?;
+            self.props
+                .set_allowed_values("GainIsIndividual", &["Off", "On"])?;
+            self.props
+                .set("GainIsIndividual", PropertyValue::String(mode.into()))?;
+            for selector in self.individual_gain_selectors.clone() {
+                let name = format!("Gain_{selector}");
+                let value = self
+                    .get_selector_float(
+                        "GainSelector",
+                        &selector,
+                        self.common_gain_selector.as_deref(),
+                        "Gain",
+                        1.0,
+                    )
+                    .unwrap_or(self.gain);
+                self.define_property_if_missing(&name, PropertyValue::Float(value), false)?;
+                self.props.set(&name, PropertyValue::Float(value))?;
+            }
+        }
+
+        self.black_level_selectors = self.dev_get_enum_entries("BlackLevelSelector");
+        for selector in self.black_level_selectors.clone() {
+            let name = format!("BlackLevel_{selector}");
+            let value = self
+                .get_selector_float("BlackLevelSelector", &selector, None, "BlackLevel", 1.0)
+                .unwrap_or(self.black_level);
+            self.define_property_if_missing(&name, PropertyValue::Float(value), false)?;
+            self.props.set(&name, PropertyValue::Float(value))?;
+        }
+
+        Ok(())
+    }
+
     // ── Sync dimensions from camera ───────────────────────────────────────────
 
     fn sync_dimensions(&mut self) {
@@ -254,15 +588,18 @@ impl JAICamera {
         if let Some(fmt) = self.dev_get_enum("PixelFormat") {
             self.pixel_format = fmt;
         }
+        self.pixel_type = pixel_format_to_pixel_type(&self.pixel_format).to_string();
         self.bytes_per_pixel =
             bpp_to_bytes(unsafe { ffi::jai_buffer_bits_per_pixel(std::ptr::null_mut()) }.max(8));
         // Fallback: use bits-per-pixel from current format string
-        self.bytes_per_pixel = if self.pixel_format.contains("16") {
+        self.bytes_per_pixel = if self.pixel_format == "BGR8" {
+            4
+        } else if self.pixel_format == "BGR10p" || self.pixel_format == "BGR12p" {
+            8
+        } else if self.pixel_format.contains("16") {
             2
         } else if self.pixel_format.contains("10") || self.pixel_format.contains("12") {
             2
-        } else if self.pixel_format.contains("8") && self.pixel_format.contains("RGB") {
-            3
         } else {
             1
         };
@@ -277,7 +614,7 @@ impl JAICamera {
         };
         self.num_components =
             if self.pixel_format.contains("RGB") || self.pixel_format.contains("BGR") {
-                3
+                4
             } else {
                 1
             };
@@ -287,6 +624,12 @@ impl JAICamera {
         self.props
             .entry_mut("Height")
             .map(|e| e.value = PropertyValue::Integer(self.height as i64));
+        self.props
+            .entry_mut("PixelFormat")
+            .map(|e| e.value = PropertyValue::String(self.pixel_format.clone()));
+        self.props
+            .entry_mut("PixelType")
+            .map(|e| e.value = PropertyValue::String(self.pixel_type.clone()));
     }
 
     // ── Apply pre-init settings to open device ────────────────────────────────
@@ -296,6 +639,13 @@ impl JAICamera {
         let g = self.gain;
         let bin = self.binning;
         let fmt = self.pixel_format.clone();
+
+        // Reset to factory defaults first, matching the upstream initialization
+        // order.  Cached pre-init settings are applied after this point.
+        self.dev_set_int("UserSetSelector", 0);
+        self.dev_execute("UserSetLoad");
+        self.dev_set_enum("ExposureMode", "Timed");
+        self.dev_set_enum("MultiRoiMode", "Off");
 
         // Exposure: ExposureTimeAbs in µs (most JAI cameras use this node).
         self.dev_set_float("ExposureTimeAbs", ms * 1_000.0);
@@ -314,11 +664,11 @@ impl JAICamera {
         // Pixel format
         self.dev_set_enum("PixelFormat", &fmt);
 
-        // Reset to factory defaults then forced-timed exposure mode.
-        self.dev_set_int("UserSetSelector", 0);
-        self.dev_execute("UserSetLoad");
-        self.dev_set_enum("ExposureMode", "Timed");
-        self.dev_set_enum("MultiRoiMode", "Off");
+        self.dev_set_float("AcquisitionFrameRate", self.frame_rate);
+        self.dev_set_float("Gamma", self.gamma);
+        self.dev_set_float("BlackLevel", self.black_level);
+        self.dev_set_enum("TestPattern", &self.test_pattern);
+        self.dev_set_enum("BalanceWhiteAuto", &self.white_balance);
     }
 
     fn dev_set_float_check(&self, name: &str, v: f64) -> MmResult<()> {
@@ -418,13 +768,31 @@ impl JAICamera {
         self.height = unsafe { ffi::jai_buffer_height(buf) };
         let bpp = unsafe { ffi::jai_buffer_bits_per_pixel(buf) };
         let bpc = unsafe { ffi::jai_buffer_bits_per_component(buf) };
+        let padding_x = unsafe { ffi::jai_buffer_padding_x(buf) };
         let is_color = unsafe { ffi::jai_buffer_is_color(buf) } != 0;
-        self.bytes_per_pixel = bpp_to_bytes(bpp);
-        self.bit_depth = bpc;
-        self.num_components = if is_color { 3 } else { 1 };
-
-        self.image_buf.resize(size, 0);
-        unsafe { std::ptr::copy_nonoverlapping(data, self.image_buf.as_mut_ptr(), size) };
+        let raw = unsafe { std::slice::from_raw_parts(data, size) };
+        if self.pixel_format == "BGR8" || (is_color && bpp == 24 && bpc == 8) {
+            self.image_buf = bgr8_to_bgra32(raw, self.width, self.height, padding_x);
+            self.bytes_per_pixel = 4;
+            self.bit_depth = 8;
+            self.num_components = 4;
+        } else if self.pixel_format == "BGR10p" || (is_color && bpc == 10) {
+            self.image_buf = packed_bgrp_to_bgra64(raw, self.width, self.height, 10, padding_x);
+            self.bytes_per_pixel = 8;
+            self.bit_depth = 10;
+            self.num_components = 4;
+        } else if self.pixel_format == "BGR12p" || (is_color && bpc == 12) {
+            self.image_buf = packed_bgrp_to_bgra64(raw, self.width, self.height, 12, padding_x);
+            self.bytes_per_pixel = 8;
+            self.bit_depth = 12;
+            self.num_components = 4;
+        } else {
+            self.bytes_per_pixel = bpp_to_bytes(bpp);
+            self.bit_depth = bpc;
+            self.num_components = if is_color { 3 } else { 1 };
+            self.image_buf.clear();
+            self.image_buf.extend_from_slice(raw);
+        }
 
         self.props
             .entry_mut("Width")
@@ -448,6 +816,22 @@ impl JAICamera {
         unsafe { ffi::jai_stream_requeue(seq.stream, grabbed) };
         // Free the non-owning wrapper.
         unsafe { ffi::jai_buffer_free(grabbed) };
+        self.emit_sequence_frame_to_sink()?;
+        Ok(())
+    }
+
+    fn emit_sequence_frame_to_sink(&mut self) -> MmResult<()> {
+        if let Some(sink) = &self.sequence_image_sink {
+            if sink.insert_sequence_image(ImageFrame::new(
+                self.image_buf.clone(),
+                self.width,
+                self.height,
+                self.bytes_per_pixel,
+            )) {
+                self.stop_sequence_acquisition()?;
+                return Err(MmError::BufferOverflow);
+            }
+        }
         Ok(())
     }
 }
@@ -562,6 +946,7 @@ impl Device for JAICamera {
         // Apply pre-init settings.
         self.apply_settings();
         self.sync_dimensions();
+        self.sync_dynamic_properties()?;
 
         // Read back model name.
         if let Some(model) = self.dev_get_string("DeviceModelName") {
@@ -592,11 +977,78 @@ impl Device for JAICamera {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if name == "ExposureIsIndividual" {
+            let value = match self.dev_get_enum("ExposureTimeMode").as_deref() {
+                Some("Individual") => "On",
+                _ => "Off",
+            };
+            return Ok(PropertyValue::String(value.into()));
+        }
+        if name == "GainIsIndividual" {
+            let value = match self.dev_get_enum("IndividualGainMode").as_deref() {
+                Some("On") => "On",
+                _ => "Off",
+            };
+            return Ok(PropertyValue::String(value.into()));
+        }
+        if let Some(selector) = name.strip_prefix("Exposure_") {
+            let value = self
+                .get_selector_float(
+                    "ExposureTimeSelector",
+                    selector,
+                    self.common_exposure_selector.as_deref(),
+                    "ExposureTime",
+                    0.001,
+                )
+                .or_else(|| self.props.get(name).ok().and_then(PropertyValue::as_f64))
+                .ok_or_else(|| MmError::UnknownLabel(name.to_string()))?;
+            return Ok(PropertyValue::Float(value));
+        }
+        if let Some(selector) = name.strip_prefix("Gain_") {
+            let value = self
+                .get_selector_float(
+                    "GainSelector",
+                    selector,
+                    self.common_gain_selector.as_deref(),
+                    "Gain",
+                    1.0,
+                )
+                .or_else(|| self.props.get(name).ok().and_then(PropertyValue::as_f64))
+                .ok_or_else(|| MmError::UnknownLabel(name.to_string()))?;
+            return Ok(PropertyValue::Float(value));
+        }
+        if let Some(selector) = name.strip_prefix("BlackLevel_") {
+            let value = self
+                .get_selector_float("BlackLevelSelector", selector, None, "BlackLevel", 1.0)
+                .or_else(|| self.props.get(name).ok().and_then(PropertyValue::as_f64))
+                .ok_or_else(|| MmError::UnknownLabel(name.to_string()))?;
+            return Ok(PropertyValue::Float(value));
+        }
+
         match name {
             "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
             "Gain" => Ok(PropertyValue::Float(self.gain)),
             "PixelFormat" => Ok(PropertyValue::String(self.pixel_format.clone())),
+            "PixelType" => Ok(PropertyValue::String(self.pixel_type.clone())),
             "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
+            "FrameRate" => Ok(PropertyValue::Float(
+                self.dev_get_float("AcquisitionFrameRate")
+                    .unwrap_or(self.frame_rate),
+            )),
+            "Gamma" => Ok(PropertyValue::Float(
+                self.dev_get_float("Gamma").unwrap_or(self.gamma),
+            )),
+            "BlackLevel" => Ok(PropertyValue::Float(
+                self.dev_get_float("BlackLevel").unwrap_or(self.black_level),
+            )),
+            "TestPattern" => Ok(PropertyValue::String(
+                self.dev_get_enum("TestPattern")
+                    .unwrap_or_else(|| self.test_pattern.clone()),
+            )),
+            "WhiteBalance" => Ok(PropertyValue::String(
+                self.dev_get_enum("BalanceWhiteAuto")
+                    .unwrap_or_else(|| self.white_balance.clone()),
+            )),
             "CameraIndex" => Ok(PropertyValue::Integer(self.camera_index as i64)),
             "CameraID" => Ok(PropertyValue::Integer(self.camera_index as i64)),
             "SerialNumber" => Ok(PropertyValue::String(self.serial_number.clone())),
@@ -608,6 +1060,66 @@ impl Device for JAICamera {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "ExposureIsIndividual" {
+            self.ensure_not_capturing_for_property()?;
+            let mode = match val.as_str() {
+                "On" => "Individual",
+                "Off" => "Common",
+                _ => return Err(MmError::InvalidPropertyValue),
+            };
+            self.dev_set_enum("ExposureTimeMode", mode);
+            return self.props.set(name, val);
+        }
+        if name == "GainIsIndividual" {
+            self.ensure_not_capturing_for_property()?;
+            let mode = match val.as_str() {
+                "On" => "On",
+                "Off" => "Off",
+                _ => return Err(MmError::InvalidPropertyValue),
+            };
+            self.dev_set_enum("IndividualGainMode", mode);
+            return self.props.set(name, val);
+        }
+        if let Some(selector) = name.strip_prefix("Exposure_") {
+            self.ensure_not_capturing_for_property()?;
+            let value = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            self.set_selector_float(
+                "ExposureTimeSelector",
+                selector,
+                self.common_exposure_selector.as_deref(),
+                "ExposureTime",
+                value,
+                1_000.0,
+            );
+            return self.props.set(name, PropertyValue::Float(value));
+        }
+        if let Some(selector) = name.strip_prefix("Gain_") {
+            self.ensure_not_capturing_for_property()?;
+            let value = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            self.set_selector_float(
+                "GainSelector",
+                selector,
+                self.common_gain_selector.as_deref(),
+                "Gain",
+                value,
+                1.0,
+            );
+            return self.props.set(name, PropertyValue::Float(value));
+        }
+        if let Some(selector) = name.strip_prefix("BlackLevel_") {
+            self.ensure_not_capturing_for_property()?;
+            let value = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            self.set_selector_float(
+                "BlackLevelSelector",
+                selector,
+                None,
+                "BlackLevel",
+                value,
+                1.0,
+            );
+            return self.props.set(name, PropertyValue::Float(value));
+        }
+
         match name {
             "SerialNumber" => {
                 if !self.device.is_null() {
@@ -656,9 +1168,28 @@ impl Device for JAICamera {
             "PixelFormat" => {
                 self.ensure_not_capturing_for_property()?;
                 self.pixel_format = val.as_str().to_string();
+                self.pixel_type = pixel_format_to_pixel_type(&self.pixel_format).to_string();
                 self.props.set(name, val)?;
+                self.props
+                    .entry_mut("PixelType")
+                    .map(|e| e.value = PropertyValue::String(self.pixel_type.clone()));
                 let fmt = self.pixel_format.clone();
                 self.dev_set_enum("PixelFormat", &fmt);
+                self.sync_dimensions();
+                Ok(())
+            }
+            "PixelType" => {
+                self.ensure_not_capturing_for_property()?;
+                self.pixel_type = val.as_str().to_string();
+                let fmt =
+                    pixel_type_to_format(&self.pixel_type).ok_or(MmError::InvalidPropertyValue)?;
+                self.pixel_format = fmt.to_string();
+                self.props.set(name, val)?;
+                self.props.set(
+                    "PixelFormat",
+                    PropertyValue::String(self.pixel_format.clone()),
+                )?;
+                self.dev_set_enum("PixelFormat", &self.pixel_format);
                 self.sync_dimensions();
                 Ok(())
             }
@@ -671,6 +1202,43 @@ impl Device for JAICamera {
                 self.dev_set_int("BinningHorizontal", bin as i64);
                 self.dev_set_int("BinningVertical", bin as i64);
                 self.sync_dimensions();
+                Ok(())
+            }
+            "FrameRate" => {
+                self.ensure_not_capturing_for_property()?;
+                self.frame_rate = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Float(self.frame_rate))?;
+                self.dev_set_float("AcquisitionFrameRate", self.frame_rate);
+                Ok(())
+            }
+            "Gamma" => {
+                self.ensure_not_capturing_for_property()?;
+                self.gamma = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(self.gamma))?;
+                self.dev_set_float("Gamma", self.gamma);
+                Ok(())
+            }
+            "BlackLevel" => {
+                self.ensure_not_capturing_for_property()?;
+                self.black_level = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Float(self.black_level))?;
+                self.dev_set_float("BlackLevel", self.black_level);
+                Ok(())
+            }
+            "TestPattern" => {
+                self.ensure_not_capturing_for_property()?;
+                self.test_pattern = val.as_str().to_string();
+                self.props.set(name, val)?;
+                self.dev_set_enum("TestPattern", &self.test_pattern);
+                Ok(())
+            }
+            "WhiteBalance" => {
+                self.ensure_not_capturing_for_property()?;
+                self.white_balance = val.as_str().to_string();
+                self.props.set(name, val)?;
+                self.dev_set_enum("BalanceWhiteAuto", &self.white_balance);
                 Ok(())
             }
             _ => self.props.set(name, val),
@@ -762,17 +1330,30 @@ impl Camera for JAICamera {
     }
 
     fn get_roi(&self) -> MmResult<ImageRoi> {
-        Ok(ImageRoi::new(0, 0, self.width, self.height))
+        Ok(ImageRoi::new(
+            self.dev_get_int("OffsetX").unwrap_or(0).max(0) as u32,
+            self.dev_get_int("OffsetY").unwrap_or(0).max(0) as u32,
+            self.width,
+            self.height,
+        ))
     }
 
     fn set_roi(&mut self, roi: ImageRoi) -> MmResult<()> {
         self.check_open()?;
         self.ensure_not_capturing_for_property()?;
+        let width_inc = self.dev_get_int_increment("Width");
+        let height_inc = self.dev_get_int_increment("Height");
+        let x_inc = self.dev_get_int_increment("OffsetX");
+        let y_inc = self.dev_get_int_increment("OffsetY");
+        let width = (roi.width as i64 / width_inc) * width_inc;
+        let height = (roi.height as i64 / height_inc) * height_inc;
+        let x = (roi.x as i64 / x_inc) * x_inc;
+        let y = (roi.y as i64 / y_inc) * y_inc;
         // Width/Height before OffsetX/Y (standard GenICam ordering).
-        self.dev_set_int("Width", roi.width as i64);
-        self.dev_set_int("Height", roi.height as i64);
-        self.dev_set_int("OffsetX", roi.x as i64);
-        self.dev_set_int("OffsetY", roi.y as i64);
+        self.dev_set_int("Width", width);
+        self.dev_set_int("Height", height);
+        self.dev_set_int("OffsetX", x);
+        self.dev_set_int("OffsetY", y);
         self.sync_dimensions();
         Ok(())
     }
@@ -868,6 +1449,18 @@ impl Camera for JAICamera {
     fn is_capturing(&self) -> bool {
         self.seq.is_some()
     }
+
+    fn set_sequence_image_sink(
+        &mut self,
+        sink: Option<Arc<dyn SequenceImageSink>>,
+    ) -> MmResult<()> {
+        self.sequence_image_sink = sink;
+        Ok(())
+    }
+
+    fn sequence_images_delivered_to_sink(&self) -> bool {
+        self.sequence_image_sink.is_some()
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -875,6 +1468,12 @@ impl Camera for JAICamera {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn jai_stub_env_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     #[test]
     fn default_properties() {
@@ -932,9 +1531,48 @@ mod tests {
 
     #[test]
     fn initialize_no_camera_fails() {
+        let _guard = jai_stub_env_guard();
+        std::env::remove_var("JAI_STUB_CAMERA");
         let mut d = JAICamera::new();
         // No eBUS cameras present — expect a meaningful error.
         assert!(d.initialize().is_err());
+    }
+
+    #[test]
+    fn stub_dynamic_selector_properties_are_created_and_settable() {
+        if std::env::var_os("JAI_STUB").is_none() {
+            return;
+        }
+        let _guard = jai_stub_env_guard();
+        std::env::set_var("JAI_STUB_CAMERA", "1");
+        let mut d = JAICamera::new();
+        d.initialize().unwrap();
+        std::env::remove_var("JAI_STUB_CAMERA");
+
+        assert!(d.has_property("ExposureIsIndividual"));
+        assert!(d.has_property("Exposure_Red"));
+        assert!(d.has_property("GainIsIndividual"));
+        assert!(d.has_property("Gain_Blue"));
+        assert!(d.has_property("BlackLevel_DigitalAll"));
+
+        d.set_property("ExposureIsIndividual", PropertyValue::String("On".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("ExposureIsIndividual").unwrap(),
+            PropertyValue::String("On".into())
+        );
+        d.set_property("Exposure_Red", PropertyValue::Float(12.5))
+            .unwrap();
+        assert_eq!(
+            d.get_property("Exposure_Red").unwrap(),
+            PropertyValue::Float(12.5)
+        );
+        d.set_property("Gain_Blue", PropertyValue::Float(3.25))
+            .unwrap();
+        assert_eq!(
+            d.get_property("Gain_Blue").unwrap(),
+            PropertyValue::Float(3.25)
+        );
     }
 
     #[test]
@@ -944,5 +1582,48 @@ mod tests {
         assert!(d.is_property_read_only("Height"));
         assert!(d.is_property_read_only("Model"));
         assert!(!d.is_property_read_only("Exposure"));
+    }
+
+    #[test]
+    fn bgr8_conversion_matches_upstream_bgra32_layout() {
+        let converted = bgr8_to_bgra32(&[1, 2, 3, 99, 4, 5, 6, 88], 1, 2, 1);
+        assert_eq!(converted, vec![1, 2, 3, 0, 4, 5, 6, 0]);
+    }
+
+    #[test]
+    fn packed_bgrp_conversion_matches_upstream_bgra64_layout() {
+        let bits = 10u32;
+        let b = 0x001u32;
+        let g = 0x155u32;
+        let r = 0x2aau32;
+        let packed = b | (g << bits) | (r << (2 * bits));
+        let src = packed.to_le_bytes();
+        let converted = packed_bgrp_to_bgra64(&src, 1, 1, bits, 0);
+        assert_eq!(&converted[0..2], &(b as u16).to_le_bytes());
+        assert_eq!(&converted[2..4], &(g as u16).to_le_bytes());
+        assert_eq!(&converted[4..6], &(r as u16).to_le_bytes());
+        assert_eq!(&converted[6..8], &0u16.to_le_bytes());
+    }
+
+    #[test]
+    fn color_pixel_formats_report_converted_buffer_geometry_after_sync() {
+        let mut d = JAICamera::new();
+
+        d.pixel_format = "BGR8".into();
+        d.sync_dimensions();
+        assert_eq!(d.get_image_bytes_per_pixel(), 4);
+        assert_eq!(d.get_number_of_components(), 4);
+
+        d.pixel_format = "BGR10p".into();
+        d.sync_dimensions();
+        assert_eq!(d.get_image_bytes_per_pixel(), 8);
+        assert_eq!(d.get_number_of_components(), 4);
+        assert_eq!(d.get_bit_depth(), 10);
+
+        d.pixel_format = "BGR12p".into();
+        d.sync_dimensions();
+        assert_eq!(d.get_image_bytes_per_pixel(), 8);
+        assert_eq!(d.get_number_of_components(), 4);
+        assert_eq!(d.get_bit_depth(), 12);
     }
 }

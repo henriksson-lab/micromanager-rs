@@ -14,8 +14,13 @@
 #  include <PICAM/master.h>
 #  include <PICAM/pvcam.h>
 #elif defined(__linux__)
-#  include <pvcam/master.h>
-#  include <pvcam/pvcam.h>
+#  if __has_include(<pvcam/master.h>)
+#    include <pvcam/master.h>
+#    include <pvcam/pvcam.h>
+#  else
+#    include <master.h>
+#    include <pvcam.h>
+#  endif
 #else
 /* Windows — PICAM / PVCAM headers */
 #  include "picam.h"

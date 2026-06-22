@@ -1,8 +1,15 @@
+use crate::circular_buffer::ImageFrame;
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Camera, Device};
+use crate::traits::{Camera, Device, SequenceImageSink};
 use crate::types::{DeviceType, ImageRoi, PropertyValue};
+#[cfg(feature = "basler-stub")]
+#[path = "pylon_cxx_stub.rs"]
+mod pylon_cxx;
+#[cfg(not(feature = "basler-stub"))]
+use ::pylon_cxx;
 use pylon_cxx::{GrabOptions, GrabResult, HasProperties, InstantCamera, Pylon, TlFactory};
+use std::sync::Arc;
 
 // ─── Safety note ────────────────────────────────────────────────────────────
 //
@@ -169,13 +176,29 @@ pub struct BaslerCamera {
     bit_depth: u32,
     num_components: u32,
     capturing: bool,
+    sequence_image_sink: Option<Arc<dyn SequenceImageSink>>,
     serial_number: String,
     exposure_ms: f64,
     gain: f64,
+    offset: f64,
     pixel_format: String,
     pixel_format_configured: bool,
     pixel_format_selected: bool,
     binning: i32,
+    binning_mode: String,
+    sensor_readout_mode: String,
+    light_source_preset: String,
+    trigger_mode: String,
+    trigger_source: String,
+    shutter_mode: String,
+    gain_auto: String,
+    exposure_auto: String,
+    reverse_x: String,
+    reverse_y: String,
+    acquisition_framerate_enable: String,
+    acquisition_framerate: f64,
+    inter_packet_delay: i64,
+    device_link_throughput_limit: i64,
 }
 
 impl BaslerCamera {
@@ -198,10 +221,20 @@ impl BaslerCamera {
             .define_property("Gain", PropertyValue::Float(0.0), false)
             .unwrap();
         props
+            .define_property("Offset", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
             .define_property("PixelType", PropertyValue::String("Mono8".into()), false)
             .unwrap();
         props
             .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property(
+                "BinningMode",
+                PropertyValue::String("Average".into()),
+                false,
+            )
             .unwrap();
         props
             .define_property("Width", PropertyValue::Integer(0), true)
@@ -210,8 +243,107 @@ impl BaslerCamera {
             .define_property("Height", PropertyValue::Integer(0), true)
             .unwrap();
         props
+            .define_property("SensorWidth", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("SensorHeight", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
             .define_property("Temperature", PropertyValue::String("N/A".into()), true)
             .unwrap();
+        props
+            .define_property(
+                "TemperatureState",
+                PropertyValue::String("N/A".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "SensorReadoutMode",
+                PropertyValue::String("Normal".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "LightSourcePreset",
+                PropertyValue::String("Off".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("TriggerMode", PropertyValue::String("Off".into()), false)
+            .unwrap();
+        props
+            .define_property(
+                "TriggerSource",
+                PropertyValue::String("Software".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "ShutterMode",
+                PropertyValue::String("Rolling".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("GainAuto", PropertyValue::String("Off".into()), false)
+            .unwrap();
+        props
+            .define_property("ExposureAuto", PropertyValue::String("Off".into()), false)
+            .unwrap();
+        props
+            .define_property("ReverseX", PropertyValue::String("0".into()), false)
+            .unwrap();
+        props
+            .define_property("ReverseY", PropertyValue::String("0".into()), false)
+            .unwrap();
+        props
+            .define_property(
+                "ResultingFrameRate",
+                PropertyValue::String("0".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "AcquisitionFramerateEnable",
+                PropertyValue::String("0".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "AcquisitionFramerate",
+                PropertyValue::String("100".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "DeviceLinkThroughputLimit",
+                PropertyValue::Integer(0),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("InterPacketDelay", PropertyValue::Integer(0), false)
+            .unwrap();
+
+        let _ = props.set_allowed_values("BinningMode", &["Average", "Sum"]);
+        let _ = props.set_allowed_values("TriggerMode", &["Off", "On"]);
+        let _ = props.set_allowed_values(
+            "TriggerSource",
+            &["Software", "Line1", "Line2", "Line3", "Line4"],
+        );
+        let _ = props.set_allowed_values("GainAuto", &["Off", "Once", "Continuous"]);
+        let _ = props.set_allowed_values("ExposureAuto", &["Off", "Once", "Continuous"]);
+        let _ = props.set_allowed_values("ReverseX", &["0", "1"]);
+        let _ = props.set_allowed_values("ReverseY", &["0", "1"]);
+        let _ = props.set_allowed_values("AcquisitionFramerateEnable", &["0", "1"]);
 
         Self {
             props,
@@ -224,13 +356,29 @@ impl BaslerCamera {
             bit_depth: 8,
             num_components: 1,
             capturing: false,
+            sequence_image_sink: None,
             serial_number: "Undefined".into(),
             exposure_ms: 10.0,
             gain: 0.0,
+            offset: 0.0,
             pixel_format: "Mono8".into(),
             pixel_format_configured: false,
             pixel_format_selected: false,
             binning: 1,
+            binning_mode: "Average".into(),
+            sensor_readout_mode: "Normal".into(),
+            light_source_preset: "Off".into(),
+            trigger_mode: "Off".into(),
+            trigger_source: "Software".into(),
+            shutter_mode: "Rolling".into(),
+            gain_auto: "Off".into(),
+            exposure_auto: "Off".into(),
+            reverse_x: "0".into(),
+            reverse_y: "0".into(),
+            acquisition_framerate_enable: "0".into(),
+            acquisition_framerate: 100.0,
+            inter_packet_delay: 0,
+            device_link_throughput_limit: 0,
         }
     }
 
@@ -297,6 +445,49 @@ impl BaslerCamera {
         gain
     }
 
+    fn write_float_node(camera: &InstantCamera<'_>, node_name: &str, value: f64) -> f64 {
+        let mut actual = value;
+        if let Ok(nm) = camera.node_map() {
+            if let Ok(mut p) = nm.float_node(node_name) {
+                if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                    actual = actual.clamp(min, max);
+                }
+                let _ = p.set_value(actual);
+            }
+        }
+        actual
+    }
+
+    fn write_integer_node(camera: &InstantCamera<'_>, node_name: &str, value: i64) -> i64 {
+        let mut actual = value;
+        if let Ok(nm) = camera.node_map() {
+            if let Ok(mut p) = nm.integer_node(node_name) {
+                if let (Ok(min), Ok(max)) = (p.min(), p.max()) {
+                    actual = actual.clamp(min, max);
+                }
+                let _ = p.set_value(actual);
+            }
+        }
+        actual
+    }
+
+    fn write_enum_node(camera: &InstantCamera<'_>, node_name: &str, value: &str) {
+        if let Ok(nm) = camera.node_map() {
+            if let Ok(mut p) = nm.enum_node(node_name) {
+                let _ = p.set_value(value);
+            }
+        }
+    }
+
+    fn write_boolish_enum_node(camera: &InstantCamera<'_>, node_name: &str, value: &str) {
+        let symbolic = match value {
+            "0" => "False",
+            "1" => "True",
+            other => other,
+        };
+        Self::write_enum_node(camera, node_name, symbolic);
+    }
+
     fn write_binning(camera: &InstantCamera<'_>, bin: i32) -> i32 {
         let mut actual = bin.max(1) as i64;
         if let Ok(nm) = camera.node_map() {
@@ -354,6 +545,44 @@ impl BaslerCamera {
         self.props
             .entry_mut("Height")
             .map(|e| e.value = PropertyValue::Integer(self.height as i64));
+        self.props
+            .entry_mut("SensorWidth")
+            .map(|e| e.value = PropertyValue::Integer(self.width as i64));
+        self.props
+            .entry_mut("SensorHeight")
+            .map(|e| e.value = PropertyValue::Integer(self.height as i64));
+    }
+
+    fn apply_cached_genicam_properties(&self, camera: &InstantCamera<'_>) {
+        Self::write_float_node(camera, "BlackLevel", self.offset);
+        Self::write_enum_node(camera, "BinningModeHorizontal", &self.binning_mode);
+        Self::write_enum_node(camera, "BinningModeVertical", &self.binning_mode);
+        Self::write_enum_node(camera, "SensorReadoutMode", &self.sensor_readout_mode);
+        Self::write_enum_node(camera, "LightSourcePreset", &self.light_source_preset);
+        Self::write_enum_node(camera, "TriggerMode", &self.trigger_mode);
+        Self::write_enum_node(camera, "TriggerSource", &self.trigger_source);
+        Self::write_enum_node(camera, "ShutterMode", &self.shutter_mode);
+        Self::write_enum_node(camera, "GainAuto", &self.gain_auto);
+        Self::write_enum_node(camera, "ExposureAuto", &self.exposure_auto);
+        Self::write_boolish_enum_node(camera, "ReverseX", &self.reverse_x);
+        Self::write_boolish_enum_node(camera, "ReverseY", &self.reverse_y);
+        Self::write_boolish_enum_node(
+            camera,
+            "AcquisitionFrameRateEnable",
+            &self.acquisition_framerate_enable,
+        );
+        Self::write_float_node(camera, "AcquisitionFrameRate", self.acquisition_framerate);
+        Self::write_float_node(
+            camera,
+            "AcquisitionFrameRateAbs",
+            self.acquisition_framerate,
+        );
+        Self::write_integer_node(
+            camera,
+            "DeviceLinkThroughputLimit",
+            self.device_link_throughput_limit,
+        );
+        Self::write_integer_node(camera, "GevSCPD", self.inter_packet_delay);
     }
 
     /// Retrieve one grabbed frame and copy into `self.image_buf`.
@@ -385,6 +614,24 @@ impl BaslerCamera {
             self.image_buf = packed_rgb_to_rgba(buf, self.width, self.height, true);
         } else {
             self.image_buf = buf.to_vec();
+        }
+        if self.capturing {
+            self.emit_sequence_frame_to_sink()?;
+        }
+        Ok(())
+    }
+
+    fn emit_sequence_frame_to_sink(&mut self) -> MmResult<()> {
+        if let Some(sink) = &self.sequence_image_sink {
+            if sink.insert_sequence_image(ImageFrame::new(
+                self.image_buf.clone(),
+                self.width,
+                self.height,
+                self.bytes_per_pixel,
+            )) {
+                self.stop_sequence_acquisition()?;
+                return Err(MmError::BufferOverflow);
+            }
         }
         Ok(())
     }
@@ -478,6 +725,7 @@ impl Device for BaslerCamera {
             let fmt = self.pixel_format.clone();
             Self::write_pixel_format(cam, &fmt);
         }
+        self.apply_cached_genicam_properties(cam);
         self.sync_dimensions();
 
         Ok(())
@@ -499,10 +747,31 @@ impl Device for BaslerCamera {
         match name {
             "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
             "Gain" => Ok(PropertyValue::Float(self.gain)),
+            "Offset" => Ok(PropertyValue::Float(self.offset)),
             "PixelType" => Ok(PropertyValue::String(self.pixel_format.clone())),
             "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
+            "BinningMode" => Ok(PropertyValue::String(self.binning_mode.clone())),
             "SerialNumber" => Ok(PropertyValue::String(self.serial_number.clone())),
             "CameraID" => self.props.get("CameraID").cloned(),
+            "SensorReadoutMode" => Ok(PropertyValue::String(self.sensor_readout_mode.clone())),
+            "LightSourcePreset" => Ok(PropertyValue::String(self.light_source_preset.clone())),
+            "TriggerMode" => Ok(PropertyValue::String(self.trigger_mode.clone())),
+            "TriggerSource" => Ok(PropertyValue::String(self.trigger_source.clone())),
+            "ShutterMode" => Ok(PropertyValue::String(self.shutter_mode.clone())),
+            "GainAuto" => Ok(PropertyValue::String(self.gain_auto.clone())),
+            "ExposureAuto" => Ok(PropertyValue::String(self.exposure_auto.clone())),
+            "ReverseX" => Ok(PropertyValue::String(self.reverse_x.clone())),
+            "ReverseY" => Ok(PropertyValue::String(self.reverse_y.clone())),
+            "AcquisitionFramerateEnable" => Ok(PropertyValue::String(
+                self.acquisition_framerate_enable.clone(),
+            )),
+            "AcquisitionFramerate" => Ok(PropertyValue::String(
+                self.acquisition_framerate.to_string(),
+            )),
+            "DeviceLinkThroughputLimit" => {
+                Ok(PropertyValue::Integer(self.device_link_throughput_limit))
+            }
+            "InterPacketDelay" => Ok(PropertyValue::Integer(self.inter_packet_delay)),
             "Temperature" => {
                 if let Some(cam) = self.camera.as_ref() {
                     if let Ok(nm) = cam.node_map() {
@@ -514,6 +783,35 @@ impl Device for BaslerCamera {
                     }
                 }
                 self.props.get("Temperature").cloned()
+            }
+            "TemperatureState" => {
+                if let Some(cam) = self.camera.as_ref() {
+                    if let Ok(nm) = cam.node_map() {
+                        if let Ok(p) = nm.enum_node("TemperatureState") {
+                            if let Ok(t) = p.value() {
+                                return Ok(PropertyValue::String(t));
+                            }
+                        }
+                    }
+                }
+                self.props.get("TemperatureState").cloned()
+            }
+            "ResultingFrameRate" => {
+                if let Some(cam) = self.camera.as_ref() {
+                    if let Ok(nm) = cam.node_map() {
+                        if let Ok(p) = nm.float_node("ResultingFrameRate") {
+                            if let Ok(v) = p.value() {
+                                return Ok(PropertyValue::String(v.to_string()));
+                            }
+                        }
+                        if let Ok(p) = nm.float_node("ResultingFrameRateAbs") {
+                            if let Ok(v) = p.value() {
+                                return Ok(PropertyValue::String(v.to_string()));
+                            }
+                        }
+                    }
+                }
+                self.props.get("ResultingFrameRate").cloned()
             }
             _ => self.props.get(name).cloned(),
         }
@@ -552,6 +850,16 @@ impl Device for BaslerCamera {
                 }
                 Ok(())
             }
+            "Offset" => {
+                self.require_not_capturing()?;
+                self.offset = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(self.offset))?;
+                if let Some(cam) = self.camera.as_ref() {
+                    self.offset = Self::write_float_node(cam, "BlackLevel", self.offset);
+                    self.props.set(name, PropertyValue::Float(self.offset))?;
+                }
+                Ok(())
+            }
             "PixelType" => {
                 self.require_not_capturing()?;
                 self.pixel_format = val.as_str().to_string();
@@ -576,6 +884,191 @@ impl Device for BaslerCamera {
                         .set(name, PropertyValue::Integer(self.binning as i64))?;
                 }
                 self.sync_dimensions();
+                Ok(())
+            }
+            "SensorWidth" => {
+                self.require_not_capturing()?;
+                let mut width = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(width))?;
+                if let Some(cam) = self.camera.as_ref() {
+                    width = Self::write_integer_node(cam, "Width", width);
+                    self.props.set(name, PropertyValue::Integer(width))?;
+                }
+                self.sync_dimensions();
+                Ok(())
+            }
+            "SensorHeight" => {
+                self.require_not_capturing()?;
+                let mut height = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(height))?;
+                if let Some(cam) = self.camera.as_ref() {
+                    height = Self::write_integer_node(cam, "Height", height);
+                    self.props.set(name, PropertyValue::Integer(height))?;
+                }
+                self.sync_dimensions();
+                Ok(())
+            }
+            "BinningMode" => {
+                self.require_not_capturing()?;
+                self.binning_mode = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_enum_node(cam, "BinningModeHorizontal", &self.binning_mode);
+                    Self::write_enum_node(cam, "BinningModeVertical", &self.binning_mode);
+                }
+                Ok(())
+            }
+            "SensorReadoutMode" => {
+                self.require_not_capturing()?;
+                self.sensor_readout_mode = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_enum_node(cam, "SensorReadoutMode", &self.sensor_readout_mode);
+                }
+                Ok(())
+            }
+            "LightSourcePreset" => {
+                self.require_not_capturing()?;
+                self.light_source_preset = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_enum_node(cam, "LightSourcePreset", &self.light_source_preset);
+                }
+                Ok(())
+            }
+            "TriggerMode" => {
+                self.require_not_capturing()?;
+                self.trigger_mode = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_enum_node(cam, "TriggerMode", &self.trigger_mode);
+                }
+                Ok(())
+            }
+            "TriggerSource" => {
+                self.require_not_capturing()?;
+                self.trigger_source = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_enum_node(cam, "TriggerSource", &self.trigger_source);
+                }
+                Ok(())
+            }
+            "ShutterMode" => {
+                self.require_not_capturing()?;
+                self.shutter_mode = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_enum_node(cam, "ShutterMode", &self.shutter_mode);
+                }
+                Ok(())
+            }
+            "GainAuto" => {
+                self.require_not_capturing()?;
+                self.gain_auto = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_enum_node(cam, "GainAuto", &self.gain_auto);
+                }
+                Ok(())
+            }
+            "ExposureAuto" => {
+                self.require_not_capturing()?;
+                self.exposure_auto = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_enum_node(cam, "ExposureAuto", &self.exposure_auto);
+                }
+                Ok(())
+            }
+            "ReverseX" => {
+                self.require_not_capturing()?;
+                self.reverse_x = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_boolish_enum_node(cam, "ReverseX", &self.reverse_x);
+                }
+                Ok(())
+            }
+            "ReverseY" => {
+                self.require_not_capturing()?;
+                self.reverse_y = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_boolish_enum_node(cam, "ReverseY", &self.reverse_y);
+                }
+                Ok(())
+            }
+            "AcquisitionFramerateEnable" => {
+                self.require_not_capturing()?;
+                self.acquisition_framerate_enable = val.as_str().to_string();
+                self.props.set(name, val)?;
+                if let Some(cam) = self.camera.as_ref() {
+                    Self::write_boolish_enum_node(
+                        cam,
+                        "AcquisitionFrameRateEnable",
+                        &self.acquisition_framerate_enable,
+                    );
+                }
+                Ok(())
+            }
+            "AcquisitionFramerate" => {
+                self.require_not_capturing()?;
+                self.acquisition_framerate = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(
+                    name,
+                    PropertyValue::String(self.acquisition_framerate.to_string()),
+                )?;
+                if let Some(cam) = self.camera.as_ref() {
+                    self.acquisition_framerate = Self::write_float_node(
+                        cam,
+                        "AcquisitionFrameRate",
+                        self.acquisition_framerate,
+                    );
+                    self.acquisition_framerate = Self::write_float_node(
+                        cam,
+                        "AcquisitionFrameRateAbs",
+                        self.acquisition_framerate,
+                    );
+                    self.props.set(
+                        name,
+                        PropertyValue::String(self.acquisition_framerate.to_string()),
+                    )?;
+                }
+                Ok(())
+            }
+            "DeviceLinkThroughputLimit" => {
+                self.require_not_capturing()?;
+                self.device_link_throughput_limit =
+                    val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(
+                    name,
+                    PropertyValue::Integer(self.device_link_throughput_limit),
+                )?;
+                if let Some(cam) = self.camera.as_ref() {
+                    self.device_link_throughput_limit = Self::write_integer_node(
+                        cam,
+                        "DeviceLinkThroughputLimit",
+                        self.device_link_throughput_limit,
+                    );
+                    self.props.set(
+                        name,
+                        PropertyValue::Integer(self.device_link_throughput_limit),
+                    )?;
+                }
+                Ok(())
+            }
+            "InterPacketDelay" => {
+                self.require_not_capturing()?;
+                self.inter_packet_delay = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.inter_packet_delay))?;
+                if let Some(cam) = self.camera.as_ref() {
+                    self.inter_packet_delay =
+                        Self::write_integer_node(cam, "GevSCPD", self.inter_packet_delay);
+                    self.props
+                        .set(name, PropertyValue::Integer(self.inter_packet_delay))?;
+                }
                 Ok(())
             }
             _ => self.props.set(name, val),
@@ -783,6 +1276,18 @@ impl Camera for BaslerCamera {
     fn is_capturing(&self) -> bool {
         self.capturing
     }
+
+    fn set_sequence_image_sink(
+        &mut self,
+        sink: Option<Arc<dyn SequenceImageSink>>,
+    ) -> MmResult<()> {
+        self.sequence_image_sink = sink;
+        Ok(())
+    }
+
+    fn sequence_images_delivered_to_sink(&self) -> bool {
+        self.sequence_image_sink.is_some()
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -925,7 +1430,7 @@ mod tests {
         assert_eq!(d.set_binning(2).unwrap_err(), MmError::CameraBusyAcquiring);
         assert_eq!(d.get_binning(), 1);
 
-        d.set_exposure(50.0);
+        let _ = d.set_exposure(50.0);
         assert_eq!(d.get_exposure(), 10.0);
     }
 }

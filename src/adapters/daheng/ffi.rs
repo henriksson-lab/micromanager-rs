@@ -4,10 +4,11 @@
 //! The full API has hundreds of functions; we bind the minimum viable set.
 #![allow(non_camel_case_types, dead_code)]
 
-use std::os::raw::{c_char, c_double, c_int, c_uint, c_ulonglong, c_void};
+use std::os::raw::{c_char, c_double, c_int, c_uchar, c_uint, c_ulonglong, c_void};
 
 /// Opaque device handle.
 pub type GX_DEV_HANDLE = *mut c_void;
+pub type DX_IMAGE_FORMAT_CONVERT_HANDLE = *mut c_void;
 
 // ─── Status codes ────────────────────────────────────────────────────────────
 
@@ -17,6 +18,7 @@ pub const GX_STATUS_NOT_FOUND_DEVICE: c_int = -3;
 pub const GX_STATUS_INVALID_PARAMETER: c_int = -5;
 pub const GX_STATUS_INVALID_HANDLE: c_int = -6;
 pub const GX_STATUS_TIMEOUT: c_int = -14;
+pub const DX_OK: c_int = 0;
 
 // ─── Feature IDs ─────────────────────────────────────────────────────────────
 
@@ -120,6 +122,13 @@ pub const GX_PIXEL_FORMAT_BAYER_GR16: i64 = 0x0110002E;
 pub const GX_PIXEL_FORMAT_BAYER_RG16: i64 = 0x0110002F;
 pub const GX_PIXEL_FORMAT_BAYER_GB16: i64 = 0x01100030;
 pub const GX_PIXEL_FORMAT_BAYER_BG16: i64 = 0x01100031;
+pub const GX_PIXEL_FORMAT_BGRA8: i64 = 0x02200017;
+
+// DxImageProc constants
+pub const RAW2RGB_NEIGHBOUR: c_int = 0;
+pub const DX_BIT_0_7: c_int = 0;
+pub const DX_BIT_2_9: c_int = 2;
+pub const DX_BIT_4_11: c_int = 4;
 
 // ─── Open mode ───────────────────────────────────────────────────────────────
 
@@ -223,5 +232,42 @@ extern "C" {
         handle: GX_DEV_HANDLE,
         frame_data: *mut GxFrameData,
         timeout: c_uint,
+    ) -> c_int;
+
+    pub fn DxImageFormatConvertCreate(handle: *mut DX_IMAGE_FORMAT_CONVERT_HANDLE) -> c_int;
+    pub fn DxImageFormatConvertDestroy(handle: DX_IMAGE_FORMAT_CONVERT_HANDLE) -> c_int;
+    pub fn DxImageFormatConvertSetOutputPixelFormat(
+        handle: DX_IMAGE_FORMAT_CONVERT_HANDLE,
+        pixel_format: c_int,
+    ) -> c_int;
+    pub fn DxImageFormatConvertSetAlphaValue(
+        handle: DX_IMAGE_FORMAT_CONVERT_HANDLE,
+        alpha: c_uchar,
+    ) -> c_int;
+    pub fn DxImageFormatConvertSetValidBits(
+        handle: DX_IMAGE_FORMAT_CONVERT_HANDLE,
+        valid_bits: c_int,
+    ) -> c_int;
+    pub fn DxImageFormatConvertSetInterpolationType(
+        handle: DX_IMAGE_FORMAT_CONVERT_HANDLE,
+        convert_type: c_int,
+    ) -> c_int;
+    pub fn DxImageFormatConvertGetBufferSizeForConversion(
+        handle: DX_IMAGE_FORMAT_CONVERT_HANDLE,
+        pixel_format: c_int,
+        width: c_uint,
+        height: c_uint,
+        buffer_size: *mut c_int,
+    ) -> c_int;
+    pub fn DxImageFormatConvert(
+        handle: DX_IMAGE_FORMAT_CONVERT_HANDLE,
+        input_buffer: *mut c_void,
+        input_buffer_size: c_int,
+        output_buffer: *mut c_void,
+        output_buffer_size: c_int,
+        input_pixel_format: c_int,
+        width: c_uint,
+        height: c_uint,
+        flip: bool,
     ) -> c_int;
 }

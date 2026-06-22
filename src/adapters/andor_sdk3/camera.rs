@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
 use std::ffi::{CStr, CString};
+use std::sync::Arc;
 
+use crate::circular_buffer::ImageFrame;
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Camera, Device};
+use crate::traits::{Camera, Device, SequenceImageSink};
 use crate::types::{DeviceType, ImageRoi, PropertyValue};
 
 use super::ffi;
@@ -534,6 +536,7 @@ pub struct Andor3Camera {
 
     capturing: bool,
     sequence_remaining: Option<i64>,
+    sequence_image_sink: Option<Arc<dyn SequenceImageSink>>,
 }
 
 impl Andor3Camera {
@@ -703,6 +706,7 @@ impl Andor3Camera {
             fpga_ts_clock_frequency: 0,
             capturing: false,
             sequence_remaining: None,
+            sequence_image_sink: None,
         }
     }
 
@@ -1637,6 +1641,17 @@ impl Camera for Andor3Camera {
                 return Err(err);
             }
             self.copy_frame_from_shim()?;
+            if let Some(sink) = &self.sequence_image_sink {
+                if sink.insert_sequence_image(ImageFrame::new(
+                    self.img_buf.clone(),
+                    self.img_width,
+                    self.img_height,
+                    self.bytes_per_pixel.max(1),
+                )) {
+                    self.stop_sequence_acquisition()?;
+                    return Err(MmError::BufferOverflow);
+                }
+            }
             if let Some(remaining) = self.sequence_remaining.as_mut() {
                 *remaining -= 1;
                 if *remaining <= 0 {
@@ -1798,6 +1813,18 @@ impl Camera for Andor3Camera {
 
     fn is_capturing(&self) -> bool {
         self.capturing
+    }
+
+    fn set_sequence_image_sink(
+        &mut self,
+        sink: Option<Arc<dyn SequenceImageSink>>,
+    ) -> MmResult<()> {
+        self.sequence_image_sink = sink;
+        Ok(())
+    }
+
+    fn sequence_images_delivered_to_sink(&self) -> bool {
+        self.sequence_image_sink.is_some()
     }
 }
 

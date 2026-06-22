@@ -23,6 +23,7 @@ tsi = []
 twain = []
 iidc = []
 basler = ["dep:pylon-cxx"]
+basler-stub = []
 opencv = ["dep:opencv"]
 
 [dependencies]
@@ -35,3 +36,4 @@ opencv = { version = "0.98", default-features = false, features = ["videoio", "i
 
 [build-dependencies]
 cc = { version = "1", features = ["parallel"] }
+pkg-config = "0.3"

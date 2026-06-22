@@ -7,7 +7,10 @@
 ///
 /// 1. Install the [Daheng Galaxy SDK](https://www.dahengimaging.com/) for your platform
 /// 2. Ensure `libgxiapi.so` (Linux) or `GxIAPI.dll` (Windows) is in the library path
-///    or set `DAHENG_SDK_ROOT` / `GALAXY_ROOT` to the SDK root.
+///    or set `DAHENG_SDK_ROOT` / `GALAXY_ROOT` to the SDK root. Linux SDKs
+///    usually place runtime libraries under `lib/<arch>`; put that directory in
+///    `LD_LIBRARY_PATH` as well because `libgxiapi.so` depends on colocated
+///    Galaxy libraries such as `liblog4cplus_gx.so`.
 /// 3. Build with: `cargo build --features daheng`
 ///
 /// # Properties

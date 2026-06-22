@@ -7,13 +7,14 @@ pub mod camera;
 ///
 /// # Setup
 ///
-/// 1. Install the [Pleora eBUS SDK](https://www.pleora.com/support-center/ebus-sdk/)
-///    for your platform (macOS / Linux / Windows).
+/// 1. Install the JAI eBUS SDK from JAI's support software pages, or a
+///    compatible Pleora eBUS SDK for your platform (macOS / Linux / Windows).
 /// 2. Build with: `cargo build -p mm-adapter-jai --features jai`
 ///
 /// The build script locates the SDK via the `EBUS_SDK_ROOT` environment
-/// variable (set it to the SDK root containing `Includes/` and `Libraries/`)
-/// or scans `/opt/pleora/ebus_sdk/` (macOS / Linux default install).
+/// variable. Set it to the SDK root containing either `include/` and `lib/`
+/// or `Includes/` and `Libraries/`. On Linux it also scans JAI and Pleora
+/// default roots under `/opt/jai/ebus_sdk/` and `/opt/pleora/ebus_sdk/`.
 ///
 /// # Properties
 ///

@@ -5,12 +5,14 @@
 ///
 /// # Setup
 ///
-/// 1. Install the [Basler Pylon SDK](https://www.baslerweb.com/en/downloads/software-downloads/)
+/// 1. Install the [Basler Pylon SDK](https://www.baslerweb.com/de-de/downloads/software/?downloadCategory.values.label.data=pylon)
 ///    for your platform (Windows / macOS / Linux).
 /// 2. Build with: `cargo build -p mm-adapter-basler --features basler`
 ///
 /// The `pylon-cxx` build script locates the SDK via the `PYLON_ROOT` environment
-/// variable (set by the Pylon installer) or common install paths.
+/// variable (set by the Pylon installer) or common install paths. The current
+/// wrapper targets Pylon 5/6 library layouts; newer Pylon installs may require
+/// extending or replacing that wrapper.
 ///
 /// # Properties
 ///
@@ -31,7 +33,7 @@
 /// stops.  `start_sequence_acquisition()` starts a continuous grab; subsequent
 /// `snap_image()` calls dequeue the next available frame without restarting.
 
-#[cfg(feature = "basler")]
+#[cfg(any(feature = "basler", feature = "basler-stub"))]
 pub mod camera;
-#[cfg(feature = "basler")]
+#[cfg(any(feature = "basler", feature = "basler-stub"))]
 pub use camera::BaslerCamera;

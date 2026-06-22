@@ -1,8 +1,10 @@
 use std::ffi::{CStr, CString};
+use std::sync::Arc;
 
+use crate::circular_buffer::ImageFrame;
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Camera, Device};
+use crate::traits::{Camera, Device, SequenceImageSink};
 use crate::types::{DeviceType, ImageRoi, PropertyType, PropertyValue};
 
 use super::ffi;
@@ -150,6 +152,7 @@ pub struct TSICamera {
     sensor_type: i32,
 
     capturing: bool,
+    sequence_image_sink: Option<Arc<dyn SequenceImageSink>>,
 }
 
 impl TSICamera {
@@ -237,6 +240,7 @@ impl TSICamera {
             bytes_per_pixel: 2,
             sensor_type: 0,
             capturing: false,
+            sequence_image_sink: None,
         }
     }
 
@@ -991,6 +995,17 @@ impl Camera for TSICamera {
                 return Err(MmError::SnapImageFailed);
             }
             self.copy_frame_from_shim()?;
+            if let Some(sink) = &self.sequence_image_sink {
+                if sink.insert_sequence_image(ImageFrame::new(
+                    self.img_buf.clone(),
+                    self.img_width,
+                    self.img_height,
+                    self.bytes_per_pixel,
+                )) {
+                    self.stop_sequence_acquisition()?;
+                    return Err(MmError::BufferOverflow);
+                }
+            }
             return Ok(());
         }
 
@@ -1159,6 +1174,18 @@ impl Camera for TSICamera {
 
     fn is_capturing(&self) -> bool {
         self.capturing
+    }
+
+    fn set_sequence_image_sink(
+        &mut self,
+        sink: Option<Arc<dyn SequenceImageSink>>,
+    ) -> MmResult<()> {
+        self.sequence_image_sink = sink;
+        Ok(())
+    }
+
+    fn sequence_images_delivered_to_sink(&self) -> bool {
+        self.sequence_image_sink.is_some()
     }
 }
 

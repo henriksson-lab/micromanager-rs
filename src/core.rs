@@ -1,22 +1,29 @@
 use crate::error::{MmError, MmResult};
-use crate::traits::AdapterModule;
+use crate::traits::{AdapterModule, SequenceImageSink};
 use crate::types::{DeviceType, PropertyValue};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::adapter_registry::AdapterRegistry;
 use crate::adapters;
 use crate::circular_buffer::{CircularBuffer, ImageFrame};
-use crate::config::{ConfigFile, ConfigGroup};
+use crate::config::{ConfigFile, ConfigGroup, ConfigRecord};
 use crate::device_manager::DeviceManager;
 use std::thread;
 use std::time::Duration;
+
+impl SequenceImageSink for CircularBuffer {
+    fn insert_sequence_image(&self, frame: ImageFrame) -> bool {
+        self.push(frame)
+    }
+}
 
 /// The main MicroManager engine.  Mirrors the public API of `CMMCore`.
 pub struct CMMCore {
     registry: AdapterRegistry,
     devices: DeviceManager,
     config_groups: HashMap<String, ConfigGroup>,
-    circular_buffer: CircularBuffer,
+    circular_buffer: Arc<CircularBuffer>,
     camera_label: Option<String>,
     shutter_label: Option<String>,
     focus_label: Option<String>,
@@ -33,7 +40,7 @@ impl CMMCore {
             registry: AdapterRegistry::new(),
             devices: DeviceManager::new(),
             config_groups: HashMap::new(),
-            circular_buffer: CircularBuffer::new(256),
+            circular_buffer: Arc::new(CircularBuffer::new(256)),
             camera_label: None,
             shutter_label: None,
             focus_label: None,
@@ -420,15 +427,26 @@ impl CMMCore {
             .ok_or(MmError::WrongDeviceType)?
             .is_capturing()
         {
-            return Err(MmError::CameraBusyAcquiring);
+            return Err(MmError::SequenceNotRunning);
         }
         self.devices
             .get_mut(&label)?
             .as_camera_mut()
             .ok_or(MmError::WrongDeviceType)?
             .snap_image()?;
-        let frame = self.current_camera_frame()?;
-        self.insert_image(frame);
+        if !self
+            .devices
+            .get(&label)?
+            .as_camera()
+            .ok_or(MmError::WrongDeviceType)?
+            .sequence_images_delivered_to_sink()
+        {
+            let frame = self.current_camera_frame()?;
+            if self.insert_image(frame) {
+                self.stop_sequence_acquisition()?;
+                return Err(MmError::BufferOverflow);
+            }
+        }
         Ok(())
     }
 
@@ -473,6 +491,18 @@ impl CMMCore {
             .get_mut(&label)?
             .as_camera_mut()
             .ok_or(MmError::WrongDeviceType)?
+            .set_sequence_image_sink(Some(self.circular_buffer.clone()));
+        if let Err(err) = start_result {
+            if shutter_was_open == Some(false) {
+                let _ = self.set_shutter_open(false);
+            }
+            return Err(err);
+        }
+        let start_result = self
+            .devices
+            .get_mut(&label)?
+            .as_camera_mut()
+            .ok_or(MmError::WrongDeviceType)?
             .start_sequence_acquisition(count, interval_ms);
         if let Err(err) = start_result {
             if shutter_was_open == Some(false) {
@@ -493,14 +523,20 @@ impl CMMCore {
             .as_camera_mut()
             .ok_or(MmError::WrongDeviceType)?
             .stop_sequence_acquisition();
+        let sink_clear_result = self
+            .devices
+            .get_mut(&label)?
+            .as_camera_mut()
+            .ok_or(MmError::WrongDeviceType)?
+            .set_sequence_image_sink(None);
         if self.sequence_auto_shutter_opened {
             self.sequence_auto_shutter_opened = false;
             let close_result = self
                 .set_shutter_open(false)
                 .and_then(|_| self.wait_for_shutter());
-            stop_result.and(close_result)
+            stop_result.and(sink_clear_result).and(close_result)
         } else {
-            stop_result
+            stop_result.and(sink_clear_result)
         }
     }
 
@@ -622,11 +658,14 @@ impl CMMCore {
     }
 
     /// Insert a frame directly into the ring buffer (called by adapters during sequence acq.).
-    pub fn insert_image(&self, frame: ImageFrame) {
-        self.circular_buffer.push(frame);
+    pub fn insert_image(&self, frame: ImageFrame) -> bool {
+        self.circular_buffer.push(frame)
     }
 
     pub fn set_parent_label(&mut self, device_label: &str, parent_label: &str) -> MmResult<()> {
+        if device_label == parent_label {
+            return Err(MmError::SelfReference);
+        }
         self.devices.get_device(device_label)?;
         self.devices.get_device(parent_label)?;
         self.parent_labels
@@ -677,35 +716,58 @@ impl CMMCore {
     pub fn load_system_configuration(&mut self, text: &str) -> MmResult<()> {
         let cfg = ConfigFile::parse(text)?;
 
-        if cfg
-            .properties
-            .iter()
-            .any(|(label, prop, value)| label == "Core" && prop == "Initialize" && value == "0")
-        {
-            self.reset_loaded_devices()?;
-        }
-        for (label, module, device) in &cfg.devices {
-            self.load_device(label, module, device)?;
-        }
-        for (device_label, position, label) in &cfg.labels {
-            self.devices
-                .get_mut(device_label)?
-                .as_state_device_mut()
-                .ok_or(MmError::WrongDeviceType)?
-                .set_position_label(*position, label)?;
-        }
-        for (device_label, parent_label) in &cfg.parents {
-            self.set_parent_label(device_label, parent_label)?;
-        }
-        for (label, prop, value) in &cfg.properties {
-            if label == "Core" && prop == "Initialize" && value == "0" {
-                continue;
+        if !cfg.records.is_empty() {
+            for record in &cfg.records {
+                match record {
+                    ConfigRecord::Device(label, module, device) => {
+                        self.load_device(label, module, device)?;
+                    }
+                    ConfigRecord::Property(label, prop, value) => {
+                        self.set_property(label, prop, PropertyValue::String(value.clone()))?;
+                    }
+                    ConfigRecord::Parent(device_label, parent_label) => {
+                        self.set_parent_label(device_label, parent_label)?;
+                    }
+                    ConfigRecord::Label(device_label, position, label) => {
+                        self.devices
+                            .get_mut(device_label)?
+                            .as_state_device_mut()
+                            .ok_or(MmError::WrongDeviceType)?
+                            .set_position_label(*position, label)?;
+                    }
+                    ConfigRecord::ConfigGroup(group_name, preset, setting) => {
+                        self.config_groups
+                            .entry(group_name.clone())
+                            .or_default()
+                            .add_setting(
+                                preset,
+                                setting.device_label.clone(),
+                                setting.property_name.clone(),
+                                setting.value.clone(),
+                            );
+                    }
+                }
             }
-            let val = PropertyValue::String(value.clone());
-            self.set_property(label, prop, val)?;
-        }
-        for (group_name, group) in cfg.config_groups {
-            self.config_groups.insert(group_name, group);
+        } else {
+            for (label, module, device) in &cfg.devices {
+                self.load_device(label, module, device)?;
+            }
+            for (device_label, position, label) in &cfg.labels {
+                self.devices
+                    .get_mut(device_label)?
+                    .as_state_device_mut()
+                    .ok_or(MmError::WrongDeviceType)?
+                    .set_position_label(*position, label)?;
+            }
+            for (device_label, parent_label) in &cfg.parents {
+                self.set_parent_label(device_label, parent_label)?;
+            }
+            for (label, prop, value) in &cfg.properties {
+                self.set_property(label, prop, PropertyValue::String(value.clone()))?;
+            }
+            for (group_name, group) in cfg.config_groups {
+                self.config_groups.insert(group_name, group);
+            }
         }
         if self
             .config_groups
@@ -779,6 +841,7 @@ impl CMMCore {
             config_groups: self.config_groups.clone(),
             parents,
             labels,
+            records: Vec::new(),
         }
         .to_core_text())
     }

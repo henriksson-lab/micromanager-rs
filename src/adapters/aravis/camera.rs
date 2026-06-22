@@ -7,10 +7,12 @@
 /// to microseconds for the Aravis API.
 use aravis::glib;
 use aravis::prelude::*;
+use std::sync::Arc;
 
+use crate::circular_buffer::ImageFrame;
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Camera, Device};
+use crate::traits::{Camera, Device, SequenceImageSink};
 use crate::types::{DeviceType, ImageRoi, PropertyValue};
 
 // ─── Pixel format helpers ────────────────────────────────────────────────────
@@ -102,6 +104,7 @@ pub struct AravisCamera {
     pixel_format: String,
     pixel_format_configured: bool,
     capturing: bool,
+    sequence_image_sink: Option<Arc<dyn SequenceImageSink>>,
     device_id: String,
 }
 
@@ -145,6 +148,7 @@ impl AravisCamera {
             pixel_format: "Mono8".into(),
             pixel_format_configured: false,
             capturing: false,
+            sequence_image_sink: None,
             device_id: String::new(),
         }
     }
@@ -296,6 +300,24 @@ impl AravisCamera {
             }
         }
 
+        if self.capturing {
+            self.emit_sequence_frame_to_sink()?;
+        }
+        Ok(())
+    }
+
+    fn emit_sequence_frame_to_sink(&mut self) -> MmResult<()> {
+        if let Some(sink) = &self.sequence_image_sink {
+            if sink.insert_sequence_image(ImageFrame::new(
+                self.img_buf.clone(),
+                self.width,
+                self.height,
+                self.bytes_per_pixel,
+            )) {
+                self.stop_sequence_acquisition()?;
+                return Err(MmError::BufferOverflow);
+            }
+        }
         Ok(())
     }
 }
@@ -649,6 +671,18 @@ impl Camera for AravisCamera {
 
     fn is_capturing(&self) -> bool {
         self.capturing
+    }
+
+    fn set_sequence_image_sink(
+        &mut self,
+        sink: Option<Arc<dyn SequenceImageSink>>,
+    ) -> MmResult<()> {
+        self.sequence_image_sink = sink;
+        Ok(())
+    }
+
+    fn sequence_images_delivered_to_sink(&self) -> bool {
+        self.sequence_image_sink.is_some()
     }
 }
 
