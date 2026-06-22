@@ -43,6 +43,16 @@ pub struct DemoCamera {
     stripe_width: f64,
     allow_multi_roi: bool,
     multi_roi_fill_value: i64,
+    photon_conversion_factor: f64,
+    read_noise_electrons: f64,
+    photon_flux: f64,
+    bead_density: i64,
+    bead_size: f64,
+    bead_brightness: f64,
+    bead_blur_rate: f64,
+    async_property_leader: String,
+    async_property_follower: String,
+    async_property_delay_ms: i64,
     use_exposure_sequences: bool,
     exposure_sequence: Vec<f64>,
     exposure_sequence_running: bool,
@@ -191,6 +201,61 @@ impl DemoCamera {
             )
             .unwrap();
         props
+            .define_property("Photon Conversion Factor", PropertyValue::Float(1.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Photon Conversion Factor", 0.01, 10.0)
+            .unwrap();
+        props
+            .define_property("ReadNoise (electrons)", PropertyValue::Float(2.5), false)
+            .unwrap();
+        props
+            .set_property_limits("ReadNoise (electrons)", 0.25, 50.0)
+            .unwrap();
+        props
+            .define_property("Photon Flux", PropertyValue::Float(50.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Photon Flux", 2.0, 5000.0)
+            .unwrap();
+        props
+            .define_property("BeadDensity", PropertyValue::Integer(100), false)
+            .unwrap();
+        props
+            .set_property_limits("BeadDensity", 10.0, 500.0)
+            .unwrap();
+        props
+            .define_property("BeadSize", PropertyValue::Float(2.0), false)
+            .unwrap();
+        props.set_property_limits("BeadSize", 1.0, 10.0).unwrap();
+        props
+            .define_property("BeadBrightness", PropertyValue::Float(1.0), false)
+            .unwrap();
+        props
+            .set_property_limits("BeadBrightness", 0.125, 8.0)
+            .unwrap();
+        props
+            .define_property("BeadBlurRate", PropertyValue::Float(0.5), false)
+            .unwrap();
+        props.set_property_limits("BeadBlurRate", 0.1, 1.0).unwrap();
+        props
+            .define_property(
+                "AsyncPropertyLeader",
+                PropertyValue::String("init".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property(
+                "AsyncPropertyFollower",
+                PropertyValue::String("init".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("AsyncPropertyDelayMS", PropertyValue::Integer(2000), false)
+            .unwrap();
+        props
             .define_property(
                 "CameraName",
                 PropertyValue::String("DemoCamera-MultiMode".into()),
@@ -258,6 +323,16 @@ impl DemoCamera {
             stripe_width: 0.0,
             allow_multi_roi: false,
             multi_roi_fill_value: 0,
+            photon_conversion_factor: 1.0,
+            read_noise_electrons: 2.5,
+            photon_flux: 50.0,
+            bead_density: 100,
+            bead_size: 2.0,
+            bead_brightness: 1.0,
+            bead_blur_rate: 0.5,
+            async_property_leader: "init".into(),
+            async_property_follower: "init".into(),
+            async_property_delay_ms: 2000,
             use_exposure_sequences: false,
             exposure_sequence: Vec::new(),
             exposure_sequence_running: false,
@@ -605,7 +680,7 @@ impl Device for DemoCamera {
     }
 
     fn description(&self) -> &str {
-        "Demo camera — simulates a digital camera"
+        "Demo Camera Device Adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -647,6 +722,18 @@ impl Device for DemoCamera {
             "StripeWidth" => Ok(PropertyValue::Float(self.stripe_width)),
             "AllowMultiROI" => Ok(PropertyValue::Integer(self.allow_multi_roi as i64)),
             "MultiROIFillValue" => Ok(PropertyValue::Integer(self.multi_roi_fill_value)),
+            "Photon Conversion Factor" => Ok(PropertyValue::Float(self.photon_conversion_factor)),
+            "ReadNoise (electrons)" => Ok(PropertyValue::Float(self.read_noise_electrons)),
+            "Photon Flux" => Ok(PropertyValue::Float(self.photon_flux)),
+            "BeadDensity" => Ok(PropertyValue::Integer(self.bead_density)),
+            "BeadSize" => Ok(PropertyValue::Float(self.bead_size)),
+            "BeadBrightness" => Ok(PropertyValue::Float(self.bead_brightness)),
+            "BeadBlurRate" => Ok(PropertyValue::Float(self.bead_blur_rate)),
+            "AsyncPropertyLeader" => Ok(PropertyValue::String(self.async_property_leader.clone())),
+            "AsyncPropertyFollower" => {
+                Ok(PropertyValue::String(self.async_property_follower.clone()))
+            }
+            "AsyncPropertyDelayMS" => Ok(PropertyValue::Integer(self.async_property_delay_ms)),
             "UseExposureSequences" => Ok(PropertyValue::String(
                 if self.use_exposure_sequences {
                     "Yes"
@@ -665,9 +752,6 @@ impl Device for DemoCamera {
         match name {
             "Exposure" => {
                 let exposure = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                if exposure < 0.0 || exposure > self.exposure_maximum_ms {
-                    return Err(MmError::InvalidPropertyValue);
-                }
                 self.props.set(name, PropertyValue::Float(exposure))?;
                 self.exposure_ms = exposure;
                 Ok(())
@@ -678,13 +762,7 @@ impl Device for DemoCamera {
                     return Err(MmError::InvalidPropertyValue);
                 }
                 self.exposure_maximum_ms = max;
-                self.props
-                    .set_property_limits("Exposure", 0.0, self.exposure_maximum_ms)?;
                 self.props.set(name, PropertyValue::Float(max))?;
-                if self.exposure_ms > max {
-                    self.exposure_ms = max;
-                    self.props.set("Exposure", PropertyValue::Float(max))?;
-                }
                 Ok(())
             }
             "Binning" => {
@@ -730,9 +808,6 @@ impl Device for DemoCamera {
                 Ok(())
             }
             "OnCameraCCDXSize" | "OnCameraCCDYSize" => {
-                if self.capturing {
-                    return Err(MmError::CameraBusyAcquiring);
-                }
                 let size = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if !(16..=33_000).contains(&size) {
                     return Err(MmError::InvalidPropertyValue);
@@ -790,6 +865,61 @@ impl Device for DemoCamera {
                 self.multi_roi_fill_value = fill;
                 Ok(())
             }
+            "Photon Conversion Factor" => {
+                let factor = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(factor))?;
+                self.photon_conversion_factor = factor;
+                Ok(())
+            }
+            "ReadNoise (electrons)" => {
+                let noise = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(noise))?;
+                self.read_noise_electrons = noise;
+                Ok(())
+            }
+            "Photon Flux" => {
+                let flux = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(flux))?;
+                self.photon_flux = flux;
+                Ok(())
+            }
+            "BeadDensity" => {
+                let density = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(density))?;
+                self.bead_density = density;
+                Ok(())
+            }
+            "BeadSize" => {
+                let size = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(size))?;
+                self.bead_size = size;
+                Ok(())
+            }
+            "BeadBrightness" => {
+                let brightness = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(brightness))?;
+                self.bead_brightness = brightness;
+                Ok(())
+            }
+            "BeadBlurRate" => {
+                let rate = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Float(rate))?;
+                self.bead_blur_rate = rate;
+                Ok(())
+            }
+            "AsyncPropertyLeader" => {
+                let leader = val.as_str().to_string();
+                self.props
+                    .set(name, PropertyValue::String(leader.clone()))?;
+                self.async_property_leader = leader;
+                Ok(())
+            }
+            "AsyncPropertyDelayMS" => {
+                let delay = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.props.set(name, PropertyValue::Integer(delay))?;
+                self.async_property_delay_ms = delay;
+                Ok(())
+            }
             "UseExposureSequences" => {
                 let setting = val.as_str();
                 self.props
@@ -809,8 +939,7 @@ impl Device for DemoCamera {
             }
             "SimulateCrash" => {
                 self.props.set(name, val)?;
-                self.props
-                    .set(name, PropertyValue::String(String::new()))
+                self.props.set(name, PropertyValue::String(String::new()))
             }
             _ => self.props.set(name, val),
         }
@@ -892,10 +1021,10 @@ impl Camera for DemoCamera {
         self.exposure_ms
     }
 
-    fn set_exposure(&mut self, exp_ms: f64) {
-        let exp_ms = exp_ms.clamp(0.0, self.exposure_maximum_ms);
+    fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()> {
+        self.props.set("Exposure", PropertyValue::Float(exp_ms))?;
         self.exposure_ms = exp_ms;
-        let _ = self.props.set("Exposure", PropertyValue::Float(exp_ms));
+        Ok(())
     }
 
     fn get_binning(&self) -> i32 {
@@ -1174,6 +1303,16 @@ mod tests {
             "StripeWidth",
             "AllowMultiROI",
             "MultiROIFillValue",
+            "Photon Conversion Factor",
+            "ReadNoise (electrons)",
+            "Photon Flux",
+            "BeadDensity",
+            "BeadSize",
+            "BeadBrightness",
+            "BeadBlurRate",
+            "AsyncPropertyLeader",
+            "AsyncPropertyFollower",
+            "AsyncPropertyDelayMS",
             "UseExposureSequences",
             "Mode",
             "SimulateCrash",
@@ -1209,8 +1348,32 @@ mod tests {
             PropertyValue::String("Yes".into())
         );
         assert_eq!(
+            cam.get_property("StripeWidth").unwrap(),
+            PropertyValue::Float(0.0)
+        );
+        assert_eq!(
             cam.get_property("CameraID").unwrap(),
             PropertyValue::String("V1.0".into())
+        );
+        assert!(cam.is_property_read_only("AsyncPropertyFollower"));
+        assert_eq!(
+            cam.get_property("AsyncPropertyFollower").unwrap(),
+            PropertyValue::String("init".into())
+        );
+        cam.set_property(
+            "AsyncPropertyLeader",
+            PropertyValue::String("new leader".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            cam.get_property("AsyncPropertyLeader").unwrap(),
+            PropertyValue::String("new leader".into())
+        );
+        cam.set_property("AsyncPropertyDelayMS", PropertyValue::Integer(50))
+            .unwrap();
+        assert_eq!(
+            cam.get_property("AsyncPropertyDelayMS").unwrap(),
+            PropertyValue::Integer(50)
         );
         cam.set_property(
             "SimulateCrash",
@@ -1236,6 +1399,82 @@ mod tests {
             .is_err());
         cam.set_property("TestProperty5", PropertyValue::Float(1.0e9))
             .unwrap();
+    }
+
+    #[test]
+    fn upstream_numeric_tuning_property_limits_are_enforced() {
+        let mut cam = DemoCamera::new();
+
+        for (name, good, bad) in [
+            (
+                "Photon Conversion Factor",
+                PropertyValue::Float(10.0),
+                PropertyValue::Float(10.1),
+            ),
+            (
+                "ReadNoise (electrons)",
+                PropertyValue::Float(0.25),
+                PropertyValue::Float(0.24),
+            ),
+            (
+                "Photon Flux",
+                PropertyValue::Float(5000.0),
+                PropertyValue::Float(5000.1),
+            ),
+            (
+                "BeadDensity",
+                PropertyValue::Integer(500),
+                PropertyValue::Integer(501),
+            ),
+            (
+                "BeadSize",
+                PropertyValue::Float(10.0),
+                PropertyValue::Float(10.1),
+            ),
+            (
+                "BeadBrightness",
+                PropertyValue::Float(0.125),
+                PropertyValue::Float(0.124),
+            ),
+            (
+                "BeadBlurRate",
+                PropertyValue::Float(1.0),
+                PropertyValue::Float(1.1),
+            ),
+        ] {
+            cam.set_property(name, good.clone()).unwrap();
+            assert_eq!(cam.get_property(name).unwrap(), good);
+            assert_eq!(
+                cam.set_property(name, bad).unwrap_err(),
+                MmError::InvalidPropertyValue,
+                "{name}"
+            );
+            assert_eq!(cam.get_property(name).unwrap(), good, "{name}");
+        }
+
+        cam.set_property("Gain", PropertyValue::Integer(-5))
+            .unwrap();
+        assert_eq!(
+            cam.set_property("Gain", PropertyValue::Integer(-6))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            cam.get_property("Gain").unwrap(),
+            PropertyValue::Integer(-5)
+        );
+
+        cam.set_property("StripeWidth", PropertyValue::Float(10.0))
+            .unwrap();
+        assert_eq!(
+            cam.set_property("StripeWidth", PropertyValue::Float(10.1))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            cam.get_property("StripeWidth").unwrap(),
+            PropertyValue::Float(10.0)
+        );
     }
 
     #[test]
@@ -1268,18 +1507,33 @@ mod tests {
     }
 
     #[test]
-    fn maximum_exposure_clamps_existing_value_and_limits_future_sets() {
+    fn ccd_size_properties_match_upstream_during_capture() {
+        let mut cam = DemoCamera::new();
+        cam.initialize().unwrap();
+        cam.start_sequence_acquisition(0, 0.0).unwrap();
+
+        cam.set_property("OnCameraCCDXSize", PropertyValue::Integer(1024))
+            .unwrap();
+        cam.set_property("OnCameraCCDYSize", PropertyValue::Integer(256))
+            .unwrap();
+
+        assert!(cam.is_capturing());
+        assert_eq!(cam.get_roi().unwrap(), ImageRoi::new(0, 0, 1024, 256));
+    }
+
+    #[test]
+    fn maximum_exposure_only_updates_cached_value_like_upstream() {
         let mut cam = DemoCamera::new();
         cam.set_property("Exposure", PropertyValue::Float(80.0))
             .unwrap();
         cam.set_property("MaximumExposureMs", PropertyValue::Float(50.0))
             .unwrap();
-        assert_eq!(cam.get_exposure(), 50.0);
-        assert!(cam
-            .set_property("Exposure", PropertyValue::Float(60.0))
-            .is_err());
-        cam.set_exposure(60.0);
-        assert_eq!(cam.get_exposure(), 50.0);
+        assert_eq!(cam.get_exposure(), 80.0);
+        cam.set_property("Exposure", PropertyValue::Float(60.0))
+            .unwrap();
+        assert_eq!(cam.get_exposure(), 60.0);
+        cam.set_exposure(60.0).unwrap();
+        assert_eq!(cam.get_exposure(), 60.0);
     }
 
     #[test]
@@ -1314,7 +1568,7 @@ mod tests {
     fn finite_sequence_acquisition_stops_after_requested_snaps() {
         let mut cam = DemoCamera::new();
         cam.initialize().unwrap();
-        cam.set_exposure(0.0);
+        cam.set_exposure(0.0).unwrap();
         cam.start_sequence_acquisition(2, 0.0).unwrap();
 
         cam.snap_image().unwrap();
@@ -1340,7 +1594,7 @@ mod tests {
     fn selected_modes_generate_distinct_bounded_patterns() {
         let mut cam = DemoCamera::new();
         cam.set_roi(ImageRoi::new(0, 0, 64, 64)).unwrap();
-        cam.set_exposure(cam.exposure_maximum_ms);
+        cam.set_exposure(cam.exposure_maximum_ms).unwrap();
 
         cam.set_property("Mode", PropertyValue::String(MODE_ARTIFICIAL_WAVES.into()))
             .unwrap();

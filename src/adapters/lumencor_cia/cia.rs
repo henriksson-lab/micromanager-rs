@@ -96,6 +96,18 @@ impl CiaShutter {
         self.call_transport(|t| Ok(t.send_recv(&full)?.trim().to_string()))
     }
 
+    fn level_payload(&self) -> [u8; 7] {
+        [
+            self.color_levels[CH_VIOLET],
+            self.color_levels[CH_CYAN],
+            self.color_levels[CH_GREEN],
+            self.color_levels[CH_RED],
+            self.color_levels[CH_BLUE],
+            self.color_levels[CH_TEAL],
+            self.color_levels[CH_GREEN],
+        ]
+    }
+
     /// Download colour levels to the device.
     /// Protocol: send "#H\n", then 7 raw intensity bytes, then "\n".
     pub fn download_levels(&mut self) -> MmResult<()> {
@@ -104,8 +116,8 @@ impl CiaShutter {
         if !resp.contains("#H") {
             return Err(MmError::SerialInvalidResponse);
         }
-        // Send 7 raw intensity bytes
-        let levels = self.color_levels;
+        // Send 7 raw intensity bytes in the CIA wire order.
+        let levels = self.level_payload();
         self.call_transport(|t| t.send_bytes(&levels))?;
         // Send terminating newline
         self.call_transport(|t| t.send("\n"))?;
@@ -262,5 +274,19 @@ mod tests {
         s.transport = Some(Box::new(MockTransport::new().any("#H")));
         s.set_channel_level(CH_BLUE, 128).unwrap();
         assert_eq!(s.color_levels[CH_BLUE], 128);
+    }
+
+    #[test]
+    fn level_payload_uses_upstream_wire_order() {
+        let mut s = CiaShutter::new();
+        s.color_levels[CH_VIOLET] = 1;
+        s.color_levels[CH_BLUE] = 2;
+        s.color_levels[CH_CYAN] = 3;
+        s.color_levels[CH_TEAL] = 4;
+        s.color_levels[CH_GREEN] = 5;
+        s.color_levels[CH_YELLOW] = 6;
+        s.color_levels[CH_RED] = 7;
+
+        assert_eq!(s.level_payload(), [1, 3, 5, 7, 2, 4, 5]);
     }
 }

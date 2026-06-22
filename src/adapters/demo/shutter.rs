@@ -156,10 +156,9 @@ mod tests {
         s.set_property("State", PropertyValue::String("0".into()))
             .unwrap();
         assert!(!s.get_open().unwrap());
-        assert!(
-            s.set_property("State", PropertyValue::String("Open".into()))
-                .is_err()
-        );
+        assert!(s
+            .set_property("State", PropertyValue::String("Open".into()))
+            .is_err());
     }
 
     #[test]

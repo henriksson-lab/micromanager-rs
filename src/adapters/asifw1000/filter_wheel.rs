@@ -4,7 +4,7 @@
 ///   Responses echo the command; data follows after the echo.
 ///   `VN \r`         → "VN <version>"  firmware version
 ///   `VB 6\r`        → echo            set verbose=6 (disables prompts)
-///   `FW<n>\r`       → echo            select wheel 0 or 1
+///   `FW <n>\r`      → echo            select wheel 0 or 1
 ///   `NF\r`          → "NF <N>"        number of filter positions
 ///   `MP\r`          → "MP <pos>"      current position (0-based)
 ///   `MP <pos>\r`    → echo            set position (0-based)
@@ -13,9 +13,9 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
-use std::cell::RefCell;
 #[cfg(test)]
 use std::cell::Cell;
+use std::cell::RefCell;
 #[cfg(not(test))]
 use std::sync::atomic::{AtomicI8, Ordering};
 
@@ -95,7 +95,7 @@ impl AsiFw1000FilterWheel {
             .define_property("SerialResponse", PropertyValue::String(String::new()), true)
             .unwrap();
         let num = 6u64;
-        let labels: Vec<String> = (0..num).map(|i| format!("Position-{}", i + 1)).collect();
+        let labels: Vec<String> = (0..num).map(|i| format!("State-{}", i)).collect();
         Self {
             props,
             transport: RefCell::new(None),
@@ -142,8 +142,8 @@ impl AsiFw1000FilterWheel {
     }
 
     fn select_wheel(&self) -> MmResult<()> {
-        let resp = self.cmd(&format!("FW{}", self.wheel))?;
-        if !resp.starts_with("FW") {
+        let resp = self.cmd(&format!("FW {}", self.wheel))?;
+        if Self::parse_last_word(&resp).parse::<u8>().ok() != Some(self.wheel) {
             return Err(MmError::SerialInvalidResponse);
         }
         active_wheel_store(self.wheel as i8);
@@ -153,6 +153,24 @@ impl AsiFw1000FilterWheel {
     /// Parse the data field from an echo response "CMD <data>".
     fn parse_last_word(resp: &str) -> &str {
         resp.split_whitespace().last().unwrap_or("")
+    }
+
+    fn clamp_position_i64(&self, pos: i64) -> u64 {
+        if pos < 0 {
+            0
+        } else if pos as u64 >= self.num_positions {
+            self.num_positions.saturating_sub(1)
+        } else {
+            pos as u64
+        }
+    }
+
+    fn clamp_position_u64(&self, pos: u64) -> u64 {
+        if pos >= self.num_positions {
+            self.num_positions.saturating_sub(1)
+        } else {
+            pos
+        }
     }
 }
 
@@ -188,11 +206,9 @@ impl Device for AsiFw1000FilterWheel {
             n = 6;
         }
         self.num_positions = n;
-        self.labels = (0..n).map(|i| format!("Position-{}", i + 1)).collect();
-        let allowed: Vec<String> = self
-            .labels
-            .iter()
-            .cloned()
+        self.labels = (0..n).map(|i| format!("State-{}", i)).collect();
+        let allowed: Vec<String> = (0..n)
+            .map(|i| i.to_string())
             .chain(std::iter::once(String::new()))
             .collect();
         let allowed_refs: Vec<&str> = allowed.iter().map(String::as_str).collect();
@@ -242,10 +258,7 @@ impl Device for AsiFw1000FilterWheel {
             }
             "State" => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                if pos < 0 {
-                    return Err(MmError::UnknownPosition);
-                }
-                self.set_position(pos as u64)
+                self.set_position(self.clamp_position_i64(pos))
             }
             "Label" => {
                 let label = val.as_str().to_string();
@@ -259,15 +272,15 @@ impl Device for AsiFw1000FilterWheel {
             }
             "SpeedSetting" => {
                 let speed = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(speed))?;
                 if self.initialized {
                     self.select_wheel_if_needed()?;
                     let resp = self.cmd(&format!("SV {}", speed))?;
-                    if !resp.starts_with("SV") {
+                    if Self::parse_last_word(&resp).parse::<i64>().ok() != Some(speed) {
                         return Err(MmError::SerialInvalidResponse);
                     }
                 }
                 self.speed_setting = speed;
+                self.props.set(name, PropertyValue::Integer(speed))?;
                 Ok(())
             }
             "SerialCommand" => {
@@ -307,12 +320,10 @@ impl Device for AsiFw1000FilterWheel {
 
 impl StateDevice for AsiFw1000FilterWheel {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
-        if pos >= self.num_positions {
-            return Err(MmError::UnknownPosition);
-        }
+        let pos = self.clamp_position_u64(pos);
         self.select_wheel_if_needed()?;
-        let resp = self.cmd(&format!("MP{}", pos))?;
-        if !resp.starts_with("MP") {
+        let resp = self.cmd(&format!("MP {}", pos))?;
+        if Self::parse_last_word(&resp).parse::<u64>().ok() != Some(pos) {
             return Err(MmError::LocallyDefined("Error setting filter wheel".into()));
         }
         self.position = pos;
@@ -320,6 +331,7 @@ impl StateDevice for AsiFw1000FilterWheel {
     }
 
     fn get_position(&self) -> MmResult<u64> {
+        self.select_wheel_if_needed()?;
         let mp_resp = self.cmd("MP")?;
         Self::parse_last_word(&mp_resp)
             .parse::<u64>()
@@ -356,8 +368,11 @@ impl StateDevice for AsiFw1000FilterWheel {
     fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
         self.gate_open = open;
         if !open && !self.closed_position.is_empty() {
-            let label = self.closed_position.clone();
-            self.set_position_by_label(&label)?;
+            let pos = self
+                .closed_position
+                .parse::<u64>()
+                .map_err(|_| MmError::InvalidPropertyValue)?;
+            self.set_position(pos)?;
         }
         Ok(())
     }
@@ -374,7 +389,7 @@ mod tests {
     fn make_init_transport() -> MockTransport {
         MockTransport::new()
             .expect("VB 6\r", "VB 6")
-            .expect("FW0\r", "FW0") // select wheel 0
+            .expect("FW 0\r", "FW 0") // select wheel 0
             .expect("NF\r", "NF 6") // 6 positions
             .expect("MP\r", "MP 0") // current position 0
     }
@@ -386,14 +401,14 @@ mod tests {
         w.initialize().unwrap();
         assert_eq!(w.get_number_of_positions(), 6);
         assert_eq!(w.get_position().unwrap(), 0);
-        assert_eq!(w.get_position_label(0).unwrap(), "Position-1");
-        assert_eq!(w.get_position_label(5).unwrap(), "Position-6");
+        assert_eq!(w.get_position_label(0).unwrap(), "State-0");
+        assert_eq!(w.get_position_label(5).unwrap(), "State-5");
     }
 
     #[test]
     fn set_position() {
         let t = make_init_transport()
-            .expect("MP3\r", "MP3")
+            .expect("MP 3\r", "MP 3")
             .expect("MP\r", "MP 3");
         let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
         w.initialize().unwrap();
@@ -404,7 +419,7 @@ mod tests {
     #[test]
     fn label_roundtrip() {
         let t = make_init_transport()
-            .expect("MP2\r", "MP2")
+            .expect("MP 2\r", "MP 2")
             .expect("MP\r", "MP 2");
         let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
         w.initialize().unwrap();
@@ -418,21 +433,55 @@ mod tests {
     fn invalid_position_count_falls_back_to_six() {
         let t = MockTransport::new()
             .expect("VB 6\r", "VB 6")
-            .expect("FW0\r", "FW0")
+            .expect("FW 0\r", "FW 0")
             .expect("NF\r", "NF 7")
-            .expect("MP\r", "MP 0");
+            .expect("MP\r", "MP 0")
+            .expect("MP 5\r", "MP 5")
+            .expect("MP\r", "MP 5");
         let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
         w.initialize().unwrap();
         assert_eq!(w.get_number_of_positions(), 6);
-        assert!(w.set_position(6).is_err());
+        w.set_position(6).unwrap();
+        assert_eq!(w.get_position().unwrap(), 5);
     }
 
     #[test]
     fn set_position_rejects_non_mp_echo() {
-        let t = make_init_transport().expect("MP3\r", "ERR");
+        let t = make_init_transport().expect("MP 3\r", "ERR");
         let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
         w.initialize().unwrap();
         assert!(w.set_position(3).is_err());
+    }
+
+    #[test]
+    fn set_position_rejects_mismatched_mp_echo() {
+        let t = make_init_transport().expect("MP 3\r", "MP 2");
+        let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        assert!(w.set_position(3).is_err());
+    }
+
+    #[test]
+    fn initialize_rejects_mismatched_wheel_echo() {
+        let t = MockTransport::new()
+            .expect("VB 6\r", "VB 6")
+            .expect("FW 0\r", "FW 1");
+        let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
+        assert!(w.initialize().is_err());
+    }
+
+    #[test]
+    fn speed_setting_rejects_mismatched_echo_without_cache_update() {
+        let t = make_init_transport().expect("SV 4\r", "SV 3");
+        let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        assert!(w
+            .set_property("SpeedSetting", PropertyValue::Integer(4))
+            .is_err());
+        assert_eq!(
+            w.get_property("SpeedSetting").unwrap(),
+            PropertyValue::Integer(0)
+        );
     }
 
     #[test]
@@ -453,11 +502,11 @@ mod tests {
         active_wheel_store(1);
         let t = MockTransport::new()
             .expect("VB 6\r", "VB 6")
-            .expect("FW0\r", "FW0")
+            .expect("FW 0\r", "FW 0")
             .expect("NF\r", "NF 6")
             .expect("MP\r", "MP 0")
-            .expect("FW0\r", "FW0")
-            .expect("MP3\r", "MP3");
+            .expect("FW 0\r", "FW 0")
+            .expect("MP 3\r", "MP 3");
         let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
         w.initialize().unwrap();
         active_wheel_store(1);
@@ -465,10 +514,22 @@ mod tests {
     }
 
     #[test]
+    fn reselects_wheel_before_live_position_query() {
+        let t = make_init_transport()
+            .expect("FW 0\r", "FW 0")
+            .expect("MP\r", "MP 4");
+        let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        active_wheel_store(1);
+        assert_eq!(w.get_position().unwrap(), 4);
+    }
+
+    #[test]
     fn port_is_preinit_only() {
         let t = make_init_transport();
         let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
-        w.set_property("Port", PropertyValue::String("COM1".into())).unwrap();
+        w.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
         w.initialize().unwrap();
         assert!(w
             .set_property("Port", PropertyValue::String("COM2".into()))
@@ -477,5 +538,36 @@ mod tests {
             w.get_property("Port").unwrap(),
             PropertyValue::String("COM1".into())
         );
+    }
+
+    #[test]
+    fn closed_position_uses_numeric_state_value() {
+        let t = make_init_transport().expect("MP 4\r", "MP 4");
+        let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        assert!(w
+            .set_property(
+                "Closed_Position",
+                PropertyValue::String("Position-5".into())
+            )
+            .is_err());
+        w.set_property("Closed_Position", PropertyValue::String("4".into()))
+            .unwrap();
+        w.set_gate_open(false).unwrap();
+    }
+
+    #[test]
+    fn state_property_clamps_negative_and_high_values() {
+        let t = make_init_transport()
+            .expect("MP 0\r", "MP 0")
+            .expect("MP\r", "MP 0")
+            .expect("MP 5\r", "MP 5")
+            .expect("MP\r", "MP 5");
+        let mut w = AsiFw1000FilterWheel::new(0).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        w.set_property("State", PropertyValue::Integer(-2)).unwrap();
+        assert_eq!(w.get_position().unwrap(), 0);
+        w.set_property("State", PropertyValue::Integer(99)).unwrap();
+        assert_eq!(w.get_position().unwrap(), 5);
     }
 }

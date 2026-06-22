@@ -59,24 +59,16 @@ impl PeconTempControl {
             .define_property("Channel2_RealTemperature", PropertyValue::Float(0.0), true)
             .unwrap();
         props
-            .define_property(
-                "Channel1_Heating",
-                PropertyValue::String("Off".into()),
-                false,
-            )
+            .define_property("Channel1_Heating", PropertyValue::Integer(0), false)
             .unwrap();
         props
-            .set_allowed_values("Channel1_Heating", &["On", "Off"])
+            .set_allowed_values("Channel1_Heating", &["0", "1"])
             .unwrap();
         props
-            .define_property(
-                "Channel2_Heating",
-                PropertyValue::String("Off".into()),
-                false,
-            )
+            .define_property("Channel2_Heating", PropertyValue::Integer(0), false)
             .unwrap();
         props
-            .set_allowed_values("Channel2_Heating", &["On", "Off"])
+            .set_allowed_values("Channel2_Heating", &["0", "1"])
             .unwrap();
         Self {
             props,
@@ -158,10 +150,10 @@ impl PeconTempControl {
 
     /// Encode temperature to the last 3 chars of a command like "N375" for 37.5 °C.
     pub fn encode_temp(prefix: char, temp: f64) -> String {
-        let temp = temp.abs().min(99.9);
-        let tens = (temp / 10.0) as u8;
-        let units = (temp as u8) % 10;
-        let tenths = ((temp * 10.0).round() as u8) % 10;
+        let tenths_total = (temp.abs().min(99.9) * 10.0).floor() as u16;
+        let tens = tenths_total / 100;
+        let units = (tenths_total / 10) % 10;
+        let tenths = tenths_total % 10;
         format!("{}{}{}{}", prefix, tens, units, tenths)
     }
 
@@ -175,7 +167,11 @@ impl PeconTempControl {
     fn set_temp(&mut self, channel: usize, temp: f64) -> MmResult<()> {
         self.wake_up()?;
         let prefix = if channel == 0 { 'N' } else { 'O' };
-        self.raw_cmd(&Self::encode_temp(prefix, temp))?;
+        let cmd = Self::encode_temp(prefix, temp);
+        let answer = self.raw_cmd(&cmd)?;
+        if answer.as_slice() != cmd.as_bytes().get(1..).unwrap_or_default() {
+            return Err(MmError::SerialInvalidResponse);
+        }
         self.nominal_temp[channel] = temp;
         let key = format!("Channel{}_NominalTemperature", channel + 1);
         self.props
@@ -191,10 +187,10 @@ impl PeconTempControl {
         self.raw_cmd(&cmd)?;
         self.heating_on[channel] = on;
         let key = format!("Channel{}_Heating", channel + 1);
-        let val = if on { "On" } else { "Off" };
+        let val = if on { 1 } else { 0 };
         self.props
             .entry_mut(&key)
-            .map(|e| e.value = PropertyValue::String(val.into()));
+            .map(|e| e.value = PropertyValue::Integer(val));
         Ok(())
     }
 }
@@ -207,10 +203,10 @@ impl Default for PeconTempControl {
 
 impl Device for PeconTempControl {
     fn name(&self) -> &str {
-        "PeconTempControl"
+        "TempControl"
     }
     fn description(&self) -> &str {
-        "Pecon Incubation TempControl 37-2"
+        "Pecon Incubation Tempcontrol 37-2 adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -260,6 +256,9 @@ impl Device for PeconTempControl {
                     self.set_temp(0, t)?;
                 } else {
                     self.nominal_temp[0] = t;
+                    self.props
+                        .entry_mut("Channel1_NominalTemperature")
+                        .map(|e| e.value = PropertyValue::Float(t));
                 }
                 Ok(())
             }
@@ -269,24 +268,41 @@ impl Device for PeconTempControl {
                     self.set_temp(1, t)?;
                 } else {
                     self.nominal_temp[1] = t;
+                    self.props
+                        .entry_mut("Channel2_NominalTemperature")
+                        .map(|e| e.value = PropertyValue::Float(t));
                 }
                 Ok(())
             }
             "Channel1_Heating" => {
-                let on = val.as_str() == "On";
+                let requested = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if requested != 0 && requested != 1 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let on = requested == 1;
                 if self.initialized {
                     self.set_heating(0, on)?;
                 } else {
                     self.heating_on[0] = on;
+                    self.props
+                        .entry_mut("Channel1_Heating")
+                        .map(|e| e.value = PropertyValue::Integer(if on { 1 } else { 0 }));
                 }
                 Ok(())
             }
             "Channel2_Heating" => {
-                let on = val.as_str() == "On";
+                let requested = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if requested != 0 && requested != 1 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let on = requested == 1;
                 if self.initialized {
                     self.set_heating(1, on)?;
                 } else {
                     self.heating_on[1] = on;
+                    self.props
+                        .entry_mut("Channel2_Heating")
+                        .map(|e| e.value = PropertyValue::Integer(if on { 1 } else { 0 }));
                 }
                 Ok(())
             }
@@ -332,6 +348,11 @@ mod tests {
     #[test]
     fn initialize() {
         let mut dev = PeconTempControl::new().with_transport(Box::new(make_transport()));
+        assert_eq!(dev.name(), "TempControl");
+        assert_eq!(
+            dev.description(),
+            "Pecon Incubation Tempcontrol 37-2 adapter"
+        );
         dev.initialize().unwrap();
         assert!((dev.real_temp[0] - 37.5).abs() < 0.05);
         assert!((dev.real_temp[1] - 20.0).abs() < 0.05);
@@ -356,10 +377,44 @@ mod tests {
         assert_eq!(PeconTempControl::encode_temp('N', 37.5), "N375");
         assert_eq!(PeconTempControl::encode_temp('N', 5.0), "N050");
         assert_eq!(PeconTempControl::encode_temp('O', 20.0), "O200");
+        assert_eq!(PeconTempControl::encode_temp('N', 37.96), "N379");
     }
 
     #[test]
     fn no_transport_error() {
         assert!(PeconTempControl::new().initialize().is_err());
+    }
+
+    #[test]
+    fn heating_properties_are_integer_zero_one() {
+        let mut dev = PeconTempControl::new();
+        assert_eq!(
+            dev.get_property("Channel1_Heating").unwrap(),
+            PropertyValue::Integer(0)
+        );
+        dev.set_property("Channel1_Heating", PropertyValue::Integer(1))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("Channel1_Heating").unwrap(),
+            PropertyValue::Integer(1)
+        );
+        assert_eq!(
+            dev.set_property("Channel1_Heating", PropertyValue::Integer(2)),
+            Err(MmError::InvalidPropertyValue)
+        );
+    }
+
+    #[test]
+    fn failed_initialized_temp_write_does_not_update_cache() {
+        let t = make_transport().expect_binary(b"000").expect_binary(b"999");
+        let mut dev = PeconTempControl::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        assert!(dev
+            .set_property("Channel1_NominalTemperature", PropertyValue::Float(38.0))
+            .is_err());
+        assert_eq!(
+            dev.get_property("Channel1_NominalTemperature").unwrap(),
+            PropertyValue::Float(37.0)
+        );
     }
 }

@@ -1,6 +1,6 @@
-use std::collections::VecDeque;
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 
 /// Metadata attached to each frame in the circular buffer.
 #[derive(Debug, Clone, Default)]

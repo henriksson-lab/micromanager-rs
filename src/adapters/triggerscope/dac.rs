@@ -31,14 +31,6 @@ impl TriggerScopeDAC {
         props
             .define_property("Channel", PropertyValue::Integer(channel as i64), true)
             .unwrap();
-        props
-            .define_property("Volts", PropertyValue::Float(0.0), false)
-            .unwrap();
-        props.set_property_limits("Volts", 0.0, 10.0).unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props.set_allowed_values("State", &["0", "1"]).unwrap();
         Self {
             props,
             transport: None,
@@ -104,6 +96,20 @@ impl TriggerScopeDAC {
         self.is_ts16 = is_ts16;
     }
 
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)?;
+            self.props.set_allowed_values("State", &["0", "1"])?;
+        }
+        if !self.props.has_property("Volts") {
+            self.props
+                .define_property("Volts", PropertyValue::Float(0.0), false)?;
+            self.props.set_property_limits("Volts", 0.0, 10.0)?;
+        }
+        Ok(())
+    }
+
     pub fn clear_da_sequence(&mut self) -> MmResult<()> {
         self.sequence.clear();
         Ok(())
@@ -162,9 +168,13 @@ impl Device for TriggerScopeDAC {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
+        if self.initialized {
+            return Ok(());
+        }
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
+        self.ensure_runtime_properties()?;
         self.initialized = true;
         Ok(())
     }
@@ -176,19 +186,21 @@ impl Device for TriggerScopeDAC {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "Volts" => Ok(PropertyValue::Float(self.voltage)),
-            "State" => Ok(PropertyValue::Integer(if self.gate_open { 1 } else { 0 })),
+            "Volts" if self.props.has_property("Volts") => Ok(PropertyValue::Float(self.voltage)),
+            "State" if self.props.has_property("State") => {
+                Ok(PropertyValue::Integer(if self.gate_open { 1 } else { 0 }))
+            }
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "Volts" => {
+            "Volts" if self.props.has_property("Volts") => {
                 let v = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.set_signal(v)
             }
-            "State" => {
+            "State" if self.props.has_property("State") => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 self.set_gate_open(v == 1)
             }
@@ -254,7 +266,11 @@ mod tests {
     fn dac_initialize_zeroes_output() {
         let t = MockTransport::new();
         let mut dac = TriggerScopeDAC::new(1).with_transport(Box::new(t));
+        assert!(!dac.has_property("State"));
+        assert!(!dac.has_property("Volts"));
         dac.initialize().unwrap();
+        assert!(dac.has_property("State"));
+        assert!(dac.has_property("Volts"));
         assert!((dac.get_signal().unwrap() - 0.0).abs() < 1e-6);
     }
 

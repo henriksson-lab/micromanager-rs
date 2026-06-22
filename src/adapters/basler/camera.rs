@@ -189,6 +189,9 @@ impl BaslerCamera {
             )
             .unwrap();
         props
+            .define_property("CameraID", PropertyValue::String("Undefined".into()), true)
+            .unwrap();
+        props
             .define_property("Exposure", PropertyValue::Float(10.0), false)
             .unwrap();
         props
@@ -411,7 +414,7 @@ impl Device for BaslerCamera {
         "BaslerCamera"
     }
     fn description(&self) -> &str {
-        "Basler camera (Pylon SDK)"
+        "Basler Camera device adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -440,6 +443,9 @@ impl Device for BaslerCamera {
         let camera: InstantCamera<'static> = InstantCamera::new(dev).map_err(Self::pylon_err)?;
 
         camera.open().map_err(Self::pylon_err)?;
+        self.props.entry_mut("CameraID").map(|e| {
+            e.value = PropertyValue::String(self.serial_number.clone());
+        });
 
         // Upstream exposes a fixed preferred subset of the PixelFormat node as PixelType.
         if let Ok(nm) = camera.node_map() {
@@ -496,6 +502,7 @@ impl Device for BaslerCamera {
             "PixelType" => Ok(PropertyValue::String(self.pixel_format.clone())),
             "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
             "SerialNumber" => Ok(PropertyValue::String(self.serial_number.clone())),
+            "CameraID" => self.props.get("CameraID").cloned(),
             "Temperature" => {
                 if let Some(cam) = self.camera.as_ref() {
                     if let Ok(nm) = cam.node_map() {
@@ -640,20 +647,19 @@ impl Camera for BaslerCamera {
         self.exposure_ms
     }
 
-    fn set_exposure(&mut self, exp_ms: f64) {
+    fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()> {
         if self.capturing {
-            return;
+            return Err(MmError::CameraBusyAcquiring);
         }
+        self.props.set("Exposure", PropertyValue::Float(exp_ms))?;
         self.exposure_ms = exp_ms;
-        self.props
-            .set("Exposure", PropertyValue::Float(exp_ms))
-            .ok();
         if let Some(cam) = self.camera.as_ref() {
             self.exposure_ms = Self::write_exposure(cam, exp_ms);
             self.props
                 .set("Exposure", PropertyValue::Float(self.exposure_ms))
                 .ok();
         }
+        Ok(())
     }
 
     fn get_binning(&self) -> i32 {
@@ -791,6 +797,11 @@ mod tests {
         assert_eq!(d.device_type(), DeviceType::Camera);
         assert_eq!(d.get_exposure(), 10.0);
         assert_eq!(d.get_binning(), 1);
+        assert_eq!(
+            d.get_property("CameraID").unwrap(),
+            PropertyValue::String("Undefined".into())
+        );
+        assert!(d.is_property_read_only("CameraID"));
         assert!(!d.is_capturing());
     }
 

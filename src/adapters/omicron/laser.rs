@@ -38,12 +38,28 @@ pub struct OmicronLaser {
 impl OmicronLaser {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("FirmwareVersion", PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("SerialNumber",    PropertyValue::String(String::new()), true).unwrap();
-        props.define_property("WavelengthNm",    PropertyValue::Integer(0), true).unwrap();
-        props.define_property("MaxPower_mW",     PropertyValue::Float(0.0), true).unwrap();
-        props.define_property("Power_Percent",   PropertyValue::Float(0.0), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property(
+                "FirmwareVersion",
+                PropertyValue::String(String::new()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("SerialNumber", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("WavelengthNm", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("MaxPower_mW", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("Power_Percent", PropertyValue::Float(0.0), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -60,7 +76,9 @@ impl OmicronLaser {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -94,14 +112,24 @@ impl OmicronLaser {
     }
 }
 
-impl Default for OmicronLaser { fn default() -> Self { Self::new() } }
+impl Default for OmicronLaser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for OmicronLaser {
-    fn name(&self) -> &str { "OmicronLaser" }
-    fn description(&self) -> &str { "Omicron PhoxX/LuxX/BrixX Laser" }
+    fn name(&self) -> &str {
+        "Omicron"
+    }
+    fn description(&self) -> &str {
+        "Omicron Laser Controller"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Get and fix operating mode (clear bit 13)
         let mode_hex = self.cmd("?GOM")?;
         let mode = u32::from_str_radix(mode_hex.trim(), 16).unwrap_or(0);
@@ -112,31 +140,43 @@ impl Device for OmicronLaser {
         let fw = self.cmd("?GFw")?;
         let fw_fields: Vec<&str> = fw.split(SEP).filter(|s| !s.is_empty()).collect();
         let version = fw_fields.get(0).unwrap_or(&"").to_string();
-        self.props.entry_mut("FirmwareVersion").map(|e| e.value = PropertyValue::String(version));
+        self.props
+            .entry_mut("FirmwareVersion")
+            .map(|e| e.value = PropertyValue::String(version));
         // Get spec info: wavelength and max power
         // Response after prefix: "§488§50" — leading § before fields
         let gsi = self.cmd("?GSI")?;
         let fields: Vec<&str> = gsi.split(SEP).filter(|s| !s.is_empty()).collect();
         if let Some(nm_str) = fields.get(0) {
             let nm: i64 = nm_str.trim().parse().unwrap_or(0);
-            self.props.entry_mut("WavelengthNm").map(|e| e.value = PropertyValue::Integer(nm));
+            self.props
+                .entry_mut("WavelengthNm")
+                .map(|e| e.value = PropertyValue::Integer(nm));
         }
         if let Some(mw_str) = fields.get(1) {
             let mw: f64 = mw_str.trim().parse().unwrap_or(0.0);
             self.max_power_mw = mw;
-            self.props.entry_mut("MaxPower_mW").map(|e| e.value = PropertyValue::Float(mw));
+            self.props
+                .entry_mut("MaxPower_mW")
+                .map(|e| e.value = PropertyValue::Float(mw));
         }
         // Get serial number
         let sn = self.cmd("?GSN")?;
-        self.props.entry_mut("SerialNumber").map(|e| e.value = PropertyValue::String(sn));
+        self.props
+            .entry_mut("SerialNumber")
+            .map(|e| e.value = PropertyValue::String(sn));
         // Query current power
         let lp = self.cmd("?GLP")?;
         self.power_pct = Self::hex_to_pct(lp.trim());
-        self.props.entry_mut("Power_Percent").map(|e| e.value = PropertyValue::Float(self.power_pct));
+        self.props
+            .entry_mut("Power_Percent")
+            .map(|e| e.value = PropertyValue::Float(self.power_pct));
         // Query laser state
         let gas = self.cmd("?GAS")?;
         let status = u32::from_str_radix(gas.trim(), 16).unwrap_or(0);
         self.laser_on = (status >> 1) & 1 == 1;
+        self.cmd("?LOf")?;
+        self.laser_on = false;
         self.initialized = true;
         Ok(())
     }
@@ -157,6 +197,11 @@ impl Device for OmicronLaser {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::LocallyDefined(
+                "You can't change the port after device has been initialized.".into(),
+            ));
+        }
         if name == "Power_Percent" {
             let pct = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
             let pct = pct.clamp(0.0, 100.0);
@@ -164,19 +209,29 @@ impl Device for OmicronLaser {
                 self.cmd(&format!("?SLP{}", Self::pct_to_hex(pct)))?;
             }
             self.power_pct = pct;
-            self.props.entry_mut(name).map(|e| e.value = PropertyValue::Float(pct));
+            self.props
+                .entry_mut(name)
+                .map(|e| e.value = PropertyValue::Float(pct));
             return Ok(());
         }
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Generic
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for OmicronLaser {
@@ -190,9 +245,13 @@ impl Shutter for OmicronLaser {
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.laser_on) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.laser_on)
+    }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { Ok(()) }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]
@@ -202,13 +261,14 @@ mod tests {
 
     fn make_init_transport() -> MockTransport {
         MockTransport::new()
-            .expect("?GOM\r", "!GOM2010")         // mode with bit 13 set
-            .expect("?SOM0010\r", "!SOM0010")      // cleared bit 13 (0x2010 & !0x2000 = 0x0010)
-            .expect("?GFw\r", "!GFw\u{00A7}2.1.0\u{00A7}3")   // version + device type 3=PhoxX
-            .expect("?GSI\r", "!GSI\u{00A7}488\u{00A7}50")     // 488nm, 50mW
+            .expect("?GOM\r", "!GOM2010") // mode with bit 13 set
+            .expect("?SOM0010\r", "!SOM0010") // cleared bit 13 (0x2010 & !0x2000 = 0x0010)
+            .expect("?GFw\r", "!GFw\u{00A7}2.1.0\u{00A7}3") // version + device type 3=PhoxX
+            .expect("?GSI\r", "!GSI\u{00A7}488\u{00A7}50") // 488nm, 50mW
             .expect("?GSN\r", "!GSN12345678")
-            .expect("?GLP\r", "!GLP7FF")            // ~50%
-            .expect("?GAS\r", "!GAS002")            // bit 1 = on
+            .expect("?GLP\r", "!GLP7FF") // ~50%
+            .expect("?GAS\r", "!GAS002") // bit 1 = on
+            .expect("?LOf\r", "!LOf")
     }
 
     #[test]
@@ -216,15 +276,18 @@ mod tests {
         let mut dev = OmicronLaser::new().with_transport(Box::new(make_init_transport()));
         dev.initialize().unwrap();
         assert!((dev.power_pct - 49.98).abs() < 0.1);
-        assert!(dev.laser_on); // bit 1 set in 0x002
+        assert!(!dev.laser_on);
         assert_eq!(dev.max_power_mw, 50.0);
+        assert_eq!(dev.name(), "Omicron");
+        assert_eq!(dev.description(), "Omicron Laser Controller");
+        assert_eq!(dev.device_type(), DeviceType::Generic);
     }
 
     #[test]
     fn power_encoding() {
-        assert_eq!(OmicronLaser::pct_to_hex(0.0),   "000");
-        assert_eq!(OmicronLaser::pct_to_hex(100.0),  "FFF");
-        assert_eq!(OmicronLaser::pct_to_hex(50.0),   "800");
+        assert_eq!(OmicronLaser::pct_to_hex(0.0), "000");
+        assert_eq!(OmicronLaser::pct_to_hex(100.0), "FFF");
+        assert_eq!(OmicronLaser::pct_to_hex(50.0), "800");
         assert!((OmicronLaser::hex_to_pct("7FF") - 49.98).abs() < 0.1);
     }
 
@@ -243,14 +306,26 @@ mod tests {
 
     #[test]
     fn set_power() {
-        let t = make_init_transport()
-            .expect("?SLP800\r", "!SLP800");
+        let t = make_init_transport().expect("?SLP800\r", "!SLP800");
         let mut dev = OmicronLaser::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
-        dev.set_property("Power_Percent", PropertyValue::Float(50.0)).unwrap();
+        dev.set_property("Power_Percent", PropertyValue::Float(50.0))
+            .unwrap();
         assert!((dev.power_pct - 50.0).abs() < 0.01);
     }
 
     #[test]
-    fn no_transport_error() { assert!(OmicronLaser::new().initialize().is_err()); }
+    fn initialized_port_change_and_fire_are_rejected_like_upstream() {
+        let mut dev = OmicronLaser::new().with_transport(Box::new(make_init_transport()));
+        dev.initialize().unwrap();
+        assert!(dev
+            .set_property("Port", PropertyValue::String("COM2".into()))
+            .is_err());
+        assert_eq!(dev.fire(1.0), Err(MmError::UnsupportedCommand));
+    }
+
+    #[test]
+    fn no_transport_error() {
+        assert!(OmicronLaser::new().initialize().is_err());
+    }
 }

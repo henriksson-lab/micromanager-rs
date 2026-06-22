@@ -525,20 +525,26 @@ impl Device for CoboltLaser {
                     _ => return Err(MmError::SerialInvalidResponse),
                 },
             )),
-            "Laser" if self.initialized => Ok(PropertyValue::String(if self.get_open()? {
-                "On".into()
-            } else {
-                "Off".into()
-            })),
+            "Laser" if self.initialized => {
+                Ok(PropertyValue::String(match self.cmd("l?")?.trim() {
+                    "0" => "Off".into(),
+                    "1" => "On".into(),
+                    _ => return Err(MmError::SerialInvalidResponse),
+                }))
+            }
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "PowerSetpoint_mW" | "Power" => {
                 let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 if self.initialized {
+                    if self.control_mode != "Constant Power" {
+                        self.set_control_mode_name("Constant Power")?;
+                    }
                     self.send_power_setpoint(mw)?;
                 }
                 self.power_setpoint_mw = mw;
@@ -692,11 +698,7 @@ impl Shutter for CoboltLaser {
 
     fn get_open(&self) -> MmResult<bool> {
         if self.initialized {
-            match self.cmd("l?")?.trim() {
-                "0" => Ok(false),
-                "1" => Ok(true),
-                _ => Err(MmError::SerialInvalidResponse),
-            }
+            Ok(false)
         } else {
             Ok(self.is_open.get())
         }
@@ -739,7 +741,6 @@ mod tests {
             .expect("gmlp?", "100")
             .expect("gmlc?", "200")
             .expect("@cobas?", "0")
-            .expect("l?", "0")
             .expect("hrs?", "42.5");
         let mut laser = CoboltLaser::new().with_transport(Box::new(transport));
         laser.initialize().unwrap();
@@ -761,16 +762,14 @@ mod tests {
             // set_open(true)
             .expect("@cobas?", "0")
             .expect("l1", "OK")
-            .expect("l?", "1")
             // set_open(false)
             .expect("@cobas?", "0")
-            .expect("l0", "OK")
-            .expect("l?", "0");
+            .expect("l0", "OK");
 
         let mut laser = CoboltLaser::new().with_transport(Box::new(transport));
         laser.initialize().unwrap();
         laser.set_open(true).unwrap();
-        assert!(laser.get_open().unwrap());
+        assert!(!laser.get_open().unwrap());
         laser.set_open(false).unwrap();
         assert!(!laser.get_open().unwrap());
     }
@@ -790,6 +789,29 @@ mod tests {
     }
 
     #[test]
+    fn set_power_returns_to_constant_power_mode_before_write() {
+        let transport = init_script()
+            .expect("ci", "OK")
+            .expect("cp", "OK")
+            .expect("p 0.0750", "OK");
+
+        let mut laser = CoboltLaser::new().with_transport(Box::new(transport));
+        laser.initialize().unwrap();
+        laser
+            .set_property(
+                "Control Mode",
+                PropertyValue::String("Constant Current".into()),
+            )
+            .unwrap();
+        laser
+            .set_property("Power", PropertyValue::Float(75.0))
+            .unwrap();
+
+        assert_eq!(laser.control_mode, "Constant Power");
+        assert_eq!(laser.power_setpoint_mw, 75.0);
+    }
+
+    #[test]
     fn no_transport_returns_not_connected() {
         let mut laser = CoboltLaser::new();
         assert!(laser.initialize().is_err());
@@ -801,13 +823,26 @@ mod tests {
             .expect("@cobas?", "0")
             .expect("l1", "OK")
             .expect("@cobas?", "0")
-            .expect("l0", "OK")
-            .expect("l?", "0");
+            .expect("l0", "OK");
 
         let mut laser = CoboltLaser::new().with_transport(Box::new(transport));
         laser.initialize().unwrap();
         laser.fire(0.0).unwrap();
         assert!(!laser.get_open().unwrap());
+    }
+
+    #[test]
+    fn laser_property_queries_live_status_but_shutter_get_open_matches_upstream_get_state() {
+        let transport = init_script().expect("l?", "1");
+
+        let mut laser = CoboltLaser::new().with_transport(Box::new(transport));
+        laser.initialize().unwrap();
+
+        assert!(!laser.get_open().unwrap());
+        assert_eq!(
+            laser.get_property("Laser").unwrap(),
+            PropertyValue::String("On".into())
+        );
     }
 
     #[test]
@@ -905,5 +940,26 @@ mod tests {
         laser.is_open.set(true);
         laser.shutdown().unwrap();
         assert!(laser.get_open().unwrap());
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected_and_preserved() {
+        let transport = init_script();
+        let mut laser = CoboltLaser::new().with_transport(Box::new(transport));
+        laser
+            .set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        laser.initialize().unwrap();
+
+        assert_eq!(
+            laser
+                .set_property("Port", PropertyValue::String("COM2".into()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            laser.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
     }
 }

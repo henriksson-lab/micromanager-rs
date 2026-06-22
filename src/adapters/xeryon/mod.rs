@@ -37,9 +37,9 @@ impl AdapterModule for XeryonAdapter {
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
             DEVICE_NAME_XYSTAGE => Some(AnyDevice::XYStage(Box::new(XeryonXYStage::new()))),
-            DEVICE_NAME_TURRET => {
-                Some(AnyDevice::StateDevice(Box::new(SquidPlusObjectiveTurret::new())))
-            }
+            DEVICE_NAME_TURRET => Some(AnyDevice::StateDevice(Box::new(
+                SquidPlusObjectiveTurret::new(),
+            ))),
             _ => None,
         }
     }

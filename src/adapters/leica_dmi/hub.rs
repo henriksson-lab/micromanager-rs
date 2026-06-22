@@ -80,10 +80,10 @@ impl Default for LeicaDMIHub {
 
 impl Device for LeicaDMIHub {
     fn name(&self) -> &str {
-        "LeicaDMI-Hub"
+        "Scope"
     }
     fn description(&self) -> &str {
-        "Leica DMI microscope hub"
+        "Leica microscope CAN bus adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -132,10 +132,10 @@ impl Device for LeicaDMIHub {
 impl Hub for LeicaDMIHub {
     fn detect_installed_devices(&mut self) -> MmResult<Vec<String>> {
         Ok(vec![
-            "LeicaDMI-TLShutter".to_string(),
-            "LeicaDMI-ILShutter".to_string(),
-            "LeicaDMI-ILTurret".to_string(),
-            "LeicaDMI-ObjectiveTurret".to_string(),
+            "IL-Shutter".to_string(),
+            "TL-Shutter".to_string(),
+            "IL-Turret".to_string(),
+            "ObjectiveTurret".to_string(),
         ])
     }
 }
@@ -165,7 +165,7 @@ mod tests {
         let mut hub = LeicaDMIHub::new().with_transport(Box::new(t));
         hub.initialize().unwrap();
         let devs = hub.detect_installed_devices().unwrap();
-        assert!(devs.contains(&"LeicaDMI-TLShutter".to_string()));
-        assert!(devs.contains(&"LeicaDMI-ILTurret".to_string()));
+        assert!(devs.contains(&"TL-Shutter".to_string()));
+        assert!(devs.contains(&"IL-Turret".to_string()));
     }
 }

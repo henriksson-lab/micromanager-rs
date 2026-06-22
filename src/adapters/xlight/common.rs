@@ -118,7 +118,10 @@ impl XLightStateCore {
         let position = self.parse_position(&response, query)?;
         self.spec.query = query;
         self.spec.command = command;
-        self.position = position.min(self.spec.num_positions.saturating_sub(1));
+        if position >= self.spec.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
+        self.position = position;
         if let Some(entry) = self.props.entry_mut("State") {
             entry.value = PropertyValue::Integer(self.position as i64);
         }
@@ -185,6 +188,25 @@ mod tests {
     }
 
     #[test]
+    fn initialize_rejects_out_of_range_query_position() {
+        let t = MockTransport::new().expect("rC\r", "rC9");
+        let mut d = XLightStateCore::new(XLightSpec {
+            name: "d",
+            description: "d",
+            query: "rC",
+            command: "C",
+            num_positions: 5,
+            one_based: true,
+            initial_position: 0,
+            labels: &["0", "1", "2", "3", "4"],
+        })
+        .with_transport(Box::new(t));
+
+        assert_eq!(d.initialize().unwrap_err(), MmError::UnknownPosition);
+        assert_eq!(d.get_position().unwrap(), 0);
+    }
+
+    #[test]
     fn command_timeout_does_not_retry() {
         let mut device = XLightStateCore::new(XLightSpec {
             name: "d",
@@ -241,7 +263,7 @@ impl Device for XLightStateCore {
             "State" => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if pos < 0 {
-                    return Err(MmError::UnknownPosition);
+                    return self.set_position(0);
                 }
                 self.set_position(pos as u64)
             }
@@ -276,9 +298,7 @@ impl Device for XLightStateCore {
 
 impl StateDevice for XLightStateCore {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
-        if pos >= self.spec.num_positions {
-            return Err(MmError::UnknownPosition);
-        }
+        let pos = pos.min(self.spec.num_positions - 1);
         if self.initialized && pos != self.position {
             let wire = if self.spec.one_based { pos + 1 } else { pos };
             let command = format!("{}{}", self.spec.command, wire);

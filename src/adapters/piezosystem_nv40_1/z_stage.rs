@@ -31,11 +31,21 @@ pub struct PsjNV40_1Stage {
 impl PsjNV40_1Stage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        props.define_property("MinVoltage", PropertyValue::Float(0.0), false).unwrap();
-        props.define_property("MaxVoltage", PropertyValue::Float(100.0), false).unwrap();
-        props.define_property("MinPosition_um", PropertyValue::Float(0.0), false).unwrap();
-        props.define_property("MaxPosition_um", PropertyValue::Float(100.0), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Limit Voltage min [V]", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("Limit Voltage max [V]", PropertyValue::Float(100.0), false)
+            .unwrap();
+        props
+            .define_property("Limit um min [microns]", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .define_property("Limit um max [microns]", PropertyValue::Float(100.0), false)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -71,7 +81,10 @@ impl PsjNV40_1Stage {
 
     fn send_only(&mut self, command: &str) -> MmResult<()> {
         let cmd = command.to_string();
-        self.call_transport(|t| { t.send(&cmd)?; Ok(()) })
+        self.call_transport(|t| {
+            t.send(&cmd)?;
+            Ok(())
+        })
     }
 
     fn parse_csv_value(resp: &str) -> MmResult<f64> {
@@ -94,12 +107,18 @@ impl PsjNV40_1Stage {
 }
 
 impl Default for PsjNV40_1Stage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for PsjNV40_1Stage {
-    fn name(&self) -> &str { "PSJ-NV40-1-Stage" }
-    fn description(&self) -> &str { "Piezosystem Jena NV40/1CL piezo Z stage" }
+    fn name(&self) -> &str {
+        "PSJ_Stage"
+    }
+    fn description(&self) -> &str {
+        "Piezosystem stage driver adapter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -143,27 +162,44 @@ impl Device for PsjNV40_1Stage {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for PsjNV40_1Stage {
     fn set_position_um(&mut self, pos: f64) -> MmResult<()> {
-        let set_val = if self.loop_closed { pos } else { self.um_to_voltage(pos) };
+        let set_val = if self.loop_closed {
+            pos
+        } else {
+            self.um_to_voltage(pos)
+        };
         self.send_only(&format!("wr,{:.3}", set_val))?;
         self.position_um = pos;
         Ok(())
     }
 
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.position_um) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.position_um)
+    }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
         let new_pos = self.position_um + d;
@@ -174,11 +210,19 @@ impl Stage for PsjNV40_1Stage {
         self.set_position_um(self.min_um)
     }
 
-    fn stop(&mut self) -> MmResult<()> { Ok(()) }
+    fn stop(&mut self) -> MmResult<()> {
+        Ok(())
+    }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((self.min_um, self.max_um)) }
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((self.min_um, self.max_um))
+    }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -189,10 +233,10 @@ mod tests {
     fn make_transport() -> MockTransport {
         // "setk,1" is send_only — no script entry.
         MockTransport::new()
-            .expect("",      "NV40/1CL V2.0>")
+            .expect("", "NV40/1CL V2.0>")
             // setk,1 is send_only
-            .expect("cloop", "cloop,0")   // open loop
-            .expect("rd",    "rd,50.0")   // 50V
+            .expect("cloop", "cloop,0") // open loop
+            .expect("rd", "rd,50.0") // 50V
     }
 
     #[test]
@@ -226,5 +270,31 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(PsjNV40_1Stage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn upstream_name_description_and_limit_properties() {
+        let stage = PsjNV40_1Stage::new();
+        assert_eq!(stage.name(), "PSJ_Stage");
+        assert_eq!(stage.description(), "Piezosystem stage driver adapter");
+        assert!(stage.has_property("Limit Voltage min [V]"));
+        assert!(stage.has_property("Limit Voltage max [V]"));
+        assert!(stage.has_property("Limit um min [microns]"));
+        assert!(stage.has_property("Limit um max [microns]"));
+        assert!(!stage.has_property("MinVoltage"));
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected() {
+        let mut stage = PsjNV40_1Stage::new().with_transport(Box::new(make_transport()));
+        stage.initialize().unwrap();
+        assert_eq!(
+            stage.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::CanNotSetProperty)
+        );
+        assert_eq!(
+            stage.get_property("Port").unwrap(),
+            PropertyValue::String("Undefined".into())
+        );
     }
 }

@@ -5,6 +5,7 @@
 ///
 /// Exposure is stored in milliseconds (MicroManager convention) and converted
 /// to microseconds for the Aravis API.
+use aravis::glib;
 use aravis::prelude::*;
 
 use crate::error::{MmError, MmResult};
@@ -70,6 +71,14 @@ fn rgb_to_rgba(src: &[u8], width: u32, height: u32) -> Vec<u8> {
         dst[i * 4 + 3] = 255;
     }
     dst
+}
+
+fn round_down_to_increment(value: u32, increment: i32) -> i32 {
+    if increment <= 1 {
+        return value as i32;
+    }
+    let increment = increment as u32;
+    ((value / increment) * increment) as i32
 }
 
 // ─── Camera struct ───────────────────────────────────────────────────────────
@@ -232,7 +241,7 @@ impl AravisCamera {
             self.bytes_per_pixel = pixel_format_bpp(&fmt_str);
             self.bit_depth = pixel_format_depth(&fmt_str);
             self.num_components = pixel_format_components(&fmt_str);
-            self.pixel_format = fmt_str;
+            self.pixel_format = fmt_str.to_string();
         }
         self.props
             .entry_mut("PixelType")
@@ -252,7 +261,11 @@ impl AravisCamera {
             return Err(MmError::SnapImageFailed);
         }
 
-        let data = buffer.data().ok_or(MmError::SnapImageFailed)?;
+        let (data_ptr, data_len) = buffer.data();
+        if data_ptr.is_null() {
+            return Err(MmError::SnapImageFailed);
+        }
+        let data = unsafe { std::slice::from_raw_parts(data_ptr, data_len) };
         let w = buffer.image_width() as u32;
         let h = buffer.image_height() as u32;
 
@@ -300,7 +313,7 @@ impl Device for AravisCamera {
         "AravisCamera"
     }
     fn description(&self) -> &str {
-        "GenICam camera (Aravis)"
+        "Aravis Camera"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -526,17 +539,16 @@ impl Camera for AravisCamera {
         self.exposure_ms
     }
 
-    fn set_exposure(&mut self, exp_ms: f64) {
+    fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()> {
         if self.capturing {
-            return;
+            return Err(MmError::CameraBusyAcquiring);
         }
+        self.props.set("Exposure", PropertyValue::Float(exp_ms))?;
         self.exposure_ms = exp_ms;
-        self.props
-            .set("Exposure", PropertyValue::Float(exp_ms))
-            .ok();
         if let Some(cam) = self.camera.as_ref() {
             Self::write_exposure(cam, exp_ms);
         }
+        Ok(())
     }
 
     fn get_binning(&self) -> i32 {
@@ -571,13 +583,11 @@ impl Camera for AravisCamera {
             return self.clear_roi();
         }
         let cam = self.camera.as_ref().ok_or(MmError::NotConnected)?;
-        cam.set_region(
-            roi.x as i32,
-            roi.y as i32,
-            roi.width as i32,
-            roi.height as i32,
-        )
-        .map_err(Self::arv_err)?;
+        let x = round_down_to_increment(roi.x, cam.x_offset_increment().unwrap_or(1));
+        let y = round_down_to_increment(roi.y, cam.y_offset_increment().unwrap_or(1));
+        let width = round_down_to_increment(roi.width, cam.width_increment().unwrap_or(1));
+        let height = round_down_to_increment(roi.height, cam.height_increment().unwrap_or(1));
+        cam.set_region(x, y, width, height).map_err(Self::arv_err)?;
         self.sync_dimensions();
         Ok(())
     }
@@ -609,12 +619,12 @@ impl Camera for AravisCamera {
             .map_err(Self::arv_err)?;
 
         // Create stream (polling mode, no callback)
-        let stream = camera.create_stream(None, None).map_err(Self::arv_err)?;
+        let stream = camera.create_stream().map_err(Self::arv_err)?;
 
         // Allocate and push buffers
         let payload = camera.payload().map_err(Self::arv_err)? as usize;
         for _ in 0..NUM_STREAM_BUFFERS {
-            let buf = aravis::Buffer::new(payload, None);
+            let buf = aravis::Buffer::new_allocate(payload);
             stream.push_buffer(buf);
         }
 
@@ -696,6 +706,14 @@ mod tests {
         let rgb = vec![255, 0, 0, 0, 255, 0]; // 2 pixels: red, green
         let rgba = rgb_to_rgba(&rgb, 2, 1);
         assert_eq!(rgba, vec![255, 0, 0, 255, 0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn roi_values_round_down_to_camera_increments() {
+        assert_eq!(round_down_to_increment(19, 8), 16);
+        assert_eq!(round_down_to_increment(7, 8), 0);
+        assert_eq!(round_down_to_increment(13, 1), 13);
+        assert_eq!(round_down_to_increment(13, 0), 13);
     }
 
     #[test]

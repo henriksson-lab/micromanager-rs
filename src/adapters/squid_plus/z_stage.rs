@@ -89,19 +89,32 @@ impl SquidPlusZStage {
         common::send_and_wait(t.as_mut(), pkt)
     }
 
-    fn configure_velocity(&mut self) -> MmResult<()> {
+    fn configure_velocity_values(
+        &mut self,
+        axis: u8,
+        max_velocity_mm_s: f64,
+        acceleration_mm_s2: f64,
+    ) -> MmResult<()> {
         let id = self.next_cmd_id();
         let pkt = protocol::build_set_max_velocity_acceleration(
             id,
-            protocol::AXIS_Z,
-            self.max_velocity_mm_s,
-            self.acceleration_mm_s2,
+            axis,
+            max_velocity_mm_s,
+            acceleration_mm_s2,
         );
         self.send_and_wait(&pkt)
     }
 
+    fn configure_velocity(&mut self) -> MmResult<()> {
+        self.configure_velocity_values(
+            protocol::AXIS_Z,
+            self.max_velocity_mm_s,
+            self.acceleration_mm_s2,
+        )
+    }
+
     fn um_to_usteps(um: f64) -> i32 {
-        (um / 1000.0 * USTEPS_PER_MM_Z / DIRECTION_Z) as i32
+        (um / 1000.0 * USTEPS_PER_MM_Z / DIRECTION_Z).round_ties_even() as i32
     }
 
     fn read_configuration(&mut self) -> MmResult<()> {
@@ -133,7 +146,7 @@ impl SquidPlusZStage {
     }
 
     fn pos_to_usteps(&self, um: f64) -> i32 {
-        (um / 1000.0 * self.usteps_per_mm() / self.direction_z) as i32
+        (um / 1000.0 * self.usteps_per_mm() / self.direction_z).round_ties_even() as i32
     }
 }
 
@@ -192,11 +205,15 @@ impl Device for SquidPlusZStage {
                 if !(1.0..=655.35).contains(&value) {
                     return Err(MmError::InvalidPropertyValue);
                 }
+                if self.initialized {
+                    self.configure_velocity_values(
+                        protocol::AXIS_Y,
+                        value,
+                        self.acceleration_mm_s2,
+                    )?;
+                }
                 self.max_velocity_mm_s = value;
                 self.props.set(name, PropertyValue::Float(value))?;
-                if self.initialized {
-                    self.configure_velocity()?;
-                }
                 Ok(())
             }
             "Acceleration" => {
@@ -204,11 +221,15 @@ impl Device for SquidPlusZStage {
                 if !(1.0..=6553.5).contains(&value) {
                     return Err(MmError::InvalidPropertyValue);
                 }
+                if self.initialized {
+                    self.configure_velocity_values(
+                        protocol::AXIS_Z,
+                        self.max_velocity_mm_s,
+                        value,
+                    )?;
+                }
                 self.acceleration_mm_s2 = value;
                 self.props.set(name, PropertyValue::Float(value))?;
-                if self.initialized {
-                    self.configure_velocity()?;
-                }
                 Ok(())
             }
             _ => self.props.set(name, val),
@@ -321,7 +342,51 @@ impl Stage for SquidPlusZStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::MockTransport;
+    use crate::transport::{MockTransport, Transport};
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingTransport {
+        responses: VecDeque<Vec<u8>>,
+        writes: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl RecordingTransport {
+        fn new(responses: impl IntoIterator<Item = Vec<u8>>) -> (Self, Arc<Mutex<Vec<Vec<u8>>>>) {
+            let writes = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    responses: responses.into_iter().collect(),
+                    writes: writes.clone(),
+                },
+                writes,
+            )
+        }
+    }
+
+    impl Transport for RecordingTransport {
+        fn send(&mut self, _cmd: &str) -> MmResult<()> {
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            Err(MmError::UnsupportedCommand)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            Ok(())
+        }
+
+        fn send_bytes(&mut self, bytes: &[u8]) -> MmResult<()> {
+            self.writes.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+
+        fn receive_bytes(&mut self, n: usize) -> MmResult<Vec<u8>> {
+            let data = self.responses.pop_front().ok_or(MmError::SerialTimeout)?;
+            Ok(data[..data.len().min(n)].to_vec())
+        }
+    }
 
     fn ok_response(cmd_id: u8) -> Vec<u8> {
         let mut buf = vec![0u8; protocol::MSG_LENGTH];
@@ -341,6 +406,14 @@ mod tests {
         dev.initialize().unwrap();
         assert!(dev.initialized);
         assert_eq!(dev.get_position_um().unwrap(), 0.0);
+        assert_eq!(
+            dev.get_property("MaxVelocity").unwrap(),
+            PropertyValue::Float(5.0)
+        );
+        assert_eq!(
+            dev.get_property("Acceleration").unwrap(),
+            PropertyValue::Float(100.0)
+        );
     }
 
     #[test]
@@ -376,9 +449,9 @@ mod tests {
 
     #[test]
     fn ustep_conversion() {
-        // 1 mm = 1000 µm, default C++ direction is negative and casts toward zero.
+        // 1 mm = 1000 um, squid-control rounds computed microsteps.
         let usteps = SquidPlusZStage::um_to_usteps(1000.0);
-        assert_eq!(usteps, -170666);
+        assert_eq!(usteps, -170667);
     }
 
     #[test]
@@ -396,6 +469,40 @@ mod tests {
         assert_eq!(
             dev.get_property("Acceleration").unwrap(),
             PropertyValue::Float(50.0)
+        );
+    }
+
+    #[test]
+    fn max_velocity_property_uses_upstream_y_axis_command_after_init() {
+        let (t, writes) = RecordingTransport::new([ok_response(1), ok_response(2)]);
+        let mut dev = SquidPlusZStage::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("MaxVelocity", PropertyValue::Float(10.0))
+            .unwrap();
+
+        let writes = writes.lock().unwrap();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0][2], protocol::AXIS_Z);
+        assert_eq!(writes[1][2], protocol::AXIS_Y);
+    }
+
+    #[test]
+    fn acceleration_property_cache_updates_only_after_ack() {
+        let mut failed = ok_response(2);
+        failed[1] = protocol::STATUS_CHECKSUM_ERROR;
+        failed[protocol::MSG_LENGTH - 1] = protocol::crc8(&failed[..protocol::MSG_LENGTH - 1]);
+
+        let t = make_init_transport().expect_binary(&failed);
+        let mut dev = SquidPlusZStage::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("Acceleration", PropertyValue::Float(50.0)),
+            Err(MmError::SerialCommandFailed)
+        );
+        assert_eq!(
+            dev.get_property("Acceleration").unwrap(),
+            PropertyValue::Float(DEFAULT_ACCELERATION_MM_S2)
         );
     }
 

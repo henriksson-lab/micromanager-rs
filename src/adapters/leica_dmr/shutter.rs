@@ -11,13 +11,14 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 pub struct LeicaDMRShutter {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     device_id: u8,
-    is_open: bool,
+    is_open: Cell<bool>,
 }
 
 impl LeicaDMRShutter {
@@ -36,33 +37,34 @@ impl LeicaDMRShutter {
         props.set_allowed_values("State", &["0", "1"]).unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
             device_id,
-            is_open: false,
+            is_open: Cell::new(false),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        let mut transport = self.transport.borrow_mut();
+        match transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn send_recv(&mut self, cmd: &str) -> MmResult<String> {
+    fn send_recv(&self, cmd: &str) -> MmResult<String> {
         self.call_transport(|t| Ok(t.send_recv(cmd)?.trim().to_string()))
     }
 
-    fn send_open_cmd(&mut self, open: bool) -> MmResult<()> {
+    fn send_open_cmd(&self, open: bool) -> MmResult<()> {
         let dev = self.device_id;
         let val = if open { 1 } else { 0 };
         let cmd = format!("{:02}012{}\r", dev, val);
@@ -72,6 +74,27 @@ impl LeicaDMRShutter {
             return Err(MmError::SerialInvalidResponse);
         }
         Ok(())
+    }
+
+    fn query_open(&self) -> MmResult<bool> {
+        let dev = self.device_id;
+        let cmd = format!("{:02}013\r", dev);
+        let resp = self.send_recv(&cmd)?;
+        let prefix = format!("{:02}013", dev);
+        if !resp.starts_with(&prefix) {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        match resp[prefix.len()..].parse::<i64>() {
+            Ok(0) => {
+                self.is_open.set(false);
+                Ok(false)
+            }
+            Ok(1) => {
+                self.is_open.set(true);
+                Ok(true)
+            }
+            _ => Err(MmError::SerialInvalidResponse),
+        }
     }
 }
 
@@ -84,7 +107,7 @@ impl Device for LeicaDMRShutter {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
         self.initialized = true;
@@ -100,7 +123,11 @@ impl Device for LeicaDMRShutter {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(if self.is_open { 1 } else { 0 })),
+            "State" => Ok(PropertyValue::Integer(if self.query_open()? {
+                1
+            } else {
+                0
+            })),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -139,14 +166,14 @@ impl Device for LeicaDMRShutter {
 impl Shutter for LeicaDMRShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         self.send_open_cmd(open)?;
-        self.is_open = open;
+        self.is_open.set(open);
         self.props
             .set("State", PropertyValue::Integer(if open { 1 } else { 0 }))?;
         Ok(())
     }
 
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        self.query_open()
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
@@ -164,7 +191,9 @@ mod tests {
         // device_id=67 (rLFA4), command=12
         let t = MockTransport::new()
             .expect("670121\r", "670121") // open
-            .expect("670120\r", "670120"); // close
+            .expect("67013\r", "670131")
+            .expect("670120\r", "670120") // close
+            .expect("67013\r", "670130");
         let mut s = LeicaDMRShutter::new(67).with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
@@ -174,11 +203,25 @@ mod tests {
     }
 
     #[test]
+    fn state_property_queries_live_state() {
+        let t = MockTransport::new().expect("12013\r", "120131");
+        let s = LeicaDMRShutter::new(12).with_transport(Box::new(t));
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(1));
+    }
+
+    #[test]
+    fn get_open_rejects_wrong_query_echo() {
+        let t = MockTransport::new().expect("67013\r", "120131");
+        let s = LeicaDMRShutter::new(67).with_transport(Box::new(t));
+        assert_eq!(s.get_open(), Err(MmError::SerialInvalidResponse));
+    }
+
+    #[test]
     fn fire_is_unsupported() {
         let t = MockTransport::new();
         let mut s = LeicaDMRShutter::new(67).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert_eq!(s.fire(5.0), Err(MmError::UnsupportedCommand));
-        assert!(!s.get_open().unwrap());
+        assert!(!s.is_open.get());
     }
 }

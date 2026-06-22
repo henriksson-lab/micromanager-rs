@@ -167,6 +167,28 @@ impl TofraZStage {
         (value_um / step_size_um + 0.5).trunc() as i64
     }
 
+    fn parse_upstream_numeric_position(text: &str) -> Option<f64> {
+        if !text.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+            return None;
+        }
+        let mut seen_dot = false;
+        let mut end = 0;
+        for (idx, byte) in text.bytes().enumerate() {
+            if byte == b'.' {
+                if seen_dot {
+                    break;
+                }
+                seen_dot = true;
+            }
+            end = idx + 1;
+        }
+        if end == 0 || text[..end].bytes().all(|b| b == b'.') {
+            Some(0.0)
+        } else {
+            text[..end].parse::<f64>().ok()
+        }
+    }
+
     fn clear_port(&self) -> MmResult<()> {
         self.call_transport(|t| t.purge())
     }
@@ -191,10 +213,9 @@ impl TofraZStage {
         Self::check_response(&resp)
     }
 
-    fn move_continuous(&mut self, speed: f64) -> MmResult<()> {
-        self.speed_um_s = speed;
+    fn move_continuous(&self, speed: f64) -> MmResult<()> {
         if speed == 0.0 {
-            return self.stop();
+            return self.send_raw_controller_command("T");
         }
         let steps = Self::um_to_cpp_steps(speed, self.step_size_um);
         let command = if steps > 0 {
@@ -203,10 +224,6 @@ impl TofraZStage {
             format!("V{}D0R", -steps)
         };
         self.send_raw_controller_command(&command)
-    }
-
-    fn set_outputs(&self) -> MmResult<()> {
-        self.send_raw_controller_command(&format!("J{}R", self.out1 + 2 * self.out2))
     }
 
     fn set_origin(&mut self) -> MmResult<()> {
@@ -254,10 +271,6 @@ impl Device for TofraZStage {
         self.clear_port()?;
         let resp = self.cmd(&init_cmd)?;
         Self::check_response(&resp)?;
-        self.clear_port()?;
-        let pos_resp = self.cmd("?0")?;
-        let steps = Self::parse_pos(&pos_resp)?;
-        self.position_um = steps as f64 * self.step_size_um;
         self.initialized = true;
         Ok(())
     }
@@ -358,33 +371,36 @@ impl Device for TofraZStage {
                 match text.as_str() {
                     "ORIGIN" => self.set_origin(),
                     "HOME" => self.home(),
-                    _ => match text.parse::<f64>() {
-                        Ok(pos) => self.set_position_um(pos),
-                        Err(_) => Ok(()),
+                    _ => match Self::parse_upstream_numeric_position(&text) {
+                        Some(pos) => self.set_position_um(pos),
+                        None => Ok(()),
                     },
                 }
             }
             "Speed" => {
                 let speed = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Float(speed))?;
-                self.move_continuous(speed)
+                self.move_continuous(speed)?;
+                self.speed_um_s = speed;
+                self.props.set(name, PropertyValue::Float(speed))
             }
             "Out1" => {
-                self.out1 = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(self.out1))?;
-                self.set_outputs()
+                let out = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.send_raw_controller_command(&format!("J{}R", out + 2 * self.out2))?;
+                self.out1 = out;
+                self.props.set(name, PropertyValue::Integer(self.out1))
             }
             "Out2" => {
-                self.out2 = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(self.out2))?;
-                self.set_outputs()
+                let out = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                self.send_raw_controller_command(&format!("J{}R", self.out1 + 2 * out))?;
+                self.out2 = out;
+                self.props.set(name, PropertyValue::Integer(self.out2))
             }
             "Execute" => {
-                self.execute = val.as_str().to_string();
+                let command = val.as_str().to_string();
+                self.send_raw_controller_command(&command)?;
+                self.execute = command;
                 self.props
-                    .set(name, PropertyValue::String(self.execute.clone()))?;
-                let command = self.execute.clone();
-                self.send_raw_controller_command(&command)
+                    .set(name, PropertyValue::String(self.execute.clone()))
             }
             _ => self.props.set(name, val),
         }
@@ -402,6 +418,9 @@ impl Device for TofraZStage {
         DeviceType::Stage
     }
     fn busy(&self) -> bool {
+        if self.clear_port().is_err() {
+            return false;
+        }
         self.cmd("Q")
             .and_then(|resp| Self::parse_status(&resp))
             .map(|status| status == '@')
@@ -478,6 +497,7 @@ impl Stage for TofraZStage {
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use std::sync::{Arc, Mutex};
 
     fn init_cmd() -> String {
         // step_size = 100/(256*400) = 0.0009765625
@@ -488,9 +508,43 @@ mod tests {
     }
 
     fn make_init_transport() -> MockTransport {
-        MockTransport::new()
-            .expect(&init_cmd(), "/00")
-            .expect("/2?0\r", "/000")
+        MockTransport::new().expect(&init_cmd(), "/00")
+    }
+
+    struct PurgeCountingTransport {
+        purge_count: Arc<Mutex<usize>>,
+        last_command: String,
+    }
+
+    impl PurgeCountingTransport {
+        fn new(purge_count: Arc<Mutex<usize>>) -> Self {
+            Self {
+                purge_count,
+                last_command: String::new(),
+            }
+        }
+    }
+
+    impl Transport for PurgeCountingTransport {
+        fn send(&mut self, cmd: &str) -> MmResult<()> {
+            self.last_command = cmd.to_string();
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            match self.last_command.as_str() {
+                "/2Q\r" => Ok("/0@".into()),
+                other => Err(MmError::LocallyDefined(format!(
+                    "unexpected command: {}",
+                    other
+                ))),
+            }
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            *self.purge_count.lock().unwrap() += 1;
+            Ok(())
+        }
     }
 
     #[test]
@@ -563,7 +617,6 @@ mod tests {
     fn position_origin_with_limits_still_uses_origin_command() {
         let t = MockTransport::new()
             .expect("/2j256h5m25V40960v4096L1024n2R\r", "/00")
-            .expect("/2?0\r", "/000")
             .expect("/2z0R\r", "/00");
         let mut s = TofraZStage::new().with_transport(Box::new(t));
         s.set_property("WithLimits", PropertyValue::Integer(1))
@@ -577,7 +630,6 @@ mod tests {
     fn position_home_with_limits_uses_hardware_home_command() {
         let t = MockTransport::new()
             .expect("/2j256h5m25V40960v4096L1024n2R\r", "/00")
-            .expect("/2?0\r", "/000")
             .expect("/2Z1000000000R\r", "/00");
         let mut s = TofraZStage::new().with_transport(Box::new(t));
         s.set_property("WithLimits", PropertyValue::Integer(1))
@@ -609,10 +661,19 @@ mod tests {
     }
 
     #[test]
+    fn busy_clears_port_before_status_query() {
+        let purge_count = Arc::new(Mutex::new(0));
+        let t = PurgeCountingTransport::new(Arc::clone(&purge_count));
+        let s = TofraZStage::new().with_transport(Box::new(t));
+
+        assert!(s.busy());
+        assert_eq!(*purge_count.lock().unwrap(), 1);
+    }
+
+    #[test]
     fn config_port_revert_and_runtime_actions() {
         let t = MockTransport::new()
             .expect("/5j256h5m25V20480v4096L1024n2R\r", "/00")
-            .expect("/5?0\r", "/000")
             .expect("/5V512P0R\r", "/00")
             .expect("/5J1R\r", "/00")
             .expect("/5J3R\r", "/00")
@@ -637,6 +698,50 @@ mod tests {
         s.set_property("Out1", PropertyValue::Integer(1)).unwrap();
         s.set_property("Out2", PropertyValue::Integer(1)).unwrap();
         s.set_property("Execute", PropertyValue::String("X1R".into()))
+            .unwrap();
+    }
+
+    #[test]
+    fn failed_runtime_actions_do_not_update_cache() {
+        let t = make_init_transport()
+            .expect("/2V512P0R\r", "/9")
+            .expect("/2J1R\r", "/9")
+            .expect("/2X1R\r", "/9");
+        let mut s = TofraZStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+
+        assert!(s.set_property("Speed", PropertyValue::Float(0.5)).is_err());
+        assert_eq!(s.get_property("Speed").unwrap(), PropertyValue::Float(0.0));
+
+        assert!(s.set_property("Out1", PropertyValue::Integer(1)).is_err());
+        assert_eq!(s.get_property("Out1").unwrap(), PropertyValue::Integer(0));
+
+        assert!(s
+            .set_property("Execute", PropertyValue::String("X1R".into()))
+            .is_err());
+        assert_eq!(
+            s.get_property("Execute").unwrap(),
+            PropertyValue::String(String::new())
+        );
+    }
+
+    #[test]
+    fn position_property_uses_upstream_numeric_gate() {
+        let t = make_init_transport()
+            .expect("/2A1280R\r", "/00")
+            .expect("/2A1024R\r", "/00")
+            .expect("/2A0R\r", "/00");
+        let mut s = TofraZStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_property("Position", PropertyValue::String("-1".into()))
+            .unwrap();
+        s.set_property("Position", PropertyValue::String("1e1".into()))
+            .unwrap();
+        s.set_property("Position", PropertyValue::String("1.25".into()))
+            .unwrap();
+        s.set_property("Position", PropertyValue::String("1..25".into()))
+            .unwrap();
+        s.set_property("Position", PropertyValue::String(".".into()))
             .unwrap();
     }
 }

@@ -42,6 +42,7 @@ pub struct SpectralLmm5 {
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
     wavelengths_nm: Vec<u32>, // nm for each detected line
+    line_indices: Vec<u8>,    // original LMM5 line number for each detected line
     transmissions: Vec<f64>,  // 0.0–100.0 per line
     shutter_open: bool,
 }
@@ -64,6 +65,7 @@ impl SpectralLmm5 {
             transport: None,
             initialized: false,
             wavelengths_nm: Vec::new(),
+            line_indices: Vec::new(),
             transmissions: Vec::new(),
             shutter_open: false,
         }
@@ -107,9 +109,10 @@ impl SpectralLmm5 {
         if !(0.0..=100.0).contains(&pct) {
             return Err(MmError::InvalidPropertyValue);
         }
+        let line_idx = self.line_indices[line];
         let val = (pct * 10.0).round() as u16;
         let [th, tl] = val.to_be_bytes();
-        let resp = self.cmd_bytes(&[0x04, line as u8, th, tl])?;
+        let resp = self.cmd_bytes(&[0x04, line_idx, th, tl])?;
         if resp.first() != Some(&0x04) {
             return Err(MmError::SerialInvalidResponse);
         }
@@ -166,6 +169,7 @@ impl Device for SpectralLmm5 {
         };
         let n = n.min(MAX_LINES);
         self.wavelengths_nm.clear();
+        self.line_indices.clear();
         self.transmissions.clear();
         for i in 0..n {
             let nm_raw = u16::from_be_bytes([lines[1 + i * 2], lines[2 + i * 2]]);
@@ -174,6 +178,7 @@ impl Device for SpectralLmm5 {
                 continue;
             }
             self.wavelengths_nm.push(nm);
+            self.line_indices.push(i as u8);
             self.transmissions.push(100.0);
             let line_idx = self.wavelengths_nm.len() - 1;
             // Get current transmission
@@ -207,10 +212,7 @@ impl Device for SpectralLmm5 {
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.set_open(false);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
@@ -328,12 +330,43 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_does_not_force_close() {
+        let t = make_init_transport().expect("0101\r", "01");
+        let mut dev = SpectralLmm5::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_open(true).unwrap();
+
+        dev.shutdown().unwrap();
+
+        assert!(!dev.initialized);
+        assert!(dev.get_open().unwrap());
+    }
+
+    #[test]
     fn set_transmission() {
         let t = make_init_transport().expect("040001F4\r", "04");
         let mut dev = SpectralLmm5::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_transmission(0, 50.0).unwrap();
         assert!((dev.transmissions[0] - 50.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn set_transmission_uses_original_line_number_after_skipped_lines() {
+        let t = MockTransport::new()
+            .expect("14\r", "14011E")
+            // 488 nm present, 50 nm hidden by new firmware, 561 nm present.
+            .expect("08\r", "08131001F415EA")
+            .expect("0500\r", "0503E8")
+            .expect("0502\r", "0503E8")
+            .expect("02\r", "02000000")
+            .expect("040201F4\r", "04");
+        let mut dev = SpectralLmm5::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(dev.wavelengths_nm, vec![488, 561]);
+        dev.set_transmission(1, 50.0).unwrap();
+        assert!((dev.transmissions[1] - 50.0).abs() < 0.1);
     }
 
     #[test]

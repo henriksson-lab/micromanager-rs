@@ -185,6 +185,7 @@ impl Device for TriggerScopeMMHub {
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => Ok(()),
             "Serial Send" => {
                 let cmd = val.to_string();
                 self.serial_receive = self.send_recv(&format!("{}\n", cmd))?;
@@ -301,5 +302,24 @@ mod tests {
         let mut dac = hub.create_dac_child(1).unwrap();
         dac.initialize().unwrap();
         dac.set_signal(5.0).unwrap();
+    }
+
+    #[test]
+    fn initialized_port_write_is_reverted() {
+        let t = MockTransport::new()
+            .expect("*\n", "ARC TRIGGERSCOPE 16 v1.0-MM")
+            .expect("SSL1\n", "SSL1");
+        let mut hub = TriggerScopeMMHub::new().with_transport(Box::new(t));
+        hub.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        hub.initialize().unwrap();
+
+        hub.set_property("Port", PropertyValue::String("COM2".into()))
+            .unwrap();
+
+        assert_eq!(
+            hub.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
     }
 }

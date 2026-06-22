@@ -25,19 +25,21 @@ pub use counter::ArduinoCounter;
 
 pub const DEVICE_NAME_COUNTER: &str = "ArduinoCounter";
 
-static DEVICE_LIST: &[DeviceInfo] = &[
-    DeviceInfo {
-        name: DEVICE_NAME_COUNTER,
-        description: "Arduino pulse counter device",
-        device_type: DeviceType::Generic,
-    },
-];
+static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
+    name: DEVICE_NAME_COUNTER,
+    description: "Arduino pulse counter device",
+    device_type: DeviceType::Generic,
+}];
 
 pub struct ArduinoCounterAdapter;
 
 impl AdapterModule for ArduinoCounterAdapter {
-    fn module_name(&self) -> &'static str { "arduino-counter" }
-    fn devices(&self) -> &'static [DeviceInfo] { DEVICE_LIST }
+    fn module_name(&self) -> &'static str {
+        "arduino-counter"
+    }
+    fn devices(&self) -> &'static [DeviceInfo] {
+        DEVICE_LIST
+    }
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
             DEVICE_NAME_COUNTER => Some(AnyDevice::Generic(Box::new(ArduinoCounter::new()))),

@@ -48,9 +48,9 @@ impl AdapterModule for CoherentScientificRemoteAdapter {
 
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
-            DEVICE_NAME_CSR => {
-                Some(AnyDevice::Shutter(Box::new(CoherentScientificRemote::new())))
-            }
+            DEVICE_NAME_CSR => Some(AnyDevice::Shutter(
+                Box::new(CoherentScientificRemote::new()),
+            )),
             _ => None,
         }
     }

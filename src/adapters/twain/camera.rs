@@ -46,6 +46,16 @@ impl TwainCamera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
         props
+            .define_property(
+                "CameraName",
+                PropertyValue::String("Twain Camera".into()),
+                true,
+            )
+            .unwrap();
+        props
+            .define_property("CameraID", PropertyValue::String("V2.0".into()), true)
+            .unwrap();
+        props
             .define_property("TwainCamera", PropertyValue::String("".into()), false)
             .unwrap();
         props
@@ -81,10 +91,10 @@ impl TwainCamera {
             .define_property("Height", PropertyValue::Integer(0), true)
             .unwrap();
         props
-            .define_property("BitDepth", PropertyValue::Integer(8), true)
+            .define_property("BitDepth", PropertyValue::Integer(32), true)
             .unwrap();
         props
-            .define_property("BytesPerPixel", PropertyValue::Integer(1), true)
+            .define_property("BytesPerPixel", PropertyValue::Integer(4), true)
             .unwrap();
 
         Self {
@@ -96,8 +106,8 @@ impl TwainCamera {
             binning: 1,
             img_width: 0,
             img_height: 0,
-            bytes_per_pixel: 1,
-            bit_depth: 8,
+            bytes_per_pixel: 4,
+            bit_depth: 32,
             image_buf: Vec::new(),
             capturing: false,
             sequence_count: 0,
@@ -143,6 +153,24 @@ impl TwainCamera {
     fn snap_timeout_ms(&self) -> i32 {
         (self.exposure_ms as i32 + 30_000).max(30_000)
     }
+
+    fn update_pixel_metadata_from_type(&mut self) -> MmResult<()> {
+        let byte_depth = match self.pixel_type.as_str() {
+            "8bit" => 1,
+            "16bit" => 2,
+            "32bitRGB" => 4,
+            _ => return Err(MmError::InvalidPropertyValue),
+        };
+        self.bytes_per_pixel = byte_depth;
+        self.bit_depth = byte_depth * 8;
+        self.props
+            .entry_mut("BitDepth")
+            .map(|e| e.value = PropertyValue::Integer(self.bit_depth as i64));
+        self.props
+            .entry_mut("BytesPerPixel")
+            .map(|e| e.value = PropertyValue::Integer(self.bytes_per_pixel as i64));
+        Ok(())
+    }
 }
 
 impl Default for TwainCamera {
@@ -167,7 +195,7 @@ impl Device for TwainCamera {
         "TwainCam"
     }
     fn description(&self) -> &str {
-        "Twain camera"
+        "Twain Camera Device "
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -270,6 +298,9 @@ impl Device for TwainCamera {
                 self.props.set(name, PropertyValue::Float(self.exposure_ms))
             }
             "Binning" => {
+                if self.capturing {
+                    return Err(MmError::CameraBusyAcquiring);
+                }
                 let binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
                 self.props
                     .set(name, PropertyValue::Integer(binning as i64))?;
@@ -277,11 +308,14 @@ impl Device for TwainCamera {
                 Ok(())
             }
             "PixelType" => {
+                if self.capturing {
+                    return Err(MmError::CameraBusyAcquiring);
+                }
                 let pixel_type = val.as_str().to_string();
                 self.props
                     .set(name, PropertyValue::String(pixel_type.clone()))?;
                 self.pixel_type = pixel_type;
-                Ok(())
+                self.update_pixel_metadata_from_type()
             }
             "vendor settings" => {
                 let requested = val.as_str();
@@ -374,11 +408,10 @@ impl Camera for TwainCamera {
         self.exposure_ms
     }
 
-    fn set_exposure(&mut self, exp_ms: f64) {
+    fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()> {
         self.exposure_ms = exp_ms;
-        self.props
-            .set("Exposure", PropertyValue::Float(exp_ms))
-            .ok();
+        self.props.set("Exposure", PropertyValue::Float(exp_ms))?;
+        Ok(())
     }
 
     fn get_binning(&self) -> i32 {
@@ -442,9 +475,19 @@ mod tests {
         assert_eq!(d.get_exposure(), 10.0);
         assert_eq!(d.get_binning(), 1);
         assert_eq!(
+            d.get_property("CameraName").unwrap(),
+            PropertyValue::String("Twain Camera".into())
+        );
+        assert_eq!(
+            d.get_property("CameraID").unwrap(),
+            PropertyValue::String("V2.0".into())
+        );
+        assert_eq!(
             d.get_property("PixelType").unwrap(),
             PropertyValue::String("32bitRGB".into())
         );
+        assert_eq!(d.get_image_bytes_per_pixel(), 4);
+        assert_eq!(d.get_bit_depth(), 32);
         assert!(!d.is_capturing());
         assert_eq!(d.get_number_of_channels(), 1);
     }
@@ -502,6 +545,8 @@ mod tests {
         assert!(d.is_property_read_only("Height"));
         assert!(d.is_property_read_only("BitDepth"));
         assert!(d.is_property_read_only("BytesPerPixel"));
+        assert!(d.is_property_read_only("CameraName"));
+        assert!(d.is_property_read_only("CameraID"));
         assert!(!d.is_property_read_only("TwainCamera"));
         assert!(!d.is_property_read_only("Exposure"));
     }
@@ -571,6 +616,29 @@ mod tests {
         d.stop_sequence_acquisition().unwrap();
         assert!(!d.is_capturing());
         assert_eq!(d.sequence_count, 0);
+        d.ctx = None;
+    }
+
+    #[test]
+    fn pixel_type_and_binning_reject_changes_while_capturing() {
+        let mut d = TwainCamera::new();
+        d.ctx = Some(NonNull::<ffi::TwainCtx>::dangling());
+        d.start_sequence_acquisition(2, 5.0).unwrap();
+
+        assert_eq!(
+            d.set_property("PixelType", PropertyValue::String("32bitRGB".into()))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(
+            d.set_property("Binning", PropertyValue::Integer(1))
+                .unwrap_err(),
+            MmError::CameraBusyAcquiring
+        );
+        assert_eq!(d.pixel_type, "32bitRGB");
+        assert_eq!(d.binning, 1);
+
+        d.stop_sequence_acquisition().unwrap();
         d.ctx = None;
     }
 }

@@ -12,14 +12,15 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Stage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, FocusDirection, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 const STEPS_PER_UM: f64 = 10.0;
 
 pub struct ScientificaZStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
-    pos_um: f64,
+    pos_um: Cell<f64>,
 }
 
 impl ScientificaZStage {
@@ -30,30 +31,31 @@ impl ScientificaZStage {
             .unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
-            pos_um: 0.0,
+            pos_um: Cell::new(0.0),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
+            t.purge()?;
             let r = t.send_recv(&c)?;
             Ok(r.trim().to_string())
         })
@@ -68,6 +70,31 @@ impl ScientificaZStage {
                 resp
             )))
         }
+    }
+
+    fn query_steps(&self) -> MmResult<i64> {
+        let r = self.cmd("PZ")?;
+        if r.len() > 2 && r.starts_with('E') {
+            return Err(MmError::LocallyDefined(format!(
+                "Scientifica Z error: {}",
+                r
+            )));
+        }
+        if r.is_empty() {
+            return Err(MmError::LocallyDefined(
+                "Scientifica bad Z position: ".into(),
+            ));
+        }
+        r.trim()
+            .parse()
+            .map_err(|_| MmError::LocallyDefined(format!("Scientifica bad Z position: {}", r)))
+    }
+
+    pub fn set_origin(&mut self) -> MmResult<()> {
+        let r = self.cmd("pz 0 ")?;
+        Self::check_ok(&r)?;
+        self.pos_um.set(0.0);
+        Ok(())
     }
 }
 
@@ -86,12 +113,11 @@ impl Device for ScientificaZStage {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
-        let r = self.cmd("PZ")?;
-        let steps: i64 = r.trim().parse().unwrap_or(0);
-        self.pos_um = steps as f64 / STEPS_PER_UM;
+        let steps = self.query_steps()?;
+        self.pos_um.set(steps as f64 / STEPS_PER_UM);
         self.initialized = true;
         Ok(())
     }
@@ -105,6 +131,9 @@ impl Device for ScientificaZStage {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::InvalidPropertyValue);
+        }
         self.props.set(name, val)
     }
     fn property_names(&self) -> Vec<String> {
@@ -120,7 +149,14 @@ impl Device for ScientificaZStage {
         DeviceType::Stage
     }
     fn busy(&self) -> bool {
-        false
+        match self.cmd("s") {
+            Ok(answer) if !answer.is_empty() => answer
+                .chars()
+                .next()
+                .and_then(|c| c.to_digit(10))
+                .map_or(false, |status| status != 0),
+            _ => false,
+        }
     }
 }
 
@@ -129,14 +165,17 @@ impl Stage for ScientificaZStage {
         let steps = (z * STEPS_PER_UM).round() as i64;
         let r = self.cmd(&format!("absz {}", steps))?;
         Self::check_ok(&r)?;
-        self.pos_um = z;
+        self.pos_um.set(z);
         Ok(())
     }
     fn get_position_um(&self) -> MmResult<f64> {
-        Ok(self.pos_um)
+        let steps = self.query_steps()?;
+        let pos = steps as f64 / STEPS_PER_UM;
+        self.pos_um.set(pos);
+        Ok(pos)
     }
     fn set_relative_position_um(&mut self, dz: f64) -> MmResult<()> {
-        let new_z = self.pos_um + dz;
+        let new_z = self.pos_um.get() + dz;
         self.set_position_um(new_z)
     }
     fn home(&mut self) -> MmResult<()> {
@@ -168,7 +207,9 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let t = MockTransport::new().any("500"); // PZ → 50 µm
+        let t = MockTransport::new()
+            .expect("PZ\r", "500")
+            .expect("PZ\r", "500");
         let mut s = ScientificaZStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!((s.get_position_um().unwrap() - 50.0).abs() < 1e-9);
@@ -176,7 +217,10 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = MockTransport::new().any("0").any("A");
+        let t = MockTransport::new()
+            .expect("PZ\r", "0")
+            .expect("absz 1000\r", "A")
+            .expect("PZ\r", "1000");
         let mut s = ScientificaZStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_position_um(100.0).unwrap();
@@ -185,7 +229,10 @@ mod tests {
 
     #[test]
     fn move_relative() {
-        let t = MockTransport::new().any("1000").any("A"); // start 100µm, add 50µm
+        let t = MockTransport::new()
+            .expect("PZ\r", "1000")
+            .expect("absz 1500\r", "A")
+            .expect("PZ\r", "1500");
         let mut s = ScientificaZStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_position_um(50.0).unwrap();
@@ -212,5 +259,47 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(ScientificaZStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn malformed_position_response_fails_initialize() {
+        let t = MockTransport::new().any("not-a-number");
+        let mut s = ScientificaZStage::new().with_transport(Box::new(t));
+        assert!(s.initialize().is_err());
+    }
+
+    #[test]
+    fn busy_queries_status_command() {
+        let t = MockTransport::new().expect("s\r", "1");
+        let s = ScientificaZStage::new().with_transport(Box::new(t));
+        assert!(s.busy());
+    }
+
+    #[test]
+    fn set_origin_sends_upstream_zero_command() {
+        let t = MockTransport::new()
+            .expect("PZ\r", "500")
+            .expect("pz 0 \r", "A")
+            .expect("PZ\r", "0");
+        let mut s = ScientificaZStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_origin().unwrap();
+        assert_eq!(s.get_position_um().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected_and_preserves_value() {
+        let t = MockTransport::new().expect("PZ\r", "0");
+        let mut s = ScientificaZStage::new().with_transport(Box::new(t));
+        s.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        s.initialize().unwrap();
+        assert!(s
+            .set_property("Port", PropertyValue::String("COM2".into()))
+            .is_err());
+        assert_eq!(
+            s.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
     }
 }

@@ -10,12 +10,14 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 const DEFAULT_NUM_POSITIONS: u64 = 6;
 
 pub struct LudlWheel {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
     device: u8,
     wheel_number: u8,
@@ -65,21 +67,21 @@ impl LudlWheel {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
             let r = t.send_recv(&c)?;
@@ -112,6 +114,23 @@ impl LudlWheel {
         }
     }
 
+    fn poll_module_busy(&self) -> bool {
+        self.call_transport(|t| {
+            if t.purge().is_err() || t.send("STATUS S\r").is_err() {
+                return Ok(false);
+            }
+            Ok(match t.receive_line() {
+                Ok(resp) => match resp.trim().as_bytes().first().copied() {
+                    Some(b'N') => false,
+                    Some(b'B') => true,
+                    _ => true,
+                },
+                Err(_) => true,
+            })
+        })
+        .unwrap_or(false)
+    }
+
     fn home_wheel(&mut self) -> MmResult<()> {
         let r = self.cmd(&format!(
             "Rotat S{} {} H",
@@ -119,6 +138,17 @@ impl LudlWheel {
             self.wheel_selector()
         ))?;
         Self::check_a(&r)?;
+
+        let timeout = Duration::from_secs_f64(self.home_timeout_s.max(0.0));
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if !self.poll_module_busy() {
+                self.position = 0;
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
         self.position = 0;
         Ok(())
     }
@@ -201,7 +231,7 @@ impl Device for LudlWheel {
         DeviceType::State
     }
     fn busy(&self) -> bool {
-        false
+        self.poll_module_busy()
     }
 }
 
@@ -259,7 +289,9 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let t = MockTransport::new().expect("Rotat S1 M H\r", ":A");
+        let t = MockTransport::new()
+            .expect("Rotat S1 M H\r", ":A")
+            .expect("STATUS S\r", "N");
         let mut w = LudlWheel::new(1).with_transport(Box::new(t));
         w.initialize().unwrap();
         assert_eq!(w.get_position().unwrap(), 0);
@@ -267,7 +299,7 @@ mod tests {
 
     #[test]
     fn move_to_position() {
-        let t = MockTransport::new().any(":A 1").any(":A");
+        let t = MockTransport::new().any(":A 1").any("N").any(":A");
         let mut w = LudlWheel::new(1).with_transport(Box::new(t));
         w.initialize().unwrap();
         w.set_position(3).unwrap();
@@ -276,7 +308,7 @@ mod tests {
 
     #[test]
     fn out_of_range_fails() {
-        let t = MockTransport::new().any(":A 1");
+        let t = MockTransport::new().any(":A 1").any("N");
         let mut w = LudlWheel::new(1).with_transport(Box::new(t));
         w.initialize().unwrap();
         assert!(w.set_position(6).is_err());
@@ -291,6 +323,7 @@ mod tests {
     fn ten_position_wheel_uses_zero_for_tenth_device_position() {
         let t = MockTransport::new()
             .any(":A 1")
+            .any("N")
             .expect("Rotat S1 M 0\r", ":A");
         let mut w = LudlWheel::new(1).with_transport(Box::new(t));
         w.initialize().unwrap();
@@ -304,6 +337,7 @@ mod tests {
     fn upstream_property_names_labels_and_second_wheel_selector() {
         let t = MockTransport::new()
             .expect("Rotat S1 A H\r", ":A")
+            .expect("STATUS S\r", "N")
             .expect("Rotat S1 A 2\r", ":A");
         let mut w = LudlWheel::new(1).with_transport(Box::new(t));
         assert!(w.has_property("LudlDeviceNumberWheel"));
@@ -320,5 +354,23 @@ mod tests {
         assert_eq!(w.get_position_label(0).unwrap(), "Filter-1");
         w.set_position_by_label("Filter-2").unwrap();
         assert_eq!(w.get_position().unwrap(), 1);
+    }
+
+    #[test]
+    fn busy_polls_upstream_status_s() {
+        let t = MockTransport::new().expect("STATUS S\r", "B");
+        let w = LudlWheel::new(1).with_transport(Box::new(t));
+        assert!(w.busy());
+    }
+
+    #[test]
+    fn initialize_waits_for_home_busy_to_clear() {
+        let t = MockTransport::new()
+            .expect("Rotat S1 M H\r", ":A")
+            .expect("STATUS S\r", "B")
+            .expect("STATUS S\r", "N");
+        let mut w = LudlWheel::new(1).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        assert_eq!(w.get_position().unwrap(), 0);
     }
 }

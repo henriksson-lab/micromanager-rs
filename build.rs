@@ -2,12 +2,49 @@ use std::path::PathBuf;
 
 fn main() {
     build_andor_sdk3();
+    build_daheng();
     build_jai();
     build_picam();
     build_spot();
     build_tsi();
     build_twain();
     build_iidc();
+}
+
+fn build_daheng() {
+    if std::env::var("CARGO_FEATURE_DAHENG").is_err() {
+        return;
+    }
+
+    let use_stub = std::env::var("DAHENG_STUB").is_ok();
+    if use_stub {
+        cc::Build::new()
+            .file("vendor/daheng_stub/gxiapi_stub.c")
+            .warnings(false)
+            .compile("gxiapi");
+        println!("cargo:rerun-if-env-changed=DAHENG_STUB");
+        println!("cargo:rerun-if-changed=vendor/daheng_stub/gxiapi_stub.c");
+        return;
+    }
+
+    let root = std::env::var("DAHENG_SDK_ROOT")
+        .or_else(|_| std::env::var("GALAXY_ROOT"))
+        .ok()
+        .map(PathBuf::from);
+
+    if let Some(root) = root {
+        for sub in &["lib", "lib64", "Libraries", "Bin", "bin"] {
+            let p = root.join(sub);
+            if p.exists() {
+                println!("cargo:rustc-link-search=native={}", p.display());
+            }
+        }
+    }
+
+    println!("cargo:rustc-link-lib=gxiapi");
+    println!("cargo:rerun-if-env-changed=DAHENG_STUB");
+    println!("cargo:rerun-if-env-changed=DAHENG_SDK_ROOT");
+    println!("cargo:rerun-if-env-changed=GALAXY_ROOT");
 }
 
 fn build_andor_sdk3() {
@@ -17,12 +54,29 @@ fn build_andor_sdk3() {
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let sdk_root = std::env::var("ANDOR_SDK3_ROOT").ok().map(PathBuf::from);
+    let use_stub = std::env::var("ANDOR_SDK3_STUB").is_ok();
 
     let ref_include =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("mmCoreAndDevices/DeviceAdapters/AndorSDK3");
 
     let mut build = cc::Build::new();
-    build.file("src/adapters/andor_sdk3/shim.c");
+    build
+        .cpp(true)
+        .file("src/adapters/andor_sdk3/shim.c")
+        .flag_if_supported("-std=c++11");
+
+    if use_stub {
+        build
+            .include("vendor/andor_sdk3_stub")
+            .file("vendor/andor_sdk3_stub/andor_sdk3_stub.c");
+        build.compile("andor3_shim");
+        println!("cargo:rerun-if-env-changed=ANDOR_SDK3_STUB");
+        println!("cargo:rerun-if-changed=src/adapters/andor_sdk3/shim.c");
+        println!("cargo:rerun-if-changed=vendor/andor_sdk3_stub/atcore.h");
+        println!("cargo:rerun-if-changed=vendor/andor_sdk3_stub/atutility.h");
+        println!("cargo:rerun-if-changed=vendor/andor_sdk3_stub/andor_sdk3_stub.c");
+        return;
+    }
 
     if ref_include.exists() {
         build.include(&ref_include);
@@ -63,6 +117,7 @@ fn build_andor_sdk3() {
 
     build.compile("andor3_shim");
     println!("cargo:rerun-if-changed=src/adapters/andor_sdk3/shim.c");
+    println!("cargo:rerun-if-env-changed=ANDOR_SDK3_STUB");
     println!("cargo:rerun-if-env-changed=ANDOR_SDK3_ROOT");
 }
 
@@ -153,6 +208,20 @@ fn build_picam() {
 
     let mut build = cc::Build::new();
     build.file("src/adapters/picam/shim.c").warnings(false);
+    let use_stub = std::env::var("PVCAM_STUB").is_ok();
+
+    if use_stub {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/pvcam_stub");
+        build.include(root.join("include"));
+        build.file(root.join("pvcam_stub.c"));
+        build.compile("picam_shim");
+        println!("cargo:rerun-if-env-changed=PVCAM_STUB");
+        println!("cargo:rerun-if-changed=src/adapters/picam/shim.c");
+        println!("cargo:rerun-if-changed=vendor/pvcam_stub/include/pvcam/master.h");
+        println!("cargo:rerun-if-changed=vendor/pvcam_stub/include/pvcam/pvcam.h");
+        println!("cargo:rerun-if-changed=vendor/pvcam_stub/pvcam_stub.c");
+        return;
+    }
 
     #[cfg(target_os = "macos")]
     {
@@ -166,6 +235,7 @@ fn build_picam() {
     #[cfg(target_os = "linux")]
     {
         let root = std::env::var("PVCAM_ROOT").unwrap_or_else(|_| "/usr/local".into());
+        build.include(format!("{}/include", root));
         build.include(format!("{}/include/pvcam", root));
         build.compile("picam_shim");
         println!("cargo:rustc-link-search=native={}/lib", root);
@@ -182,6 +252,7 @@ fn build_picam() {
     }
 
     println!("cargo:rerun-if-env-changed=PVCAM_ROOT");
+    println!("cargo:rerun-if-env-changed=PVCAM_STUB");
     println!("cargo:rerun-if-changed=src/adapters/picam/shim.c");
 }
 
@@ -232,9 +303,27 @@ fn build_tsi() {
         return;
     }
 
-    let sdk_root = find_tsi_sdk_root();
+    let use_stub = std::env::var("TSI_STUB").is_ok();
 
     let mut build = cc::Build::new();
+
+    if use_stub {
+        build
+            .include("vendor/tsi_stub/include")
+            .file("src/adapters/tsi/shim.c")
+            .file("vendor/tsi_stub/tsi_stub.c")
+            .warnings(false)
+            .compile("tsi_shim");
+
+        println!("cargo:rerun-if-env-changed=TSI_STUB");
+        println!("cargo:rerun-if-changed=src/adapters/tsi/shim.c");
+        println!("cargo:rerun-if-changed=vendor/tsi_stub/include/tl_camera_sdk.h");
+        println!("cargo:rerun-if-changed=vendor/tsi_stub/tsi_stub.c");
+        return;
+    }
+
+    let sdk_root = find_tsi_sdk_root();
+
     for sub in &[
         "include",
         "includes",
@@ -268,6 +357,7 @@ fn build_tsi() {
     println!("cargo:rustc-link-lib=pthread");
 
     println!("cargo:rerun-if-env-changed=TSI_SDK_ROOT");
+    println!("cargo:rerun-if-env-changed=TSI_STUB");
     println!("cargo:rerun-if-changed=src/adapters/tsi/shim.c");
 }
 
@@ -275,12 +365,20 @@ fn find_tsi_sdk_root() -> String {
     if let Ok(root) = std::env::var("TSI_SDK_ROOT") {
         return root;
     }
+    if let Ok(root) = std::env::var("THORLABS_TSI_SDK_PATH_64_BIT") {
+        return root;
+    }
+    if let Ok(root) = std::env::var("THORLABS_TSI_SDK_PATH_32_BIT") {
+        return root;
+    }
+    let mut searched: Vec<&'static str> = Vec::new();
     #[cfg(target_os = "macos")]
     {
         for c in &[
             "/Library/Application Support/Thorlabs/Scientific Camera SDK",
             "/usr/local/thorlabs/tsi_sdk",
         ] {
+            searched.push(c);
             if std::path::Path::new(c).exists() {
                 return c.to_string();
             }
@@ -289,6 +387,7 @@ fn find_tsi_sdk_root() -> String {
     #[cfg(target_os = "linux")]
     {
         for c in &["/opt/thorlabs/tsi_sdk", "/usr/local/tsi_sdk"] {
+            searched.push(c);
             if std::path::Path::new(c).exists() {
                 return c.to_string();
             }
@@ -297,11 +396,17 @@ fn find_tsi_sdk_root() -> String {
     #[cfg(target_os = "windows")]
     {
         let c = r"C:\Program Files\Thorlabs\Scientific Imaging\Scientific Camera SDK";
+        searched.push(c);
         if std::path::Path::new(c).exists() {
             return c.to_string();
         }
     }
-    panic!("Thorlabs Scientific Camera SDK not found. Set TSI_SDK_ROOT.");
+    panic!(
+        "Thorlabs Scientific Camera SDK not found. Set TSI_SDK_ROOT \
+         (or THORLABS_TSI_SDK_PATH_64_BIT / THORLABS_TSI_SDK_PATH_32_BIT) \
+         to a root containing tl_camera_sdk.h and libtl_camera_sdk.*. Searched: {}",
+        searched.join(", ")
+    );
 }
 
 fn build_twain() {

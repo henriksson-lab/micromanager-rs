@@ -36,43 +36,6 @@ impl TriggerScopeHub {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
-        props
-            .define_property("Serial TX", PropertyValue::String(String::new()), false)
-            .unwrap();
-        props
-            .define_property("Serial RX", PropertyValue::String(String::new()), false)
-            .unwrap();
-        props
-            .define_property(
-                "Program File",
-                PropertyValue::String("TriggerScope.csv".into()),
-                false,
-            )
-            .unwrap();
-        props
-            .define_property("Program Load", PropertyValue::Integer(0), false)
-            .unwrap();
-        props.set_property_limits("Program Load", 0.0, 1.0).unwrap();
-        props
-            .define_property("Step Mode", PropertyValue::Integer(0), false)
-            .unwrap();
-        props
-            .define_property("Arm Mode", PropertyValue::Integer(0), false)
-            .unwrap();
-        props.set_property_limits("Arm Mode", 0.0, 1.0).unwrap();
-        props
-            .define_property("Array #", PropertyValue::Integer(1), false)
-            .unwrap();
-        props.set_property_limits("Array #", 1.0, 6.0).unwrap();
-        props
-            .define_property("Clear Arrays", PropertyValue::String("Off".into()), false)
-            .unwrap();
-        props
-            .set_allowed_values(
-                "Clear Arrays",
-                &["Off", "Clear Active Array", "Clear All Arrays"],
-            )
-            .unwrap();
         Self {
             props,
             transport: None,
@@ -132,6 +95,92 @@ impl TriggerScopeHub {
         })
     }
 
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        let port = self
+            .props
+            .get("Port")
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        if !self.props.has_property("Firmware Version") {
+            self.props.define_property(
+                "Firmware Version",
+                PropertyValue::String(self.firmware_version.clone()),
+                true,
+            )?;
+        }
+        if !self.props.has_property("Software Version") {
+            self.props.define_property(
+                "Software Version",
+                PropertyValue::String(SOFTWARE_VERSION.into()),
+                true,
+            )?;
+        }
+        if !self.props.has_property("DAC Bits") {
+            self.props.define_property(
+                "DAC Bits",
+                PropertyValue::String(if self.is_ts16 { "16" } else { "12" }.into()),
+                true,
+            )?;
+        }
+        if !self.props.has_property("COM Port") {
+            self.props
+                .define_property("COM Port", PropertyValue::String(port), true)?;
+        }
+        if !self.props.has_property("Trigger Time Delta") {
+            self.props.define_property(
+                "Trigger Time Delta",
+                PropertyValue::String(String::new()),
+                true,
+            )?;
+        }
+        if !self.props.has_property("Serial TX") {
+            self.props
+                .define_property("Serial TX", PropertyValue::String(String::new()), false)?;
+        }
+        if !self.props.has_property("Serial RX") {
+            self.props
+                .define_property("Serial RX", PropertyValue::String(String::new()), false)?;
+        }
+        if !self.props.has_property("Program File") {
+            self.props.define_property(
+                "Program File",
+                PropertyValue::String("TriggerScope.csv".into()),
+                false,
+            )?;
+        }
+        if !self.props.has_property("Program Load") {
+            self.props
+                .define_property("Program Load", PropertyValue::Integer(0), false)?;
+            self.props.set_property_limits("Program Load", 0.0, 1.0)?;
+        }
+        if !self.props.has_property("Step Mode") {
+            self.props
+                .define_property("Step Mode", PropertyValue::Integer(0), false)?;
+        }
+        if !self.props.has_property("Arm Mode") {
+            self.props
+                .define_property("Arm Mode", PropertyValue::Integer(0), false)?;
+            self.props.set_property_limits("Arm Mode", 0.0, 1.0)?;
+        }
+        if !self.props.has_property("Array #") {
+            self.props
+                .define_property("Array #", PropertyValue::Integer(1), false)?;
+            self.props.set_property_limits("Array #", 1.0, 6.0)?;
+        }
+        if !self.props.has_property("Clear Arrays") {
+            self.props.define_property(
+                "Clear Arrays",
+                PropertyValue::String("Off".into()),
+                false,
+            )?;
+            self.props.set_allowed_values(
+                "Clear Arrays",
+                &["Off", "Clear Active Array", "Clear All Arrays"],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn firmware_version(&self) -> &str {
         &self.firmware_version
     }
@@ -155,6 +204,9 @@ impl Device for TriggerScopeHub {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
+        if self.initialized {
+            return Ok(());
+        }
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
@@ -173,6 +225,7 @@ impl Device for TriggerScopeHub {
         }
         self.is_ts16 = banner.contains("ARC TRIGGERSCOPE 16") || banner.contains("ARC_LED 16");
         self.firmware_version = banner.clone();
+        self.ensure_runtime_properties()?;
         self.initialized = true;
         Ok(())
     }
@@ -185,58 +238,78 @@ impl Device for TriggerScopeHub {
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
             "FirmwareVersion" => Ok(PropertyValue::String(self.firmware_version.clone())),
-            "Firmware Version" => Ok(PropertyValue::String(self.firmware_version.clone())),
-            "Software Version" => Ok(PropertyValue::String(SOFTWARE_VERSION.into())),
+            "Firmware Version" if self.props.has_property("Firmware Version") => {
+                Ok(PropertyValue::String(self.firmware_version.clone()))
+            }
+            "Software Version" if self.props.has_property("Software Version") => {
+                Ok(PropertyValue::String(SOFTWARE_VERSION.into()))
+            }
             "DACBits" => Ok(PropertyValue::Integer(if self.is_ts16 { 16 } else { 12 })),
-            "DAC Bits" => Ok(PropertyValue::String(
+            "DAC Bits" if self.props.has_property("DAC Bits") => Ok(PropertyValue::String(
                 if self.is_ts16 { "16" } else { "12" }.into(),
             )),
-            "Serial TX" => Ok(PropertyValue::String(self.serial_tx.clone())),
-            "Serial RX" => Ok(PropertyValue::String(self.serial_rx.clone())),
-            "Program File" => Ok(PropertyValue::String(self.program_file.clone())),
-            "Program Load" => Ok(PropertyValue::Integer(self.program_load)),
-            "Step Mode" => Ok(PropertyValue::Integer(self.step_mode)),
-            "Arm Mode" => Ok(PropertyValue::Integer(self.arm_mode)),
-            "Array #" => Ok(PropertyValue::Integer(self.array_num)),
-            "Clear Arrays" => Ok(PropertyValue::String(self.clear_arrays.clone())),
+            "Serial TX" if self.props.has_property("Serial TX") => {
+                Ok(PropertyValue::String(self.serial_tx.clone()))
+            }
+            "Serial RX" if self.props.has_property("Serial RX") => {
+                Ok(PropertyValue::String(self.serial_rx.clone()))
+            }
+            "Program File" if self.props.has_property("Program File") => {
+                Ok(PropertyValue::String(self.program_file.clone()))
+            }
+            "Program Load" if self.props.has_property("Program Load") => {
+                Ok(PropertyValue::Integer(self.program_load))
+            }
+            "Step Mode" if self.props.has_property("Step Mode") => {
+                Ok(PropertyValue::Integer(self.step_mode))
+            }
+            "Arm Mode" if self.props.has_property("Arm Mode") => {
+                Ok(PropertyValue::Integer(self.arm_mode))
+            }
+            "Array #" if self.props.has_property("Array #") => {
+                Ok(PropertyValue::Integer(self.array_num))
+            }
+            "Clear Arrays" if self.props.has_property("Clear Arrays") => {
+                Ok(PropertyValue::String(self.clear_arrays.clone()))
+            }
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "Serial TX" => {
+            "Serial TX" if self.props.has_property("Serial TX") => {
                 let cmd = val.to_string();
                 self.serial_rx = self.send_recv(&format!("{}\n", cmd))?;
                 self.serial_tx = cmd.clone();
                 self.props.set(name, PropertyValue::String(cmd))
             }
-            "Program Load" => {
+            "Program Load" if self.props.has_property("Program Load") => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 self.program_load = v;
                 self.props.set(name, PropertyValue::Integer(v))
             }
-            "Step Mode" => {
+            "Step Mode" if self.props.has_property("Step Mode") => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 self.step_mode = v;
                 self.props.set(name, PropertyValue::Integer(v))
             }
-            "Arm Mode" => {
+            "Arm Mode" if self.props.has_property("Arm Mode") => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 self.arm_mode = v;
                 self.props.set(name, PropertyValue::Integer(v))
             }
-            "Array #" => {
+            "Array #" if self.props.has_property("Array #") => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 self.array_num = v;
                 self.props.set(name, PropertyValue::Integer(v))
             }
-            "Program File" => {
+            "Program File" if self.props.has_property("Program File") => {
                 self.program_file = val.to_string();
                 self.props
                     .set(name, PropertyValue::String(self.program_file.clone()))
             }
-            "Clear Arrays" => {
+            "Clear Arrays" if self.props.has_property("Clear Arrays") => {
                 let clear = val.to_string();
                 match clear.as_str() {
                     "Clear Active Array" => {
@@ -299,9 +372,12 @@ mod tests {
     fn initialize_ts16() {
         let t = MockTransport::new().expect("*\n", "ARC TRIGGERSCOPE 16 v1.65");
         let mut hub = TriggerScopeHub::new().with_transport(Box::new(t));
+        assert_eq!(hub.property_names(), vec!["Port".to_string()]);
         hub.initialize().unwrap();
         assert!(hub.is_ts16());
         assert!(hub.firmware_version().contains("v1.65"));
+        assert!(hub.has_property("Serial TX"));
+        assert!(hub.has_property("Trigger Time Delta"));
     }
 
     #[test]

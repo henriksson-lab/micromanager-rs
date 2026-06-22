@@ -22,11 +22,6 @@ static DEVICE_LIST: &[DeviceInfo] = &[
         device_type: DeviceType::Hub,
     },
     DeviceInfo {
-        name: DEVICE_NAME_TTL_MASTER,
-        description: "TriggerScope TTL master bank",
-        device_type: DeviceType::State,
-    },
-    DeviceInfo {
         name: "TriggerScope-DAC01",
         description: "TriggerScope DAC channel 1",
         device_type: DeviceType::SignalIO,
@@ -233,6 +228,7 @@ mod tests {
         let names: Vec<&str> = adapter.devices().iter().map(|d| d.name).collect();
 
         assert!(names.contains(&DEVICE_NAME_HUB));
+        assert!(!names.contains(&DEVICE_NAME_TTL_MASTER));
         assert!(names.contains(&"TriggerScope-DAC16"));
         assert!(names.contains(&"TriggerScope-TTL16"));
         assert!(adapter.create_device(DEVICE_NAME_CAM1).is_none());

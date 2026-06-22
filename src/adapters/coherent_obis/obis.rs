@@ -171,8 +171,7 @@ impl CoherentObis {
     }
 
     fn read_limit_w(&self, suffix: &str) -> MmResult<f64> {
-        self
-            .query(&self.source_token(suffix))?
+        self.query(&self.source_token(suffix))?
             .parse::<f64>()
             .map_err(|_| MmError::SerialInvalidResponse)
     }
@@ -313,16 +312,12 @@ impl Device for CoherentObis {
                     .unwrap_or(0.0);
                 Ok(PropertyValue::Float(nm))
             }
-            "Minimum Laser Power" if self.initialized.get() => {
-                Ok(PropertyValue::Float(
-                    self.read_limit_w("POW:LIM:LOW")? * 1000.0,
-                ))
-            }
-            "Maximum Laser Power" if self.initialized.get() => {
-                Ok(PropertyValue::Float(
-                    self.read_limit_w("POW:LIM:HIGH")? * 1000.0,
-                ))
-            }
+            "Minimum Laser Power" if self.initialized.get() => Ok(PropertyValue::Float(
+                self.read_limit_w("POW:LIM:LOW")? * 1000.0,
+            )),
+            "Maximum Laser Power" if self.initialized.get() => Ok(PropertyValue::Float(
+                self.read_limit_w("POW:LIM:HIGH")? * 1000.0,
+            )),
             "Delay_ms" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }

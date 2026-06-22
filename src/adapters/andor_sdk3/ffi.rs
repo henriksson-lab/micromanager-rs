@@ -30,9 +30,21 @@ extern "C" {
     pub fn andor3_get_sensor_height(ctx: *mut Andor3Ctx) -> c_int;
 
     // AOI
-    pub fn andor3_set_aoi(ctx: *mut Andor3Ctx, left: c_int, top: c_int, w: c_int, h: c_int) -> c_int;
+    pub fn andor3_set_aoi(
+        ctx: *mut Andor3Ctx,
+        left: c_int,
+        top: c_int,
+        w: c_int,
+        h: c_int,
+    ) -> c_int;
     pub fn andor3_clear_aoi(ctx: *mut Andor3Ctx) -> c_int;
-    pub fn andor3_get_aoi(ctx: *mut Andor3Ctx, left: *mut c_int, top: *mut c_int, w: *mut c_int, h: *mut c_int) -> c_int;
+    pub fn andor3_get_aoi(
+        ctx: *mut Andor3Ctx,
+        left: *mut c_int,
+        top: *mut c_int,
+        w: *mut c_int,
+        h: *mut c_int,
+    ) -> c_int;
 
     // Exposure (seconds)
     pub fn andor3_get_exposure_s(ctx: *mut Andor3Ctx) -> c_double;
@@ -42,15 +54,68 @@ extern "C" {
     pub fn andor3_get_temperature(ctx: *mut Andor3Ctx) -> c_double;
 
     // Generic feature access (narrow strings)
-    pub fn andor3_get_string(ctx: *mut Andor3Ctx, feature: *const c_char, buf: *mut c_char, len: c_int) -> c_int;
-    pub fn andor3_get_enum(ctx: *mut Andor3Ctx, feature: *const c_char, buf: *mut c_char, len: c_int) -> c_int;
-    pub fn andor3_set_enum(ctx: *mut Andor3Ctx, feature: *const c_char, value: *const c_char) -> c_int;
-    pub fn andor3_enum_values(ctx: *mut Andor3Ctx, feature: *const c_char, buf: *mut c_char, len: c_int) -> c_int;
+    pub fn andor3_is_implemented(ctx: *mut Andor3Ctx, feature: *const c_char) -> c_int;
+    pub fn andor3_is_read_only(ctx: *mut Andor3Ctx, feature: *const c_char) -> c_int;
+    pub fn andor3_get_string(
+        ctx: *mut Andor3Ctx,
+        feature: *const c_char,
+        buf: *mut c_char,
+        len: c_int,
+    ) -> c_int;
+    pub fn andor3_get_enum(
+        ctx: *mut Andor3Ctx,
+        feature: *const c_char,
+        buf: *mut c_char,
+        len: c_int,
+    ) -> c_int;
+    pub fn andor3_set_enum(
+        ctx: *mut Andor3Ctx,
+        feature: *const c_char,
+        value: *const c_char,
+    ) -> c_int;
+    pub fn andor3_set_enum_index(
+        ctx: *mut Andor3Ctx,
+        feature: *const c_char,
+        index: c_int,
+    ) -> c_int;
+    pub fn andor3_enum_values(
+        ctx: *mut Andor3Ctx,
+        feature: *const c_char,
+        buf: *mut c_char,
+        len: c_int,
+    ) -> c_int;
+    pub fn andor3_get_float(
+        ctx: *mut Andor3Ctx,
+        feature: *const c_char,
+        value: *mut c_double,
+    ) -> c_int;
+    pub fn andor3_set_float(ctx: *mut Andor3Ctx, feature: *const c_char, value: c_double) -> c_int;
+    pub fn andor3_get_float_limits(
+        ctx: *mut Andor3Ctx,
+        feature: *const c_char,
+        min: *mut c_double,
+        max: *mut c_double,
+    ) -> c_int;
+    pub fn andor3_get_int(ctx: *mut Andor3Ctx, feature: *const c_char, value: *mut i64) -> c_int;
+    pub fn andor3_set_int(ctx: *mut Andor3Ctx, feature: *const c_char, value: i64) -> c_int;
+    pub fn andor3_get_int_limits(
+        ctx: *mut Andor3Ctx,
+        feature: *const c_char,
+        min: *mut i64,
+        max: *mut i64,
+    ) -> c_int;
+    pub fn andor3_get_bool(ctx: *mut Andor3Ctx, feature: *const c_char, value: *mut c_int)
+        -> c_int;
+    pub fn andor3_set_bool(ctx: *mut Andor3Ctx, feature: *const c_char, value: c_int) -> c_int;
+    pub fn andor3_command(ctx: *mut Andor3Ctx, feature: *const c_char) -> c_int;
 
     // Snap (blocking, single frame)
     pub fn andor3_snap(ctx: *mut Andor3Ctx, timeout_ms: c_int) -> c_int;
     pub fn andor3_get_frame_ptr(ctx: *mut Andor3Ctx) -> *const u8;
     pub fn andor3_get_frame_bytes(ctx: *mut Andor3Ctx) -> c_int;
+    pub fn andor3_get_last_timestamp(ctx: *mut Andor3Ctx) -> i64;
+    pub fn andor3_has_last_timestamp(ctx: *mut Andor3Ctx) -> c_int;
+    pub fn andor3_get_last_wait_error(ctx: *mut Andor3Ctx) -> c_int;
 
     // Continuous acquisition
     pub fn andor3_start_cont(ctx: *mut Andor3Ctx) -> c_int;

@@ -24,7 +24,7 @@ pub const DEVICE_NAME_STATE: &str = "DWheel";
 static DEVICE_LIST: &[DeviceInfo] = &[
     DeviceInfo {
         name: DEVICE_NAME_CAMERA,
-        description: "Demo camera — simulates a digital camera",
+        description: "Demo camera",
         device_type: DeviceType::Camera,
     },
     DeviceInfo {
@@ -71,5 +71,26 @@ impl AdapterModule for DemoAdapter {
             DEVICE_NAME_STATE => Some(AnyDevice::StateDevice(Box::new(DemoStateDevice::new()))),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registers_upstream_demo_camera_description() {
+        let adapter = DemoAdapter;
+        let camera = adapter
+            .devices()
+            .iter()
+            .find(|device| device.name == DEVICE_NAME_CAMERA)
+            .unwrap();
+
+        assert_eq!(camera.description, "Demo camera");
+        assert!(matches!(
+            adapter.create_device(DEVICE_NAME_CAMERA),
+            Some(AnyDevice::Camera(_))
+        ));
     }
 }

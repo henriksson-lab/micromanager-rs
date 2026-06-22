@@ -35,6 +35,14 @@ fn check_tirf_response(resp: &str, cmd: &str) -> MmResult<()> {
     }
 }
 
+fn parse_version(resp: &str) -> String {
+    resp.get(4..)
+        .unwrap_or("")
+        .chars()
+        .take(5)
+        .collect::<String>()
+}
+
 // ─── T-LUSU(2) single-channel TIRF shutter ─────────────────────────────────
 
 pub struct NikonTiRFShutter {
@@ -50,9 +58,6 @@ impl NikonTiRFShutter {
         let mut props = PropertyMap::new();
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
-            .unwrap();
-        props
-            .define_property("Channel", PropertyValue::Integer(1), false)
             .unwrap();
         Self {
             props,
@@ -82,6 +87,28 @@ impl NikonTiRFShutter {
         let c = format!("{}\r", command);
         self.call_transport(|t| Ok(t.send_recv(&c)?.trim().to_string()))
     }
+
+    fn define_runtime_properties(&mut self, version: String) -> MmResult<()> {
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)?;
+            self.props.set_allowed_values("State", &["0", "1"])?;
+        }
+        if !self.props.has_property("Channel") {
+            self.props
+                .define_property("Channel", PropertyValue::Integer(1), false)?;
+            self.props.set_allowed_values("Channel", &["1", "2", "3"])?;
+        }
+        if !self.props.has_property("Version") {
+            self.props
+                .define_property("Version", PropertyValue::String(version), true)?;
+        } else {
+            self.props
+                .entry_mut("Version")
+                .map(|e| e.value = PropertyValue::String(version));
+        }
+        Ok(())
+    }
 }
 
 impl Default for NikonTiRFShutter {
@@ -92,10 +119,10 @@ impl Default for NikonTiRFShutter {
 
 impl Device for NikonTiRFShutter {
     fn name(&self) -> &str {
-        "NikonTiRFShutter"
+        "TIRFShutter"
     }
     fn description(&self) -> &str {
-        "Nikon T-LUSU(2) TIRF shutter"
+        "Nikon TIRFS Shutter Controller T-LUSU driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -109,9 +136,15 @@ impl Device for NikonTiRFShutter {
                 resp
             )));
         }
+        let version = parse_version(&resp);
+        self.define_runtime_properties(version)?;
         // Close shutter on init
         let resp = self.cmd("cTSC")?;
         check_tirf_response(&resp, "TSC")?;
+        self.open = false;
+        self.props
+            .entry_mut("State")
+            .map(|e| e.value = PropertyValue::Integer(0));
         self.initialized = true;
         Ok(())
     }
@@ -125,10 +158,35 @@ impl Device for NikonTiRFShutter {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::InvalidPropertyValue);
+        }
         if name == "Channel" {
-            if let PropertyValue::Integer(ch) = val {
-                self.channel = ch.clamp(1, 3) as u8;
+            if !self.props.has_property(name) {
+                return Err(MmError::UnknownLabel(name.to_string()));
             }
+            let ch = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if !(1..=3).contains(&ch) {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            self.props.set(name, val)?;
+            self.channel = ch as u8;
+            return Ok(());
+        } else if name == "State" {
+            if !self.props.has_property(name) {
+                return Err(MmError::UnknownLabel(name.to_string()));
+            }
+            let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if !(0..=1).contains(&state) {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            if self.initialized {
+                self.set_open(state == 1)?;
+            } else {
+                self.props.set(name, val)?;
+                self.open = state == 1;
+            }
+            return Ok(());
         }
         self.props.set(name, val)
     }
@@ -164,6 +222,9 @@ impl Shutter for NikonTiRFShutter {
         };
         check_tirf_response(&resp, &cmd_str)?;
         self.open = open;
+        self.props
+            .entry_mut("State")
+            .map(|e| e.value = PropertyValue::Integer(if open { 1 } else { 0 }));
         Ok(())
     }
 
@@ -194,12 +255,6 @@ impl NikonTiTiRFShutter {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
-        props
-            .define_property("Channel", PropertyValue::Integer(1), false)
-            .unwrap();
-        props
-            .define_property("Mode", PropertyValue::Integer(0), false)
-            .unwrap();
         Self {
             props,
             transport: None,
@@ -229,6 +284,28 @@ impl NikonTiTiRFShutter {
         let c = format!("{}\r", command);
         self.call_transport(|t| Ok(t.send_recv(&c)?.trim().to_string()))
     }
+
+    fn define_runtime_properties(&mut self, version: String) -> MmResult<()> {
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)?;
+            self.props.set_allowed_values("State", &["0", "1"])?;
+        }
+        if !self.props.has_property("Channel") {
+            self.props
+                .define_property("Channel", PropertyValue::Integer(1), false)?;
+            self.props.set_allowed_values("Channel", &["1", "2", "3"])?;
+        }
+        if !self.props.has_property("Version") {
+            self.props
+                .define_property("Version", PropertyValue::String(version), true)?;
+        } else {
+            self.props
+                .entry_mut("Version")
+                .map(|e| e.value = PropertyValue::String(version));
+        }
+        Ok(())
+    }
 }
 
 impl Default for NikonTiTiRFShutter {
@@ -239,10 +316,10 @@ impl Default for NikonTiTiRFShutter {
 
 impl Device for NikonTiTiRFShutter {
     fn name(&self) -> &str {
-        "NikonTiTiRFShutter"
+        "TiTIRFShutter"
     }
     fn description(&self) -> &str {
-        "Nikon Ti-TIRF shutter with multi-channel bitmask mode"
+        "Nikon Ti-TIRF Shutter Controller"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -256,8 +333,31 @@ impl Device for NikonTiTiRFShutter {
                 resp
             )));
         }
+        let version = parse_version(&resp);
+        let resp = self.cmd("rTEX")?;
+        if !resp.starts_with("aTEX") {
+            return Err(MmError::LocallyDefined(format!(
+                "Ti-TIRF mode query failed: '{}'",
+                resp
+            )));
+        }
+        let mode = resp
+            .get(4..)
+            .unwrap_or("")
+            .trim()
+            .parse::<u8>()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        if mode > 1 {
+            return Err(MmError::InvalidPropertyValue);
+        }
+        self.mode = mode;
+        self.define_runtime_properties(version)?;
         let resp = self.cmd("cTSC")?;
         check_tirf_response(&resp, "TSC")?;
+        self.open = false;
+        self.props
+            .entry_mut("State")
+            .map(|e| e.value = PropertyValue::Integer(0));
         self.initialized = true;
         Ok(())
     }
@@ -271,14 +371,35 @@ impl Device for NikonTiTiRFShutter {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::InvalidPropertyValue);
+        }
         if name == "Channel" {
-            if let PropertyValue::Integer(ch) = val {
-                self.channel = ch.clamp(1, 3) as u8;
+            if !self.props.has_property(name) {
+                return Err(MmError::UnknownLabel(name.to_string()));
             }
-        } else if name == "Mode" {
-            if let PropertyValue::Integer(m) = val {
-                self.mode = m.clamp(0, 1) as u8;
+            let ch = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if !(1..=3).contains(&ch) {
+                return Err(MmError::InvalidPropertyValue);
             }
+            self.props.set(name, val)?;
+            self.channel = ch as u8;
+            return Ok(());
+        } else if name == "State" {
+            if !self.props.has_property(name) {
+                return Err(MmError::UnknownLabel(name.to_string()));
+            }
+            let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if !(0..=1).contains(&state) {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            if self.initialized {
+                self.set_open(state == 1)?;
+            } else {
+                self.props.set(name, val)?;
+                self.open = state == 1;
+            }
+            return Ok(());
         }
         self.props.set(name, val)
     }
@@ -315,6 +436,9 @@ impl Shutter for NikonTiTiRFShutter {
         let resp = self.cmd(&cmd_str)?;
         check_tirf_response(&resp, &expected)?;
         self.open = open;
+        self.props
+            .entry_mut("State")
+            .map(|e| e.value = PropertyValue::Integer(if open { 1 } else { 0 }));
         Ok(())
     }
 
@@ -344,19 +468,24 @@ mod tests {
         assert!(!s.get_open().unwrap());
         s.set_open(true).unwrap();
         assert!(s.get_open().unwrap());
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(1));
         s.set_open(false).unwrap();
         assert!(!s.get_open().unwrap());
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(0));
     }
 
     #[test]
     fn titirf_multi_channel_mode() {
-        // Mode 1, channel 2 → bitmask = 2
-        let t = MockTransport::new().any("aVER1.0").any("oTSC").any("oTSD");
+        // Live mode 1, channel 2 -> bitmask = 2
+        let t = MockTransport::new()
+            .any("aVER1.0")
+            .any("aTEX1")
+            .any("oTSC")
+            .any("oTSD");
         let mut s = NikonTiTiRFShutter::new().with_transport(Box::new(t));
-        s.set_property("Mode", PropertyValue::Integer(1)).unwrap();
+        s.initialize().unwrap();
         s.set_property("Channel", PropertyValue::Integer(2))
             .unwrap();
-        s.initialize().unwrap();
         s.set_open(true).unwrap();
         assert!(s.get_open().unwrap());
     }
@@ -364,5 +493,135 @@ mod tests {
     #[test]
     fn tirf_no_transport_error() {
         assert!(NikonTiRFShutter::new().initialize().is_err());
+    }
+
+    #[test]
+    fn tirf_bad_channel_type_does_not_update_cache() {
+        let t = MockTransport::new()
+            .expect("rVER\r", "aVER1.0")
+            .expect("cTSC\r", "oTSC");
+        let mut s = NikonTiRFShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_property("Channel", PropertyValue::String("bad".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(s.channel, 1);
+    }
+
+    #[test]
+    fn titirf_bad_mode_type_does_not_update_cache() {
+        let mut s = NikonTiTiRFShutter::new();
+        assert_eq!(
+            s.set_property("Mode", PropertyValue::String("bad".into())),
+            Err(MmError::UnknownLabel("Mode".into()))
+        );
+        assert_eq!(s.mode, 0);
+    }
+
+    #[test]
+    fn tirf_identity_matches_upstream() {
+        let s = NikonTiRFShutter::new();
+        assert_eq!(s.name(), "TIRFShutter");
+        assert_eq!(
+            s.description(),
+            "Nikon TIRFS Shutter Controller T-LUSU driver adapter"
+        );
+        let s = NikonTiTiRFShutter::new();
+        assert_eq!(s.name(), "TiTIRFShutter");
+        assert_eq!(s.description(), "Nikon Ti-TIRF Shutter Controller");
+    }
+
+    #[test]
+    fn tirf_rejects_invalid_channel_without_clamping() {
+        let t = MockTransport::new()
+            .expect("rVER\r", "aVER1.0")
+            .expect("cTSC\r", "oTSC");
+        let mut s = NikonTiRFShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_property("Channel", PropertyValue::Integer(9)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(s.channel, 1);
+        assert_eq!(
+            s.get_property("Channel").unwrap(),
+            PropertyValue::Integer(1)
+        );
+    }
+
+    #[test]
+    fn tirf_state_property_is_ack_gated() {
+        let t = MockTransport::new()
+            .expect("rVER\r", "aVER1.0")
+            .expect("cTSC\r", "oTSC")
+            .expect("cTSO1\r", "bad");
+        let mut s = NikonTiRFShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_property("State", PropertyValue::Integer(1)),
+            Err(MmError::LocallyDefined(
+                "Nikon TIRF unexpected response: 'bad'".into()
+            ))
+        );
+        assert!(!s.get_open().unwrap());
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(0));
+    }
+
+    #[test]
+    fn titirf_initializes_mode_from_live_rtex_and_rejects_port_change() {
+        let t = MockTransport::new()
+            .expect("rVER\r", "aVER1.0")
+            .expect("rTEX\r", "aTEX1")
+            .expect("cTSC\r", "oTSC");
+        let mut s = NikonTiTiRFShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.mode, 1);
+        assert!(!s.has_property("Mode"));
+        assert_eq!(
+            s.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            s.get_property("Port").unwrap(),
+            PropertyValue::String("Undefined".into())
+        );
+    }
+
+    #[test]
+    fn tirf_runtime_properties_are_created_after_successful_initialize() {
+        let t = MockTransport::new()
+            .expect("rVER\r", "aVER1.0")
+            .expect("cTSC\r", "oTSC");
+        let mut s = NikonTiRFShutter::new().with_transport(Box::new(t));
+        assert_eq!(s.property_names(), vec!["Port"]);
+        assert_eq!(
+            s.set_property("Channel", PropertyValue::Integer(2)),
+            Err(MmError::UnknownLabel("Channel".into()))
+        );
+
+        s.initialize().unwrap();
+
+        assert_eq!(
+            s.property_names(),
+            vec!["Port", "State", "Channel", "Version"]
+        );
+        assert_eq!(
+            s.get_property("Version").unwrap(),
+            PropertyValue::String("1.0".into())
+        );
+    }
+
+    #[test]
+    fn tirf_failed_initialize_leaves_runtime_properties_absent() {
+        let t = MockTransport::new().expect("rVER\r", "nVER1");
+        let mut s = NikonTiRFShutter::new().with_transport(Box::new(t));
+
+        assert!(s.initialize().is_err());
+
+        assert_eq!(s.property_names(), vec!["Port"]);
+        assert!(!s.has_property("State"));
+        assert!(!s.has_property("Channel"));
+        assert!(!s.has_property("Version"));
     }
 }

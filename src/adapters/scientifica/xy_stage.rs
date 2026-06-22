@@ -16,15 +16,16 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 const STEPS_PER_UM: f64 = 10.0; // 0.1 µm / step → 10 steps / µm
 
 pub struct ScientificaXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
-    x_um: f64,
-    y_um: f64,
+    x_um: Cell<f64>,
+    y_um: Cell<f64>,
 }
 
 impl ScientificaXYStage {
@@ -35,31 +36,32 @@ impl ScientificaXYStage {
             .unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
-            x_um: 0.0,
-            y_um: 0.0,
+            x_um: Cell::new(0.0),
+            y_um: Cell::new(0.0),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
+            t.purge()?;
             let r = t.send_recv(&c)?;
             Ok(r.trim().to_string())
         })
@@ -76,11 +78,17 @@ impl ScientificaXYStage {
         }
     }
 
-    fn read_xy(&mut self) -> MmResult<(f64, f64)> {
+    fn read_xy(&self) -> MmResult<(f64, f64)> {
         let rx = self.cmd("PX")?;
         let ry = self.cmd("PY")?;
-        let x_steps: i64 = rx.trim().parse().unwrap_or(0);
-        let y_steps: i64 = ry.trim().parse().unwrap_or(0);
+        let x_steps: i64 = rx
+            .trim()
+            .parse()
+            .map_err(|_| MmError::LocallyDefined(format!("Scientifica bad X position: {}", rx)))?;
+        let y_steps: i64 = ry
+            .trim()
+            .parse()
+            .map_err(|_| MmError::LocallyDefined(format!("Scientifica bad Y position: {}", ry)))?;
         Ok((x_steps as f64 / STEPS_PER_UM, y_steps as f64 / STEPS_PER_UM))
     }
 }
@@ -100,12 +108,12 @@ impl Device for ScientificaXYStage {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
         let (x, y) = self.read_xy()?;
-        self.x_um = x;
-        self.y_um = y;
+        self.x_um.set(x);
+        self.y_um.set(y);
         self.initialized = true;
         Ok(())
     }
@@ -119,6 +127,9 @@ impl Device for ScientificaXYStage {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::InvalidPropertyValue);
+        }
         self.props.set(name, val)
     }
     fn property_names(&self) -> Vec<String> {
@@ -144,20 +155,23 @@ impl XYStage for ScientificaXYStage {
         let ys = (y * STEPS_PER_UM).round() as i64;
         let r = self.cmd(&format!("abs {} {}", xs, ys))?;
         Self::check_ok(&r)?;
-        self.x_um = x;
-        self.y_um = y;
+        self.x_um.set(x);
+        self.y_um.set(y);
         Ok(())
     }
     fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
-        Ok((self.x_um, self.y_um))
+        let (x, y) = self.read_xy()?;
+        self.x_um.set(x);
+        self.y_um.set(y);
+        Ok((x, y))
     }
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let dxs = (dx * STEPS_PER_UM).round() as i64;
         let dys = (dy * STEPS_PER_UM).round() as i64;
         let r = self.cmd(&format!("rel {} {}", dxs, dys))?;
         Self::check_ok(&r)?;
-        self.x_um += dx;
-        self.y_um += dy;
+        self.x_um.set(self.x_um.get() + dx);
+        self.y_um.set(self.y_um.get() + dy);
         Ok(())
     }
     fn home(&mut self) -> MmResult<()> {
@@ -167,8 +181,8 @@ impl XYStage for ScientificaXYStage {
         Self::check_ok(&r)?;
         let r = self.cmd("py = 0")?;
         Self::check_ok(&r)?;
-        self.x_um = 0.0;
-        self.y_um = 0.0;
+        self.x_um.set(0.0);
+        self.y_um.set(0.0);
         Ok(())
     }
     fn stop(&mut self) -> MmResult<()> {
@@ -188,8 +202,8 @@ impl XYStage for ScientificaXYStage {
         Self::check_ok(&r)?;
         let r = self.cmd("PY 0")?;
         Self::check_ok(&r)?;
-        self.x_um = 0.0;
-        self.y_um = 0.0;
+        self.x_um.set(0.0);
+        self.y_um.set(0.0);
         Ok(())
     }
 }
@@ -205,9 +219,14 @@ mod tests {
             .any("2000") // PY → 200 µm
     }
 
+    fn make_transport_with_readback(x_steps: &'static str, y_steps: &'static str) -> MockTransport {
+        make_transport().any(x_steps).any(y_steps)
+    }
+
     #[test]
     fn initialize() {
-        let mut s = ScientificaXYStage::new().with_transport(Box::new(make_transport()));
+        let mut s = ScientificaXYStage::new()
+            .with_transport(Box::new(make_transport_with_readback("1000", "2000")));
         s.initialize().unwrap();
         let (x, y) = s.get_xy_position_um().unwrap();
         assert!((x - 100.0).abs() < 1e-9);
@@ -216,7 +235,7 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = make_transport().any("A");
+        let t = make_transport().any("A").any("3000").any("4000");
         let mut s = ScientificaXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_xy_position_um(300.0, 400.0).unwrap();
@@ -225,7 +244,7 @@ mod tests {
 
     #[test]
     fn move_relative() {
-        let t = make_transport().any("A");
+        let t = make_transport().any("A").any("1500").any("2250");
         let mut s = ScientificaXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_xy_position_um(50.0, 25.0).unwrap();
@@ -244,7 +263,7 @@ mod tests {
 
     #[test]
     fn set_origin_sends_axis_zero_commands() {
-        let t = make_transport().any("A").any("A");
+        let t = make_transport().any("A").any("A").any("0").any("0");
         let mut s = ScientificaXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_origin().unwrap();
@@ -259,7 +278,47 @@ mod tests {
     }
 
     #[test]
+    fn get_position_reads_live_px_py() {
+        let t = make_transport_with_readback("1110", "2220");
+        let mut s = ScientificaXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        let (x, y) = s.get_xy_position_um().unwrap();
+        assert_eq!((x, y), (111.0, 222.0));
+    }
+
+    #[test]
+    fn malformed_live_position_response_fails_getter() {
+        let t = make_transport_with_readback("not-a-number", "2220");
+        let mut s = ScientificaXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.get_xy_position_um().is_err());
+    }
+
+    #[test]
     fn no_transport_error() {
         assert!(ScientificaXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn malformed_position_response_fails_initialize() {
+        let t = MockTransport::new().any("not-a-number");
+        let mut s = ScientificaXYStage::new().with_transport(Box::new(t));
+        assert!(s.initialize().is_err());
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected_and_preserves_value() {
+        let t = make_transport();
+        let mut s = ScientificaXYStage::new().with_transport(Box::new(t));
+        s.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        s.initialize().unwrap();
+        assert!(s
+            .set_property("Port", PropertyValue::String("COM2".into()))
+            .is_err());
+        assert_eq!(
+            s.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
     }
 }

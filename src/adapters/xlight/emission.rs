@@ -138,10 +138,13 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_rejected() {
-        let t = MockTransport::new().expect("rB\r", "rB1");
+    fn out_of_range_state_clamps_to_last_position() {
+        let t = MockTransport::new()
+            .expect("rB\r", "rB1")
+            .expect("B8\r", "B8");
         let mut d = XLightEmission::new().with_transport(Box::new(t));
         d.initialize().unwrap();
-        assert!(d.set_position(8).is_err());
+        d.set_position(8).unwrap();
+        assert_eq!(d.get_position().unwrap(), 7);
     }
 }

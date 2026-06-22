@@ -44,15 +44,6 @@ impl ConixQuadFilter {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props
-            .set_allowed_values("State", &["0", "1", "2", "3"])
-            .unwrap();
-        props
-            .define_property("Label", PropertyValue::String(String::new()), false)
-            .unwrap();
         Self {
             props,
             transport: RefCell::new(None),
@@ -96,7 +87,13 @@ impl ConixQuadFilter {
             .ok_or_else(|| MmError::LocallyDefined(format!("Cannot parse Quad position: {}", r)))?
             .parse::<u64>()
             .map_err(|_| MmError::LocallyDefined(format!("Cannot parse Quad position: {}", r)))?;
-        Ok(pos1.saturating_sub(1))
+        if pos1 == 0 {
+            return Err(MmError::LocallyDefined(format!(
+                "Cannot parse Quad position: {}",
+                r
+            )));
+        }
+        Ok(pos1 - 1)
     }
 }
 
@@ -117,6 +114,19 @@ impl Device for ConixQuadFilter {
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
+        }
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)
+                .unwrap();
+            self.props
+                .set_allowed_values("State", &["0", "1", "2", "3"])
+                .unwrap();
+        }
+        if !self.props.has_property("Label") {
+            self.props
+                .define_property("Label", PropertyValue::String(String::new()), false)
+                .unwrap();
         }
         self.position = self.query_position()?;
         self.props
@@ -141,8 +151,10 @@ impl Device for ConixQuadFilter {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(self.get_position()? as i64)),
-            "Label" => Ok(PropertyValue::String(
+            "State" if self.props.has_property("State") => {
+                Ok(PropertyValue::Integer(self.get_position()? as i64))
+            }
+            "Label" if self.props.has_property("Label") => Ok(PropertyValue::String(
                 self.labels
                     .get(self.get_position()? as usize)
                     .cloned()
@@ -154,14 +166,14 @@ impl Device for ConixQuadFilter {
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "Port" if self.initialized => Ok(()),
-            "State" => {
+            "State" if self.props.has_property("State") => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if pos < 0 {
                     return Err(MmError::InvalidPropertyValue);
                 }
                 self.set_position(pos as u64)
             }
-            "Label" => {
+            "Label" if self.props.has_property("Label") => {
                 let label = val.as_str().to_string();
                 self.set_position_by_label(&label)
             }
@@ -260,7 +272,7 @@ pub struct ConixHexFilter {
     labels: Vec<String>,
     gate_open: bool,
     delay_ms: f64,
-    changed_time: Instant,
+    changed_time: Option<Instant>,
 }
 
 impl ConixHexFilter {
@@ -268,15 +280,6 @@ impl ConixHexFilter {
         let mut props = PropertyMap::new();
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
-            .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props
-            .set_allowed_values("State", &["0", "1", "2", "3", "4", "5"])
-            .unwrap();
-        props
-            .define_property("Label", PropertyValue::String(String::new()), false)
             .unwrap();
         props
             .define_property("Delay", PropertyValue::Float(0.0), false)
@@ -291,7 +294,7 @@ impl ConixHexFilter {
             labels: (0..6).map(|i| format!("Position: {}", i)).collect(),
             gate_open: true,
             delay_ms: 0.0,
-            changed_time: Instant::now(),
+            changed_time: None,
         }
     }
 
@@ -328,7 +331,13 @@ impl ConixHexFilter {
             .ok_or_else(|| MmError::LocallyDefined(format!("Cannot parse Cube position: {}", r)))?
             .parse::<u64>()
             .map_err(|_| MmError::LocallyDefined(format!("Cannot parse Cube position: {}", r)))?;
-        Ok(pos1.saturating_sub(1))
+        if pos1 == 0 {
+            return Err(MmError::LocallyDefined(format!(
+                "Cannot parse Cube position: {}",
+                r
+            )));
+        }
+        Ok(pos1 - 1)
     }
 }
 
@@ -349,6 +358,19 @@ impl Device for ConixHexFilter {
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
+        }
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)
+                .unwrap();
+            self.props
+                .set_allowed_values("State", &["0", "1", "2", "3", "4", "5"])
+                .unwrap();
+        }
+        if !self.props.has_property("Label") {
+            self.props
+                .define_property("Label", PropertyValue::String(String::new()), false)
+                .unwrap();
         }
         self.position = self.query_position()?;
         self.props
@@ -373,8 +395,10 @@ impl Device for ConixHexFilter {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(self.get_position()? as i64)),
-            "Label" => Ok(PropertyValue::String(
+            "State" if self.props.has_property("State") => {
+                Ok(PropertyValue::Integer(self.get_position()? as i64))
+            }
+            "Label" if self.props.has_property("Label") => Ok(PropertyValue::String(
                 self.labels
                     .get(self.get_position()? as usize)
                     .cloned()
@@ -387,14 +411,14 @@ impl Device for ConixHexFilter {
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "Port" if self.initialized => Ok(()),
-            "State" => {
+            "State" if self.props.has_property("State") => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if pos < 0 {
                     return Err(MmError::InvalidPropertyValue);
                 }
                 self.set_position(pos as u64)
             }
-            "Label" => {
+            "Label" if self.props.has_property("Label") => {
                 let label = val.as_str().to_string();
                 self.set_position_by_label(&label)
             }
@@ -422,7 +446,9 @@ impl Device for ConixHexFilter {
         DeviceType::State
     }
     fn busy(&self) -> bool {
-        self.changed_time.elapsed().as_secs_f64() * 1000.0 < self.delay_ms
+        self.changed_time.is_some_and(|changed_time| {
+            changed_time.elapsed().as_secs_f64() * 1000.0 < self.delay_ms
+        })
     }
 }
 
@@ -437,7 +463,6 @@ impl StateDevice for ConixHexFilter {
         let r = self.cmd(&format!("Cube {}", pos + 1))?;
         check_a(&r)?;
         self.position = pos;
-        self.changed_time = Instant::now();
         self.props
             .set("State", PropertyValue::Integer(self.position as i64))?;
         self.props.set(
@@ -509,6 +534,17 @@ mod tests {
     }
 
     #[test]
+    fn quad_state_and_label_are_initialize_created() {
+        let mut f = ConixQuadFilter::new()
+            .with_transport(Box::new(MockTransport::new().expect("Quad \r", ":A 2")));
+        assert!(!f.has_property("State"));
+        assert!(!f.has_property("Label"));
+        f.initialize().unwrap();
+        assert!(f.has_property("State"));
+        assert!(f.has_property("Label"));
+    }
+
+    #[test]
     fn quad_set_position() {
         let t = MockTransport::new()
             .expect("Quad \r", ":A 1")
@@ -549,6 +585,17 @@ mod tests {
     }
 
     #[test]
+    fn hex_state_and_label_are_initialize_created() {
+        let mut f = ConixHexFilter::new()
+            .with_transport(Box::new(MockTransport::new().expect("Cube \r", ":A 4")));
+        assert!(!f.has_property("State"));
+        assert!(!f.has_property("Label"));
+        f.initialize().unwrap();
+        assert!(f.has_property("State"));
+        assert!(f.has_property("Label"));
+    }
+
+    #[test]
     fn hex_set_position() {
         let t = MockTransport::new()
             .expect("Cube \r", ":A 1")
@@ -569,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn hex_busy_uses_delay_timer_after_move() {
+    fn hex_busy_remains_false_after_successful_move_like_upstream() {
         let t = MockTransport::new()
             .expect("Cube \r", ":A 1")
             .expect("Cube 2\r", ":A");
@@ -577,9 +624,18 @@ mod tests {
         f.initialize().unwrap();
         f.set_property("Delay", PropertyValue::Float(50.0)).unwrap();
         f.set_position(1).unwrap();
-        assert!(f.busy());
-        std::thread::sleep(std::time::Duration::from_millis(60));
         assert!(!f.busy());
+    }
+
+    #[test]
+    fn zero_wire_positions_are_rejected() {
+        let t = MockTransport::new().expect("Quad \r", ":A 0");
+        let mut q = ConixQuadFilter::new().with_transport(Box::new(t));
+        assert!(q.initialize().is_err());
+
+        let t = MockTransport::new().expect("Cube \r", ":A 0");
+        let mut h = ConixHexFilter::new().with_transport(Box::new(t));
+        assert!(h.initialize().is_err());
     }
 
     #[test]

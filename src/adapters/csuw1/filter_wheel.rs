@@ -1,9 +1,9 @@
 /// Yokogawa CSU-W1 filter wheel and dichroic selector.
 ///
 /// Protocol (TX/RX `\r`):
-///   `FW_POS, <wheel>, <pos>\r` → `A`           set filter wheel position (1-based)
+///   `FW_POS,<wheel>,<pos>\r`   → `A`           set filter wheel position (1-based)
 ///   `FW_POS, <wheel>, ?\r`     → `<pos>\rA`    query position (1-based in response)
-///   `DMM_POS,1,<pos>\r`        → `A`           set dichroic position (1-based)
+///   `DMM_POS,1, <pos>\r`       → `A`           set dichroic position (1-based)
 ///   `DMM_POS,1, ?\r`           → `<pos>\rA`    query dichroic position
 ///
 /// Positions: 1-based in serial commands, 0-based internally.
@@ -12,6 +12,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, StateDevice};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::time::{Duration, Instant};
 
 pub struct CsuFilterWheel {
     props: PropertyMap,
@@ -22,6 +23,9 @@ pub struct CsuFilterWheel {
     num_positions: u64,
     position: u64,
     labels: Vec<String>,
+    delay_ms: f64,
+    last_move_time: Instant,
+    positions_moved: u64,
 }
 
 impl CsuFilterWheel {
@@ -62,6 +66,10 @@ impl CsuFilterWheel {
         props
             .set_allowed_values("Speed", &["0", "1", "2", "3"])
             .unwrap();
+        props
+            .define_property("Delay", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props.set_property_limits("Delay", 0.0, f64::MAX).unwrap();
         let labels = (0..num_positions)
             .map(|i| format!("Filter-{}", i + 1))
             .collect();
@@ -74,6 +82,9 @@ impl CsuFilterWheel {
             num_positions,
             position: 0,
             labels,
+            delay_ms: 0.0,
+            last_move_time: Instant::now(),
+            positions_moved: 0,
         }
     }
 
@@ -100,13 +111,55 @@ impl CsuFilterWheel {
         })
     }
 
-    fn parse_pos_response(resp: &str) -> u64 {
+    fn parse_pos_response(resp: &str, num_positions: u64) -> MmResult<u64> {
         // Response: "<pos>\rA" or "<pos>A" — take first token
-        resp.split(|c: char| c.is_whitespace() || c == '\r' || c == '\n' || c == 'A')
+        let pos_1based = resp
+            .split(|c: char| c.is_whitespace() || c == '\r' || c == '\n' || c == 'A')
             .find(|s| !s.is_empty())
             .and_then(|s| s.parse::<u64>().ok())
-            .map(|p| p.saturating_sub(1)) // 1-based → 0-based
-            .unwrap_or(0)
+            .ok_or(MmError::SerialInvalidResponse)?;
+        if pos_1based == 0 || pos_1based > num_positions {
+            return Err(MmError::UnknownPosition);
+        }
+        Ok(pos_1based - 1)
+    }
+
+    fn require_ack(resp: &str, context: &str) -> MmResult<()> {
+        if resp.ends_with('N') {
+            return Err(MmError::LocallyDefined(format!(
+                "{} NAK: {}",
+                context, resp
+            )));
+        }
+        if !resp.ends_with('A') {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        Ok(())
+    }
+
+    fn cmd_with_ack_retry(
+        &mut self,
+        command: &str,
+        context: &str,
+        max_attempts: usize,
+        retry_delay: Duration,
+    ) -> MmResult<()> {
+        let mut last_err = MmError::SerialInvalidResponse;
+        for attempt in 0..max_attempts {
+            match self
+                .cmd(command)
+                .and_then(|resp| Self::require_ack(&resp, context))
+            {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_err = err;
+                    if attempt + 1 < max_attempts {
+                        std::thread::sleep(retry_delay);
+                    }
+                }
+            }
+        }
+        Err(last_err)
     }
 }
 
@@ -130,7 +183,7 @@ impl Device for CsuFilterWheel {
         }
         let q = format!("FW_POS, {}, ?", self.wheel);
         let resp = self.cmd(&q)?;
-        self.position = Self::parse_pos_response(&resp);
+        self.position = Self::parse_pos_response(&resp, self.num_positions)?;
         if let Ok(resp) = self.cmd(&format!("FW_SPEED, {}, ?", self.wheel)) {
             self.speed = resp
                 .split(|c: char| c.is_whitespace() || c == '\r' || c == '\n' || c == 'A')
@@ -171,6 +224,7 @@ impl Device for CsuFilterWheel {
             )),
             "WheelNumber" => Ok(PropertyValue::Integer(self.wheel as i64)),
             "Speed" => Ok(PropertyValue::Integer(self.speed)),
+            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -188,9 +242,6 @@ impl Device for CsuFilterWheel {
                 self.set_position_by_label(&label)
             }
             "WheelNumber" => {
-                if self.initialized {
-                    return Err(MmError::InvalidPropertyValue);
-                }
                 let wheel = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if !(1..=2).contains(&wheel) {
                     return Err(MmError::InvalidPropertyValue);
@@ -206,12 +257,18 @@ impl Device for CsuFilterWheel {
                 }
                 if self.initialized {
                     let resp = self.cmd(&format!("FW_SPEED, {}, {}", self.wheel, speed))?;
-                    if resp.contains('N') {
-                        return Err(MmError::LocallyDefined(format!("CSU FW NAK: {}", resp)));
-                    }
+                    Self::require_ack(&resp, "CSU FW")?;
                 }
                 self.speed = speed;
                 self.props.set("Speed", PropertyValue::Integer(speed))
+            }
+            "Delay" => {
+                let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if delay < 0.0 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                self.delay_ms = delay;
+                self.props.set("Delay", PropertyValue::Float(delay))
             }
             _ => self.props.set(name, val),
         }
@@ -229,7 +286,14 @@ impl Device for CsuFilterWheel {
         DeviceType::State
     }
     fn busy(&self) -> bool {
-        false
+        let ms_per_position = match self.speed {
+            3 => 40.0,
+            2 => 66.0,
+            1 => 100.0,
+            _ => 400.0,
+        };
+        let wait_ms = self.positions_moved as f64 * ms_per_position + self.delay_ms;
+        self.last_move_time.elapsed().as_secs_f64() * 1000.0 < wait_ms
     }
 }
 
@@ -241,11 +305,11 @@ impl StateDevice for CsuFilterWheel {
                 pos
             )));
         }
-        let cmd = format!("FW_POS, {}, {}", self.wheel, pos + 1); // 1-based
-        let resp = self.cmd(&cmd)?;
-        if resp.contains('N') {
-            return Err(MmError::LocallyDefined(format!("CSU FW NAK: {}", resp)));
-        }
+        let cmd = format!("FW_POS,{},{}", self.wheel, pos + 1); // 1-based
+        self.cmd_with_ack_retry(&cmd, "CSU FW", 20, Duration::from_millis(50))?;
+        let direct = self.position.abs_diff(pos);
+        self.positions_moved = direct.min(self.num_positions.saturating_sub(direct));
+        self.last_move_time = Instant::now();
         self.position = pos;
         self.props
             .set("State", PropertyValue::Integer(self.position as i64))?;
@@ -365,6 +429,25 @@ impl CsuDichroic {
             Ok(r.trim().to_string())
         })
     }
+
+    fn cmd_with_ack_retry(&mut self, command: &str, context: &str) -> MmResult<()> {
+        let mut last_err = MmError::SerialInvalidResponse;
+        for attempt in 0..10 {
+            match self
+                .cmd(command)
+                .and_then(|resp| CsuFilterWheel::require_ack(&resp, context))
+            {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_err = err;
+                    if attempt < 9 {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            }
+        }
+        Err(last_err)
+    }
 }
 
 impl Default for CsuDichroic {
@@ -386,12 +469,15 @@ impl Device for CsuDichroic {
             return Err(MmError::NotConnected);
         }
         let resp = self.cmd("DMM_POS,1, ?")?;
-        self.position = resp
+        let pos_1based = resp
             .split(|c: char| c.is_whitespace() || c == '\r' || c == '\n' || c == 'A')
             .find(|s| !s.is_empty())
             .and_then(|s| s.parse::<u64>().ok())
-            .map(|p| p.saturating_sub(1))
-            .unwrap_or(0);
+            .ok_or(MmError::SerialInvalidResponse)?;
+        if pos_1based == 0 || pos_1based > self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
+        self.position = pos_1based - 1;
         self.props
             .set("State", PropertyValue::Integer(self.position as i64))?;
         self.props.set(
@@ -465,14 +551,8 @@ impl StateDevice for CsuDichroic {
                 pos
             )));
         }
-        let cmd = format!("DMM_POS,1,{}", pos + 1);
-        let resp = self.cmd(&cmd)?;
-        if resp.contains('N') {
-            return Err(MmError::LocallyDefined(format!(
-                "CSU dichroic NAK: {}",
-                resp
-            )));
-        }
+        let cmd = format!("DMM_POS,1, {}", pos + 1);
+        self.cmd_with_ack_retry(&cmd, "CSU dichroic")?;
         self.position = pos;
         self.props
             .set("State", PropertyValue::Integer(self.position as i64))?;
@@ -554,7 +634,7 @@ mod tests {
         let t = MockTransport::new()
             .expect("FW_POS, 1, ?\r", "1\rA")
             .expect("FW_SPEED, 1, ?\r", "2\rA")
-            .expect("FW_POS, 1, 3\r", "A");
+            .expect("FW_POS,1,3\r", "A");
         let mut w = CsuFilterWheel::new(1, 6).with_transport(Box::new(t));
         w.initialize().unwrap();
         w.set_position(2).unwrap(); // 0-based 2 → sends 3
@@ -562,10 +642,41 @@ mod tests {
     }
 
     #[test]
+    fn filter_wheel_busy_uses_move_distance_speed_and_delay() {
+        let t = MockTransport::new()
+            .expect("FW_POS, 1, ?\r", "1\rA")
+            .expect("FW_SPEED, 1, ?\r", "2\rA")
+            .expect("FW_POS,1,4\r", "A");
+        let mut w = CsuFilterWheel::new(1, 10).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        assert!(!w.busy());
+
+        w.set_property("Delay", PropertyValue::Float(1000.0))
+            .unwrap();
+        w.set_position(3).unwrap();
+
+        assert!(w.busy());
+    }
+
+    #[test]
+    fn wheel_number_can_change_after_initialize_like_upstream() {
+        let t = MockTransport::new()
+            .expect("FW_POS, 1, ?\r", "1\rA")
+            .expect("FW_SPEED, 1, ?\r", "2\rA");
+        let mut w = CsuFilterWheel::new(1, 6).with_transport(Box::new(t));
+        w.initialize().unwrap();
+
+        w.set_property("WheelNumber", PropertyValue::Integer(2))
+            .unwrap();
+
+        assert_eq!(w.get_property("WheelNumber").unwrap().as_i64(), Some(2));
+    }
+
+    #[test]
     fn dichroic_init_and_set() {
         let t = MockTransport::new()
             .expect("DMM_POS,1, ?\r", "1\rA")
-            .expect("DMM_POS,1,2\r", "A");
+            .expect("DMM_POS,1, 2\r", "A");
         let mut d = CsuDichroic::new(3).with_transport(Box::new(t));
         d.initialize().unwrap();
         assert_eq!(d.get_position().unwrap(), 0);
@@ -582,5 +693,98 @@ mod tests {
     #[test]
     fn default_filter_wheel_has_ten_positions_like_upstream() {
         assert_eq!(CsuFilterWheel::default().get_number_of_positions(), 10);
+    }
+
+    #[test]
+    fn filter_wheel_rejects_invalid_query_position() {
+        let t = MockTransport::new().expect("FW_POS, 1, ?\r", "0\rA");
+        let mut w = CsuFilterWheel::new(1, 6).with_transport(Box::new(t));
+        assert_eq!(w.initialize(), Err(MmError::UnknownPosition));
+    }
+
+    #[test]
+    fn dichroic_rejects_invalid_query_position() {
+        let t = MockTransport::new().expect("DMM_POS,1, ?\r", "4\rA");
+        let mut d = CsuDichroic::new(3).with_transport(Box::new(t));
+        assert_eq!(d.initialize(), Err(MmError::UnknownPosition));
+    }
+
+    #[test]
+    fn setters_require_acknowledgment_like_upstream() {
+        let t = MockTransport::new()
+            .expect("FW_POS, 1, ?\r", "1\rA")
+            .expect("FW_SPEED, 1, ?\r", "2\rA")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK")
+            .expect("FW_POS,1,2\r", "OK");
+        let mut w = CsuFilterWheel::new(1, 6).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        assert_eq!(w.set_position(1), Err(MmError::SerialInvalidResponse));
+
+        let t = MockTransport::new()
+            .expect("FW_POS, 1, ?\r", "1\rA")
+            .expect("FW_SPEED, 1, ?\r", "2\rA")
+            .expect("FW_SPEED, 1, 3\r", "OK");
+        let mut w = CsuFilterWheel::new(1, 6).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        assert_eq!(
+            w.set_property("Speed", PropertyValue::Integer(3)),
+            Err(MmError::SerialInvalidResponse)
+        );
+
+        let t = MockTransport::new()
+            .expect("DMM_POS,1, ?\r", "1\rA")
+            .expect("DMM_POS,1, 2\r", "OK")
+            .expect("DMM_POS,1, 2\r", "OK")
+            .expect("DMM_POS,1, 2\r", "OK")
+            .expect("DMM_POS,1, 2\r", "OK")
+            .expect("DMM_POS,1, 2\r", "OK")
+            .expect("DMM_POS,1, 2\r", "OK")
+            .expect("DMM_POS,1, 2\r", "OK")
+            .expect("DMM_POS,1, 2\r", "OK")
+            .expect("DMM_POS,1, 2\r", "OK")
+            .expect("DMM_POS,1, 2\r", "OK");
+        let mut d = CsuDichroic::new(3).with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(d.set_position(1), Err(MmError::SerialInvalidResponse));
+    }
+
+    #[test]
+    fn position_setters_retry_transient_nak_like_upstream() {
+        let t = MockTransport::new()
+            .expect("FW_POS, 1, ?\r", "1\rA")
+            .expect("FW_SPEED, 1, ?\r", "2\rA")
+            .expect("FW_POS,1,2\r", "N")
+            .expect("FW_POS,1,2\r", "A");
+        let mut w = CsuFilterWheel::new(1, 6).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        w.set_position(1).unwrap();
+        assert_eq!(w.get_position().unwrap(), 1);
+
+        let t = MockTransport::new()
+            .expect("DMM_POS,1, ?\r", "1\rA")
+            .expect("DMM_POS,1, 2\r", "N")
+            .expect("DMM_POS,1, 2\r", "A");
+        let mut d = CsuDichroic::new(3).with_transport(Box::new(t));
+        d.initialize().unwrap();
+        d.set_position(1).unwrap();
+        assert_eq!(d.get_position().unwrap(), 1);
     }
 }

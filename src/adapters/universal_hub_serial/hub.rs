@@ -89,16 +89,6 @@ impl UniversalHub {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
-        props
-            .define_property("Error", PropertyValue::Integer(0), false)
-            .unwrap();
-        props
-            .define_property(
-                "Error Description",
-                PropertyValue::String("none".into()),
-                false,
-            )
-            .unwrap();
         Self {
             props,
             transport: None,
@@ -111,6 +101,21 @@ impl UniversalHub {
             last_error: 0,
             last_error_description: "none".into(),
         }
+    }
+
+    fn ensure_error_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("Error") {
+            self.props
+                .define_property("Error", PropertyValue::Integer(self.last_error), false)?;
+        }
+        if !self.props.has_property("Error Description") {
+            self.props.define_property(
+                "Error Description",
+                PropertyValue::String(self.last_error_description.clone()),
+                false,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -327,6 +332,7 @@ impl Device for UniversalHub {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
+        self.ensure_error_properties()?;
         self.call_transport(|t| t.purge())?;
         let descriptions = self.populate_device_descriptions()?;
         self.sub_devices = descriptions
@@ -702,6 +708,26 @@ mod tests {
     fn no_transport_error() {
         let mut hub = UniversalHub::new();
         assert!(hub.initialize().is_err());
+    }
+
+    #[test]
+    fn error_reporter_properties_are_created_on_initialize() {
+        let t = MockTransport::new().expect("Start;", "End");
+        let mut hub = UniversalHub::new().with_transport(Box::new(t));
+
+        assert_eq!(hub.property_names(), ["Port"]);
+
+        hub.initialize().unwrap();
+
+        assert_eq!(hub.property_names(), ["Port", "Error", "Error Description"]);
+        assert_eq!(
+            hub.get_property("Error").unwrap(),
+            PropertyValue::Integer(0)
+        );
+        assert_eq!(
+            hub.get_property("Error Description").unwrap(),
+            PropertyValue::String("none".into())
+        );
     }
 
     #[test]

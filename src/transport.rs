@@ -59,7 +59,8 @@ impl MockTransport {
 
     /// Add an expected command (exact match) and its scripted response.
     pub fn expect(mut self, cmd: &str, response: &str) -> Self {
-        self.script.push_back((Some(cmd.to_string()), response.to_string()));
+        self.script
+            .push_back((Some(cmd.to_string()), response.to_string()));
         self
     }
 

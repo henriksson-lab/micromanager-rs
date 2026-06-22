@@ -14,12 +14,13 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
 
 const CHANNELS: [char; 4] = ['A', 'B', 'C', 'D'];
 
 pub struct PrecisExcite {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
     /// Is channel A (shutter) open?
     is_open: bool,
@@ -45,7 +46,7 @@ impl PrecisExcite {
         }
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
             is_open: false,
             intensity: [0; 4],
@@ -53,26 +54,39 @@ impl PrecisExcite {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
             let r = t.send_recv(&c)?;
             Ok(r.trim().to_string())
         })
+    }
+
+    fn read_open(&self) -> MmResult<bool> {
+        let resp = self.cmd("CA?")?;
+        let bytes = resp.as_bytes();
+        if bytes.len() > 5 && bytes.starts_with(b"CA") {
+            return match bytes[5] {
+                b'N' => Ok(true),
+                b'F' => Ok(false),
+                _ => Err(MmError::SerialInvalidResponse),
+            };
+        }
+        Err(MmError::SerialInvalidResponse)
     }
 
     fn set_channel_intensity(&mut self, ch_idx: usize, level: u8) -> MmResult<()> {
@@ -102,7 +116,7 @@ impl Device for PrecisExcite {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
         // Turn all channels off and set intensity to 0
@@ -126,12 +140,19 @@ impl Device for PrecisExcite {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(if self.is_open { 1 } else { 0 })),
+            "State" => Ok(PropertyValue::Integer(if self.read_open()? {
+                1
+            } else {
+                0
+            })),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
         if name == "State" {
             let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
             return match state {
@@ -191,7 +212,7 @@ impl Shutter for PrecisExcite {
         Ok(())
     }
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        self.read_open()
     }
     fn fire(&mut self, _dt: f64) -> MmResult<()> {
         Err(MmError::UnsupportedCommand)
@@ -217,14 +238,19 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let mut dev = PrecisExcite::new().with_transport(Box::new(make_init_transport()));
+        let t = make_init_transport().expect("CA?\r", "CA000F");
+        let mut dev = PrecisExcite::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
     }
 
     #[test]
     fn open_close() {
-        let t = make_init_transport().any("OK").any("OK");
+        let t = make_init_transport()
+            .expect("CAN\r", "OK")
+            .expect("CA?\r", "CA000N")
+            .expect("CAF\r", "OK")
+            .expect("CA?\r", "CA000F");
         let mut dev = PrecisExcite::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_open(true).unwrap();
@@ -261,14 +287,49 @@ mod tests {
 
     #[test]
     fn fire_is_unsupported() {
-        let mut dev = PrecisExcite::new().with_transport(Box::new(make_init_transport()));
+        let t = make_init_transport().expect("CA?\r", "CA000F");
+        let mut dev = PrecisExcite::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         assert!(matches!(dev.fire(1.0), Err(MmError::UnsupportedCommand)));
         assert!(!dev.get_open().unwrap());
     }
 
     #[test]
+    fn state_property_uses_live_ca_query() {
+        let t = MockTransport::new().expect("CA?\r", "CA000N");
+        let dev = PrecisExcite::new().with_transport(Box::new(t));
+        assert_eq!(
+            dev.get_property("State").unwrap(),
+            PropertyValue::Integer(1)
+        );
+    }
+
+    #[test]
+    fn malformed_live_state_is_rejected() {
+        let t = MockTransport::new().expect("CA?\r", "CA");
+        let dev = PrecisExcite::new().with_transport(Box::new(t));
+        assert_eq!(dev.get_open().unwrap_err(), MmError::SerialInvalidResponse);
+    }
+
+    #[test]
     fn no_transport_error() {
         assert!(PrecisExcite::new().initialize().is_err());
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected() {
+        let t = make_init_transport();
+        let mut dev = PrecisExcite::new().with_transport(Box::new(t));
+        dev.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::CanNotSetProperty)
+        );
+        assert_eq!(
+            dev.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
     }
 }

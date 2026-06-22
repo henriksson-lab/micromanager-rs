@@ -133,10 +133,8 @@ impl Device for AsiFW1000 {
         }
         self.num_positions = n;
         self.labels = (0..n).map(|i| format!("State-{}", i)).collect();
-        let allowed: Vec<String> = self
-            .labels
-            .iter()
-            .cloned()
+        let allowed: Vec<String> = (0..n)
+            .map(|i| i.to_string())
             .chain(std::iter::once(String::new()))
             .collect();
         let allowed_refs: Vec<&str> = allowed.iter().map(String::as_str).collect();
@@ -189,14 +187,14 @@ impl Device for AsiFW1000 {
             }
             "SpeedSetting" => {
                 let speed = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(speed))?;
                 if self.initialized {
                     let resp = self.cmd(&format!("SV {}", speed))?;
-                    if !resp.starts_with("SV") {
+                    if Self::parse_last_word(&resp).parse::<i64>().ok() != Some(speed) {
                         return Err(MmError::SerialInvalidResponse);
                     }
                 }
                 self.speed_setting = speed;
+                self.props.set(name, PropertyValue::Integer(speed))?;
                 Ok(())
             }
             "SerialCommand" => {
@@ -288,8 +286,11 @@ impl StateDevice for AsiFW1000 {
     fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
         self.gate_open = open;
         if !open && !self.closed_position.is_empty() {
-            let label = self.closed_position.clone();
-            self.set_position_by_label(&label)?;
+            let pos = self
+                .closed_position
+                .parse::<u64>()
+                .map_err(|_| MmError::InvalidPropertyValue)?;
+            self.set_position(pos)?;
         }
         Ok(())
     }
@@ -377,5 +378,32 @@ mod tests {
                 .unwrap_err(),
             MmError::InvalidPropertyValue
         );
+    }
+
+    #[test]
+    fn speed_setting_rejects_mismatched_echo_without_cache_update() {
+        let t = make_transport().expect("SV 4\r", "SV 3");
+        let mut fw = AsiFW1000::new().with_transport(Box::new(t));
+        fw.initialize().unwrap();
+        assert!(fw
+            .set_property("SpeedSetting", PropertyValue::Integer(4))
+            .is_err());
+        assert_eq!(
+            fw.get_property("SpeedSetting").unwrap(),
+            PropertyValue::Integer(0)
+        );
+    }
+
+    #[test]
+    fn closed_position_uses_numeric_state_value() {
+        let t = make_transport().expect("MP 4\r", "MP 4");
+        let mut fw = AsiFW1000::new().with_transport(Box::new(t));
+        fw.initialize().unwrap();
+        assert!(fw
+            .set_property("Closed_Position", PropertyValue::String("State-4".into()))
+            .is_err());
+        fw.set_property("Closed_Position", PropertyValue::String("4".into()))
+            .unwrap();
+        fw.set_gate_open(false).unwrap();
     }
 }

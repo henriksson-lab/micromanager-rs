@@ -3,13 +3,16 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Generic, Hub};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::sync::{Arc, Mutex};
 
 /// Maximum number of LED channels supported.
 const MAX_LEDS: usize = 8;
 
+pub type SharedPrizmatixTransport = Arc<Mutex<Box<dyn Transport>>>;
+
 pub struct PrizmatixHub {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<SharedPrizmatixTransport>,
     initialized: bool,
     num_leds: usize,
 }
@@ -32,7 +35,12 @@ impl PrizmatixHub {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(Arc::new(Mutex::new(t)));
+        self
+    }
+
+    pub fn with_shared_transport(mut self, transport: SharedPrizmatixTransport) -> Self {
+        self.transport = Some(transport);
         self
     }
 
@@ -41,7 +49,12 @@ impl PrizmatixHub {
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
         match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+            Some(t) => {
+                let mut guard = t.lock().map_err(|_| {
+                    MmError::LocallyDefined("Prizmatix transport lock poisoned".into())
+                })?;
+                f(guard.as_mut())
+            }
             None => Err(MmError::NotConnected),
         }
     }
@@ -53,13 +66,22 @@ impl PrizmatixHub {
     fn read_num_leds(&mut self) -> MmResult<usize> {
         let v0 = self.cmd("V:0\n")?;
         let num_leds = v0
-            .find('_')
+            .rfind('_')
             .and_then(|pos| v0[pos + 1..].parse::<usize>().ok())
             .unwrap_or(0);
         if num_leds == 0 {
             return Err(MmError::SerialInvalidResponse);
         }
         Ok(num_leds.min(MAX_LEDS))
+    }
+
+    pub fn shared_transport(&self) -> Option<SharedPrizmatixTransport> {
+        self.transport.clone()
+    }
+
+    pub fn create_controller_child(&self) -> MmResult<PrizmatixController> {
+        let transport = self.shared_transport().ok_or(MmError::NotConnected)?;
+        Ok(PrizmatixController::new().with_shared_transport(transport))
     }
 }
 
@@ -100,9 +122,6 @@ impl Device for PrizmatixHub {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        if name == "Port" && self.initialized {
-            return Err(MmError::InvalidPropertyValue);
-        }
         self.props.set(name, val)
     }
 
@@ -146,7 +165,7 @@ impl Hub for PrizmatixHub {
 /// an intensity property named after the channel and a `State <channel>` toggle.
 pub struct PrizmatixController {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<SharedPrizmatixTransport>,
     initialized: bool,
     num_leds: usize,
     led_names: Vec<String>,
@@ -181,7 +200,12 @@ impl PrizmatixController {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(Arc::new(Mutex::new(t)));
+        self
+    }
+
+    pub fn with_shared_transport(mut self, transport: SharedPrizmatixTransport) -> Self {
+        self.transport = Some(transport);
         self
     }
 
@@ -190,13 +214,18 @@ impl PrizmatixController {
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
         match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+            Some(t) => {
+                let mut guard = t.lock().map_err(|_| {
+                    MmError::LocallyDefined("Prizmatix transport lock poisoned".into())
+                })?;
+                f(guard.as_mut())
+            }
             None => Err(MmError::NotConnected),
         }
     }
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
-        let cmd = command.to_string();
+        let cmd = format!("{command}\n");
         self.call_transport(|t| {
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
@@ -262,7 +291,7 @@ impl Device for PrizmatixController {
     }
 
     fn description(&self) -> &str {
-        "Prizmatix LED Controller"
+        "Prizmatix Control"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -273,7 +302,7 @@ impl Device for PrizmatixController {
         // Get number of LEDs from V:0 response "V:0_<nLEDs>"
         let v0 = self.cmd("V:0")?;
         let num_leds = v0
-            .find('_')
+            .rfind('_')
             .and_then(|pos| v0[pos + 1..].parse::<usize>().ok())
             .unwrap_or(0);
         if num_leds == 0 {
@@ -319,7 +348,7 @@ impl Device for PrizmatixController {
                 .get(i)
                 .cloned()
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| format!("LED{}", i + 1));
+                .unwrap_or_else(|| format!("LED{}", i));
 
             let intensity_prop = led_name.clone();
             let state_prop = format!("State {}", led_name);
@@ -425,9 +454,9 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("V:0", "V:0_3")
-            .expect("V:1", "V:1_4")
-            .expect("S:0", "0Red,Green,Blue")
+            .expect("V:0\n", "V:0_3")
+            .expect("V:1\n", "V:1_4")
+            .expect("S:0\n", "0Red,Green,Blue")
     }
 
     #[test]
@@ -446,6 +475,56 @@ mod tests {
     }
 
     #[test]
+    fn hub_uses_last_underscore_for_led_count_like_upstream() {
+        let t = MockTransport::new().expect("V:0\n", "UHP_F_USB_3");
+        let mut hub = PrizmatixHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+        assert_eq!(
+            hub.get_property("NumLEDs").unwrap(),
+            PropertyValue::Integer(3)
+        );
+    }
+
+    #[test]
+    fn hub_port_remains_settable_after_initialize_like_upstream() {
+        let t = MockTransport::new().expect("V:0\n", "V:0_3");
+        let mut hub = PrizmatixHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+
+        hub.set_property("Port", PropertyValue::String("COM2".into()))
+            .unwrap();
+
+        assert_eq!(
+            hub.get_property("Port").unwrap(),
+            PropertyValue::String("COM2".into())
+        );
+    }
+
+    #[test]
+    fn hub_created_controller_uses_shared_transport() {
+        let t = MockTransport::new()
+            .expect("V:0\n", "V:0_3")
+            .expect("V:0\n", "V:0_3")
+            .expect("V:1\n", "V:1_4")
+            .expect("S:0\n", "0Red,Green,Blue")
+            .expect("P:0,0,0,\n", "OK")
+            .expect("P:2047,0,0,\n", "OK");
+        let mut hub = PrizmatixHub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+
+        let mut child = hub.create_controller_child().unwrap();
+        child.initialize().unwrap();
+        child
+            .set_property("Red", PropertyValue::Integer(50))
+            .unwrap();
+        child
+            .set_property("State Red", PropertyValue::Integer(1))
+            .unwrap();
+
+        assert_eq!(child.intensities[0], 2047);
+    }
+
+    #[test]
     fn initialize_finds_leds() {
         let mut dev = PrizmatixController::new().with_transport(Box::new(make_transport()));
         dev.initialize().unwrap();
@@ -459,10 +538,22 @@ mod tests {
     }
 
     #[test]
+    fn controller_uses_last_underscore_for_led_count_like_upstream() {
+        let t = MockTransport::new()
+            .expect("V:0\n", "UHP_F_USB_2")
+            .expect("V:1\n", "V:1_4")
+            .expect("S:0\n", "0Red,Green");
+        let mut dev = PrizmatixController::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        assert_eq!(dev.num_leds, 2);
+        assert!(dev.has_property("Green"));
+    }
+
+    #[test]
     fn state_and_intensity_send_combined_power_command() {
         let t = make_transport()
-            .expect("P:0,0,0,", "OK")
-            .expect("P:3071,0,0,", "OK");
+            .expect("P:0,0,0,\n", "OK")
+            .expect("P:3071,0,0,\n", "OK");
         let mut dev = PrizmatixController::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_property("Red", PropertyValue::Integer(75)).unwrap();
@@ -484,7 +575,7 @@ mod tests {
 
     #[test]
     fn shutdown_sends_upstream_all_off_command() {
-        let t = make_transport().expect("P:0", "OK");
+        let t = make_transport().expect("P:0\n", "OK");
         let mut dev = PrizmatixController::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.shutdown().unwrap();
@@ -494,5 +585,11 @@ mod tests {
     fn no_transport_error() {
         let mut dev = PrizmatixController::new();
         assert!(dev.initialize().is_err());
+    }
+
+    #[test]
+    fn controller_description_matches_upstream() {
+        let dev = PrizmatixController::new();
+        assert_eq!(dev.description(), "Prizmatix Control");
     }
 }

@@ -219,14 +219,11 @@ impl Shutter for AsiShutter {
 
 impl AsiShutter {
     fn parse_shutter_state(&self, resp: &str) -> MmResult<bool> {
-        let trimmed = resp.trim();
-        if trimmed.len() < 2 {
-            return Err(MmError::LocallyDefined("Shutter was not found".into()));
+        let mut bits = self.parse_response_bits(resp)?;
+        if bits < 16 {
+            let retry = self.cmd(&format!("SQ {}", self.shutter_id))?;
+            bits = self.parse_response_bits(&retry)?;
         }
-        let end = &trimmed[trimmed.len() - 2..];
-        let mut bits = end
-            .parse::<u8>()
-            .map_err(|_| MmError::SerialInvalidResponse)?;
         if self.shutter_id == 1 {
             bits >>= 1;
         }
@@ -236,6 +233,16 @@ impl AsiShutter {
         } else {
             open
         })
+    }
+
+    fn parse_response_bits(&self, resp: &str) -> MmResult<u8> {
+        let trimmed = resp.trim();
+        if trimmed.len() < 2 {
+            return Err(MmError::LocallyDefined("Shutter was not found".into()));
+        }
+        trimmed[trimmed.len() - 2..]
+            .parse::<u8>()
+            .map_err(|_| MmError::SerialInvalidResponse)
     }
 }
 
@@ -305,6 +312,17 @@ mod tests {
         let mut s = AsiShutter::new(0).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(1));
+    }
+
+    #[test]
+    fn state_query_retries_response_below_16() {
+        let t = MockTransport::new()
+            .expect("SQ 1\r", "00")
+            .expect("SQ 1\r", "18")
+            .expect("SQ 1\r", "18");
+        let mut s = AsiShutter::new(1).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.get_open().unwrap());
     }
 
     #[test]

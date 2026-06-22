@@ -18,9 +18,16 @@ pub struct Uc2Shutter {
 impl Uc2Shutter {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("OnOff", PropertyValue::String("Off".into()), false).unwrap();
+        props
+            .define_property("OnOff", PropertyValue::String("Off".into()), false)
+            .unwrap();
         props.set_allowed_values("OnOff", &["On", "Off"]).unwrap();
-        Self { props, initialized: false, open: false, writer: None }
+        Self {
+            props,
+            initialized: false,
+            open: false,
+            writer: None,
+        }
     }
 
     pub fn with_writer(mut self, writer: JsonWriter) -> Self {
@@ -38,15 +45,23 @@ impl Uc2Shutter {
 }
 
 impl Default for Uc2Shutter {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for Uc2Shutter {
-    fn name(&self) -> &str { "openUC2-LED-Laser" }
-    fn description(&self) -> &str { "LED/Laser Shutter for openUC2" }
+    fn name(&self) -> &str {
+        "openUC2-LED-Laser"
+    }
+    fn description(&self) -> &str {
+        "LED/Laser Shutter for openUC2"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.writer.is_none() { return Err(MmError::CommHubMissing); }
+        if self.writer.is_none() {
+            return Err(MmError::CommHubMissing);
+        }
         self.initialized = true;
         Ok(())
     }
@@ -56,31 +71,49 @@ impl Device for Uc2Shutter {
         Ok(())
     }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        if name == "OnOff" && self.initialized { self.send_state(val.as_str() == "On")?; }
+        if name == "OnOff" && self.initialized {
+            self.send_state(val.as_str() == "On")?;
+        }
         self.props.set(name, val)
     }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Shutter }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Shutter
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Shutter for Uc2Shutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
-        if !self.initialized { return Err(MmError::NotConnected); }
+        if !self.initialized {
+            return Err(MmError::NotConnected);
+        }
         self.send_state(open)?;
         self.open = open;
         Ok(())
     }
 
-    fn get_open(&self) -> MmResult<bool> { Ok(self.open) }
+    fn get_open(&self) -> MmResult<bool> {
+        Ok(self.open)
+    }
 
-    fn fire(&mut self, _delta_t: f64) -> MmResult<()> { Err(MmError::UnsupportedCommand) }
+    fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
+        Err(MmError::UnsupportedCommand)
+    }
 }
 
 #[cfg(test)]

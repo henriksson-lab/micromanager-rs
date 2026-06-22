@@ -30,23 +30,24 @@ fn read_str<F: FnOnce(*mut i8, i32) -> i32>(f: F) -> Option<String> {
 // ── Camera struct ─────────────────────────────────────────────────────────────
 
 pub struct PICAMCamera {
-    props:    PropertyMap,
-    ctx:      *mut ffi::PvcamCtx,
+    props: PropertyMap,
+    ctx: *mut ffi::PvcamCtx,
 
     // Pre-init / cached state
-    camera_name:  String,    // PVCAM camera name, e.g. "pvcam0"
-    exposure_ms:  f64,
-    gain_index:   i32,       // 1-based
-    binning:      i32,       // symmetric
+    camera_name: String, // PVCAM camera name, e.g. "pvcam0"
+    exposure_ms: f64,
+    gain_index: i32, // 1-based
+    binning: i32,    // symmetric
     temp_setpoint: f64,
 
     // Post-init read-only info
-    sensor_width:  u32,
+    sensor_width: u32,
     sensor_height: u32,
-    img_width:     u32,
-    img_height:    u32,
-    bit_depth:     u32,
+    img_width: u32,
+    img_height: u32,
+    bit_depth: u32,
     bytes_per_pixel: u32,
+    image_buf: Vec<u8>,
 
     capturing: bool,
 }
@@ -54,38 +55,65 @@ pub struct PICAMCamera {
 impl PICAMCamera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("CameraName",   PropertyValue::String("".into()),    false).unwrap();
-        props.define_property("Exposure",     PropertyValue::Float(10.0),          false).unwrap();
-        props.define_property("GainIndex",    PropertyValue::Integer(1),           false).unwrap();
-        props.define_property("Binning",      PropertyValue::Integer(1),           false).unwrap();
-        props.define_property("TempSetpoint", PropertyValue::Float(-20.0),         false).unwrap();
-        props.define_property("Width",        PropertyValue::Integer(0),           true).unwrap();
-        props.define_property("Height",       PropertyValue::Integer(0),           true).unwrap();
-        props.define_property("BitDepth",     PropertyValue::Integer(16),          true).unwrap();
-        props.define_property("Temperature",  PropertyValue::Float(0.0),           true).unwrap();
-        props.define_property("SerialNumber", PropertyValue::String("".into()),    true).unwrap();
-        props.define_property("ChipName",     PropertyValue::String("".into()),    true).unwrap();
+        props
+            .define_property("CameraName", PropertyValue::String("".into()), false)
+            .unwrap();
+        props
+            .define_property("Exposure", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props
+            .define_property("GainIndex", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
+        props
+            .define_property("TempSetpoint", PropertyValue::Float(-20.0), false)
+            .unwrap();
+        props
+            .define_property("Width", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("Height", PropertyValue::Integer(0), true)
+            .unwrap();
+        props
+            .define_property("BitDepth", PropertyValue::Integer(16), true)
+            .unwrap();
+        props
+            .define_property("Temperature", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("SerialNumber", PropertyValue::String("".into()), true)
+            .unwrap();
+        props
+            .define_property("ChipName", PropertyValue::String("".into()), true)
+            .unwrap();
 
         Self {
             props,
             ctx: std::ptr::null_mut(),
-            camera_name:  String::new(),
-            exposure_ms:  10.0,
-            gain_index:   1,
-            binning:      1,
+            camera_name: String::new(),
+            exposure_ms: 10.0,
+            gain_index: 1,
+            binning: 1,
             temp_setpoint: -20.0,
-            sensor_width:  0,
+            sensor_width: 0,
             sensor_height: 0,
-            img_width:     0,
-            img_height:    0,
-            bit_depth:     16,
+            img_width: 0,
+            img_height: 0,
+            bit_depth: 16,
             bytes_per_pixel: 2,
-            capturing:    false,
+            image_buf: Vec::new(),
+            capturing: false,
         }
     }
 
     fn check_open(&self) -> MmResult<()> {
-        if self.ctx.is_null() { Err(MmError::NotConnected) } else { Ok(()) }
+        if self.ctx.is_null() {
+            Err(MmError::NotConnected)
+        } else {
+            Ok(())
+        }
     }
 
     fn pvcam_err() -> MmError {
@@ -95,18 +123,26 @@ impl PICAMCamera {
     }
 
     fn sync_image_dims(&mut self) {
-        if self.ctx.is_null() { return; }
-        self.img_width  = unsafe { ffi::pvcam_get_image_width(self.ctx)  } as u32;
+        if self.ctx.is_null() {
+            return;
+        }
+        self.img_width = unsafe { ffi::pvcam_get_image_width(self.ctx) } as u32;
         self.img_height = unsafe { ffi::pvcam_get_image_height(self.ctx) } as u32;
-        self.props.entry_mut("Width") .map(|e| e.value = PropertyValue::Integer(self.img_width  as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.img_width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
     }
 
     fn apply_roi(&mut self) {
-        if self.ctx.is_null() { return; }
+        if self.ctx.is_null() {
+            return;
+        }
         let bin = self.binning as u16;
-        let sw  = self.sensor_width  as u16;
-        let sh  = self.sensor_height as u16;
+        let sw = self.sensor_width as u16;
+        let sh = self.sensor_height as u16;
         unsafe {
             ffi::pvcam_set_roi(self.ctx, 0, 0, sw, sh, bin, bin);
         }
@@ -115,7 +151,9 @@ impl PICAMCamera {
 }
 
 impl Default for PICAMCamera {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for PICAMCamera {
@@ -132,11 +170,17 @@ impl Drop for PICAMCamera {
 // ── Device trait ──────────────────────────────────────────────────────────────
 
 impl Device for PICAMCamera {
-    fn name(&self) -> &str { "PICAMCamera" }
-    fn description(&self) -> &str { "Princeton Instruments camera (PVCAM SDK)" }
+    fn name(&self) -> &str {
+        "PICAMCamera"
+    }
+    fn description(&self) -> &str {
+        "PICAM API device adapter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if !self.ctx.is_null() { return Ok(()); }
+        if !self.ctx.is_null() {
+            return Ok(());
+        }
 
         if unsafe { ffi::pvcam_init() } != 0 {
             return Err(MmError::LocallyDefined("pvcam_init failed".into()));
@@ -161,25 +205,29 @@ impl Device for PICAMCamera {
         }
         self.ctx = ctx;
         self.camera_name = cam_name.clone();
-        self.props.entry_mut("CameraName")
+        self.props
+            .entry_mut("CameraName")
             .map(|e| e.value = PropertyValue::String(cam_name));
 
         // Cache sensor info.
-        self.sensor_width  = unsafe { ffi::pvcam_get_sensor_width(ctx)  } as u32;
+        self.sensor_width = unsafe { ffi::pvcam_get_sensor_width(ctx) } as u32;
         self.sensor_height = unsafe { ffi::pvcam_get_sensor_height(ctx) } as u32;
-        self.bit_depth     = unsafe { ffi::pvcam_get_bit_depth(ctx) }.max(8) as u32;
+        self.bit_depth = unsafe { ffi::pvcam_get_bit_depth(ctx) }.max(8) as u32;
         self.bytes_per_pixel = (self.bit_depth + 7) / 8;
 
-        self.props.entry_mut("BitDepth")
+        self.props
+            .entry_mut("BitDepth")
             .map(|e| e.value = PropertyValue::Integer(self.bit_depth as i64));
 
         // Read serial number and chip name.
         if let Some(sn) = read_str(|b, l| unsafe { ffi::pvcam_get_serial_number(ctx, b, l) }) {
-            self.props.entry_mut("SerialNumber")
+            self.props
+                .entry_mut("SerialNumber")
                 .map(|e| e.value = PropertyValue::String(sn));
         }
         if let Some(chip) = read_str(|b, l| unsafe { ffi::pvcam_get_chip_name(ctx, b, l) }) {
-            self.props.entry_mut("ChipName")
+            self.props
+                .entry_mut("ChipName")
                 .map(|e| e.value = PropertyValue::String(chip));
         }
 
@@ -213,17 +261,19 @@ impl Device for PICAMCamera {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "CameraName"   => Ok(PropertyValue::String(self.camera_name.clone())),
-            "Exposure"     => Ok(PropertyValue::Float(self.exposure_ms)),
-            "GainIndex"    => {
+            "CameraName" => Ok(PropertyValue::String(self.camera_name.clone())),
+            "Exposure" => Ok(PropertyValue::Float(self.exposure_ms)),
+            "GainIndex" => {
                 if !self.ctx.is_null() {
                     let g = unsafe { ffi::pvcam_get_gain_index(self.ctx) };
-                    if g >= 0 { return Ok(PropertyValue::Integer(g as i64)); }
+                    if g >= 0 {
+                        return Ok(PropertyValue::Integer(g as i64));
+                    }
                 }
                 Ok(PropertyValue::Integer(self.gain_index as i64))
             }
-            "Binning"      => Ok(PropertyValue::Integer(self.binning as i64)),
-            "Temperature"  => {
+            "Binning" => Ok(PropertyValue::Integer(self.binning as i64)),
+            "Temperature" => {
                 if !self.ctx.is_null() {
                     let t = unsafe { ffi::pvcam_get_temperature(self.ctx) };
                     return Ok(PropertyValue::Float(t));
@@ -258,7 +308,8 @@ impl Device for PICAMCamera {
             }
             "GainIndex" => {
                 self.gain_index = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
-                self.props.set(name, PropertyValue::Integer(self.gain_index as i64))?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.gain_index as i64))?;
                 if !self.ctx.is_null() {
                     unsafe { ffi::pvcam_set_gain_index(self.ctx, self.gain_index) };
                 }
@@ -266,13 +317,15 @@ impl Device for PICAMCamera {
             }
             "Binning" => {
                 self.binning = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as i32;
-                self.props.set(name, PropertyValue::Integer(self.binning as i64))?;
+                self.props
+                    .set(name, PropertyValue::Integer(self.binning as i64))?;
                 self.apply_roi();
                 Ok(())
             }
             "TempSetpoint" => {
                 self.temp_setpoint = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Float(self.temp_setpoint))?;
+                self.props
+                    .set(name, PropertyValue::Float(self.temp_setpoint))?;
                 if !self.ctx.is_null() {
                     unsafe { ffi::pvcam_set_temp_setpoint(self.ctx, self.temp_setpoint) };
                 }
@@ -282,13 +335,21 @@ impl Device for PICAMCamera {
         }
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Camera }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Camera
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 // ── Camera trait ──────────────────────────────────────────────────────────────
@@ -304,32 +365,54 @@ impl Camera for PICAMCamera {
             if rc != 0 || frame_ptr.is_null() {
                 return Err(MmError::SnapImageFailed);
             }
-            // pvcam_get_frame_cont copies the pointer; the data is inside the
-            // circular buffer managed by the shim.  We just release it.
+            let size = unsafe { ffi::pvcam_get_frame_size(self.ctx) } as usize;
+            if size == 0 {
+                unsafe { ffi::pvcam_release_frame_cont(self.ctx) };
+                return Err(MmError::SnapImageFailed);
+            }
+            self.image_buf.clear();
+            self.image_buf
+                .extend_from_slice(unsafe { std::slice::from_raw_parts(frame_ptr, size) });
             unsafe { ffi::pvcam_release_frame_cont(self.ctx) };
             return Ok(());
         }
 
         // Single-frame snap (blocking, up to 10 s timeout).
         let timeout_ms = (self.exposure_ms as u32 + 1).max(10_000);
-        let rc = unsafe {
-            ffi::pvcam_snap(self.ctx, self.exposure_ms as u32, timeout_ms)
-        };
+        let rc = unsafe { ffi::pvcam_snap(self.ctx, self.exposure_ms as u32, timeout_ms) };
         if rc != 0 {
             return Err(Self::pvcam_err());
         }
 
         // Update image dimensions (they might have changed if ROI/binning changed).
-        self.img_width  = unsafe { ffi::pvcam_get_image_width(self.ctx)  } as u32;
+        self.img_width = unsafe { ffi::pvcam_get_image_width(self.ctx) } as u32;
         self.img_height = unsafe { ffi::pvcam_get_image_height(self.ctx) } as u32;
-        self.props.entry_mut("Width") .map(|e| e.value = PropertyValue::Integer(self.img_width  as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.img_width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.img_height as i64));
+
+        let ptr = unsafe { ffi::pvcam_get_snap_frame(self.ctx) };
+        let size = unsafe { ffi::pvcam_get_frame_size(self.ctx) } as usize;
+        if ptr.is_null() || size == 0 {
+            return Err(MmError::SnapImageFailed);
+        }
+        self.image_buf.clear();
+        self.image_buf
+            .extend_from_slice(unsafe { std::slice::from_raw_parts(ptr, size) });
 
         Ok(())
     }
 
     fn get_image_buffer(&self) -> MmResult<&[u8]> {
-        if self.ctx.is_null() { return Err(MmError::NotConnected); }
+        if self.ctx.is_null() {
+            return Err(MmError::NotConnected);
+        }
+        if !self.image_buf.is_empty() {
+            return Ok(&self.image_buf);
+        }
         let ptr = unsafe { ffi::pvcam_get_snap_frame(self.ctx) };
         if ptr.is_null() {
             return Err(MmError::LocallyDefined("No image captured yet".into()));
@@ -343,24 +426,42 @@ impl Camera for PICAMCamera {
         Ok(unsafe { std::slice::from_raw_parts(ptr, size) })
     }
 
-    fn get_image_width(&self) -> u32  { self.img_width }
-    fn get_image_height(&self) -> u32 { self.img_height }
-    fn get_image_bytes_per_pixel(&self) -> u32 { self.bytes_per_pixel }
-    fn get_bit_depth(&self) -> u32 { self.bit_depth }
-    fn get_number_of_components(&self) -> u32 { 1 }
-    fn get_number_of_channels(&self) -> u32 { 1 }
-    fn get_exposure(&self) -> f64 { self.exposure_ms }
-
-    fn set_exposure(&mut self, exp_ms: f64) {
-        self.exposure_ms = exp_ms;
-        self.props.set("Exposure", PropertyValue::Float(exp_ms)).ok();
+    fn get_image_width(&self) -> u32 {
+        self.img_width
+    }
+    fn get_image_height(&self) -> u32 {
+        self.img_height
+    }
+    fn get_image_bytes_per_pixel(&self) -> u32 {
+        self.bytes_per_pixel
+    }
+    fn get_bit_depth(&self) -> u32 {
+        self.bit_depth
+    }
+    fn get_number_of_components(&self) -> u32 {
+        1
+    }
+    fn get_number_of_channels(&self) -> u32 {
+        1
+    }
+    fn get_exposure(&self) -> f64 {
+        self.exposure_ms
     }
 
-    fn get_binning(&self) -> i32 { self.binning }
+    fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()> {
+        self.exposure_ms = exp_ms;
+        self.props.set("Exposure", PropertyValue::Float(exp_ms))?;
+        Ok(())
+    }
+
+    fn get_binning(&self) -> i32 {
+        self.binning
+    }
 
     fn set_binning(&mut self, bin: i32) -> MmResult<()> {
         self.binning = bin;
-        self.props.set("Binning", PropertyValue::Integer(bin as i64))?;
+        self.props
+            .set("Binning", PropertyValue::Integer(bin as i64))?;
         self.apply_roi();
         Ok(())
     }
@@ -375,9 +476,12 @@ impl Camera for PICAMCamera {
         unsafe {
             ffi::pvcam_set_roi(
                 self.ctx,
-                roi.x as u16, roi.y as u16,
-                roi.width as u16, roi.height as u16,
-                bin, bin,
+                roi.x as u16,
+                roi.y as u16,
+                roi.width as u16,
+                roi.height as u16,
+                bin,
+                bin,
             );
         }
         self.sync_image_dims();
@@ -393,12 +497,12 @@ impl Camera for PICAMCamera {
 
     fn start_sequence_acquisition(&mut self, _count: i64, _interval_ms: f64) -> MmResult<()> {
         self.check_open()?;
-        if self.capturing { return Ok(()); }
+        if self.capturing {
+            return Ok(());
+        }
 
         // Use 8 circular frames.
-        let rc = unsafe {
-            ffi::pvcam_start_cont(self.ctx, self.exposure_ms as u32, 8)
-        };
+        let rc = unsafe { ffi::pvcam_start_cont(self.ctx, self.exposure_ms as u32, 8) };
         if rc != 0 {
             return Err(Self::pvcam_err());
         }
@@ -407,7 +511,9 @@ impl Camera for PICAMCamera {
     }
 
     fn stop_sequence_acquisition(&mut self) -> MmResult<()> {
-        if !self.capturing { return Ok(()); }
+        if !self.capturing {
+            return Ok(());
+        }
         if !self.ctx.is_null() {
             unsafe { ffi::pvcam_stop_cont(self.ctx) };
         }
@@ -415,7 +521,9 @@ impl Camera for PICAMCamera {
         Ok(())
     }
 
-    fn is_capturing(&self) -> bool { self.capturing }
+    fn is_capturing(&self) -> bool {
+        self.capturing
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -438,14 +546,16 @@ mod tests {
     #[test]
     fn set_camera_name_pre_init() {
         let mut d = PICAMCamera::new();
-        d.set_property("CameraName", PropertyValue::String("pvcam1".into())).unwrap();
+        d.set_property("CameraName", PropertyValue::String("pvcam1".into()))
+            .unwrap();
         assert_eq!(d.camera_name, "pvcam1");
     }
 
     #[test]
     fn set_exposure_pre_init() {
         let mut d = PICAMCamera::new();
-        d.set_property("Exposure", PropertyValue::Float(100.0)).unwrap();
+        d.set_property("Exposure", PropertyValue::Float(100.0))
+            .unwrap();
         assert_eq!(d.exposure_ms, 100.0);
         assert_eq!(d.get_exposure(), 100.0);
     }
@@ -453,14 +563,16 @@ mod tests {
     #[test]
     fn set_gain_pre_init() {
         let mut d = PICAMCamera::new();
-        d.set_property("GainIndex", PropertyValue::Integer(3)).unwrap();
+        d.set_property("GainIndex", PropertyValue::Integer(3))
+            .unwrap();
         assert_eq!(d.gain_index, 3);
     }
 
     #[test]
     fn set_temp_setpoint_pre_init() {
         let mut d = PICAMCamera::new();
-        d.set_property("TempSetpoint", PropertyValue::Float(-30.0)).unwrap();
+        d.set_property("TempSetpoint", PropertyValue::Float(-30.0))
+            .unwrap();
         assert_eq!(d.temp_setpoint, -30.0);
     }
 

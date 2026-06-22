@@ -156,6 +156,7 @@ impl Device for AsiZStage {
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
+            "Axis" if self.initialized => Err(MmError::InvalidPropertyValue),
             "Axis" => {
                 self.props.set(name, val)?;
                 self.axis = self.props.get("Axis")?.as_str().to_string();
@@ -207,9 +208,6 @@ impl Stage for AsiZStage {
     }
 
     fn home(&mut self) -> MmResult<()> {
-        let resp = self.cmd(&format!("H {}", self.axis()))?;
-        Self::check_response(&resp)?;
-        self.position_um = 0.0;
         Ok(())
     }
 
@@ -297,10 +295,32 @@ mod tests {
     }
 
     #[test]
-    fn home_sets_origin_for_axis() {
+    fn initialized_axis_change_is_rejected_and_preserves_axis() {
         let t = MockTransport::new()
-            .expect("W P\r", ":A 0")
-            .expect("H P\r", ":A");
+            .expect("W F\r", ":A 0")
+            .expect("M F=10.000000\r", ":A");
+        let mut stage = AsiZStage::new().with_transport(Box::new(t));
+        stage
+            .set_property("Axis", PropertyValue::String("F".into()))
+            .unwrap();
+        stage.initialize().unwrap();
+
+        assert_eq!(
+            stage
+                .set_property("Axis", PropertyValue::String("P".into()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            stage.get_property("Axis").unwrap(),
+            PropertyValue::String("F".into())
+        );
+        stage.set_position_um(1.0).unwrap();
+    }
+
+    #[test]
+    fn home_is_noop_like_upstream_single_axis_stage() {
+        let t = MockTransport::new().expect("W P\r", ":A 0");
         let mut stage = AsiZStage::new().with_transport(Box::new(t));
         stage
             .set_property("Axis", PropertyValue::String("P".into()))

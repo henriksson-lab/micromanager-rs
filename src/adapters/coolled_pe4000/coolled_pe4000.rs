@@ -5,7 +5,7 @@
 ///   `XVER\r`           → version string
 ///   `CSS?\r`           → "CSS<A6><B6><C6><D6>" each 6 chars `[S/X][N/F][000-100]`
 ///   `CSN\r`/`CSF\r`   → global on/off
-///   `C<ch>I<NNN>\r`   → set channel intensity (ch = A–D, NNN = 000-100)
+///   `C<ch>I<N>\r`     → set channel intensity (ch = A-D, N = 0-100)
 ///   `C<ch>S\r`         → select channel
 ///   `C<ch>X\r`         → deselect channel
 use crate::error::{MmError, MmResult};
@@ -141,6 +141,11 @@ impl CoolLedPE4000 {
         })
     }
 
+    fn send_cmd(&mut self, command: &str) -> MmResult<()> {
+        let command = format!("{}\r", command);
+        self.call_transport(|t| t.send(&command))
+    }
+
     /// Parse CSS response: `CSS<ch><S/X><N/F><000-100>...`.
     fn parse_css(resp: &str) -> [(bool, bool, u8); 4] {
         let body = resp.trim().strip_prefix("CSS").unwrap_or(resp.trim());
@@ -178,6 +183,35 @@ impl CoolLedPE4000 {
             .map(|e| e.value = PropertyValue::Integer(if self.global_on { 1 } else { 0 }));
         Ok(())
     }
+
+    fn refresh_lams(&mut self) -> MmResult<()> {
+        let wavelengths = self.call_transport(|t| {
+            let mut wavelengths = Vec::new();
+            t.send("LAMS\r")?;
+            for i in 0..CHANNELS.len() {
+                let response = t.receive_line()?;
+                if !response.starts_with("LAM") {
+                    continue;
+                }
+                let wavelength = response
+                    .get(6..)
+                    .unwrap_or("")
+                    .trim()
+                    .parse::<i64>()
+                    .map_err(|_| MmError::InvalidPropertyValue)?;
+                wavelengths.push((i, wavelength));
+            }
+            Ok(wavelengths)
+        })?;
+
+        for (i, wavelength) in wavelengths {
+            self.channels[i].wavelength = wavelength;
+            self.props
+                .entry_mut(&format!("Channel{}", CHANNELS[i]))
+                .map(|e| e.value = PropertyValue::Integer(wavelength));
+        }
+        Ok(())
+    }
 }
 
 impl Default for CoolLedPE4000 {
@@ -211,6 +245,7 @@ impl Device for CoolLedPE4000 {
             .map(|e| e.value = PropertyValue::String(ver));
         self.cmd("PORT:P=ON")?;
         self.refresh_css()?;
+        self.refresh_lams()?;
         self.initialized = true;
         Ok(())
     }
@@ -227,12 +262,20 @@ impl Device for CoolLedPE4000 {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
+
         for ch in CHANNELS {
             let key_int = format!("Intensity{}", ch);
             if name == key_int {
-                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
+                let raw = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0..=100).contains(&raw) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let v = raw as u8;
                 if self.initialized {
-                    self.cmd(&format!("C{}I{:03}", ch, v))?;
+                    self.cmd(&format!("C{}I{}", ch, v))?;
                 }
                 let idx = (ch as u8 - b'A') as usize;
                 self.channels[idx].intensity = v;
@@ -240,14 +283,18 @@ impl Device for CoolLedPE4000 {
             }
             let key_sel = format!("Selection{}", ch);
             if name == key_sel {
-                let selected = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
+                let raw = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if raw != 0 && raw != 1 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let selected = raw == 1;
                 if self.initialized {
                     let cmd = if selected {
                         format!("C{}S", ch)
                     } else {
                         format!("C{}X", ch)
                     };
-                    self.cmd(&cmd)?;
+                    self.send_cmd(&cmd)?;
                 }
                 let idx = (ch as u8 - b'A') as usize;
                 self.channels[idx].selected = selected;
@@ -270,7 +317,11 @@ impl Device for CoolLedPE4000 {
             }
         }
         if name == "Global State" {
-            let open = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
+            let raw = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if raw != 0 && raw != 1 {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            let open = raw == 1;
             if self.initialized {
                 self.set_open(open)?;
             } else {
@@ -343,6 +394,10 @@ mod tests {
             .expect("PORT:P=ON\r", "OK")
             // 4 channels: A selected/on/75, B-D not selected/off/0
             .expect("CSS?\r", "CSSASN075BXF000CXF000DXF000")
+            .expect("LAMS\r", "LAM:A 405")
+            .expect("LAMS\r", "LAM:B 470")
+            .expect("LAMS\r", "LAM:C 550")
+            .expect("LAMS\r", "LAM:D 660")
     }
 
     #[test]
@@ -351,6 +406,10 @@ mod tests {
         dev.initialize().unwrap();
         assert!(dev.channels[0].selected);
         assert_eq!(dev.channels[0].intensity, 75);
+        assert_eq!(dev.channels[0].wavelength, 405);
+        assert_eq!(dev.channels[1].wavelength, 470);
+        assert_eq!(dev.channels[2].wavelength, 550);
+        assert_eq!(dev.channels[3].wavelength, 660);
         assert!(!dev.channels[1].selected);
         assert!(!dev.channels[3].selected);
     }
@@ -368,12 +427,28 @@ mod tests {
 
     #[test]
     fn set_intensity_d() {
-        let t = make_transport().expect("CDI050\r", "OK");
+        let t = make_transport().expect("CDI50\r", "OK");
         let mut dev = CoolLedPE4000::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_property("IntensityD", PropertyValue::Integer(50))
             .unwrap();
         assert_eq!(dev.channels[3].intensity, 50);
+    }
+
+    #[test]
+    fn selection_write_is_send_only_like_upstream() {
+        let t = make_transport();
+        let mut dev = CoolLedPE4000::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        dev.set_property("SelectionA", PropertyValue::Integer(0))
+            .unwrap();
+
+        assert!(!dev.channels[0].selected);
+        assert_eq!(
+            dev.get_property("SelectionA").unwrap(),
+            PropertyValue::Integer(0)
+        );
     }
 
     #[test]
@@ -429,5 +504,44 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(CoolLedPE4000::new().initialize().is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_range_values_before_writing() {
+        let mut dev = CoolLedPE4000::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("IntensityA", PropertyValue::Integer(300)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.set_property("SelectionA", PropertyValue::Integer(2)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.set_property("Global State", PropertyValue::Integer(2)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(dev.channels[0].intensity, 75);
+        assert!(dev.channels[0].selected);
+        assert!(dev.global_on);
+    }
+
+    #[test]
+    fn rejects_initialized_port_changes() {
+        let mut dev = CoolLedPE4000::new().with_transport(Box::new(make_transport()));
+        dev.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::CanNotSetProperty)
+        );
+        assert_eq!(
+            dev.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
     }
 }

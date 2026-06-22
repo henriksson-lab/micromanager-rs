@@ -832,10 +832,7 @@ mod tests {
             .expect("inf?", "LBX-473-100-CSB")
             .expect("?sta", "99");
         let mut dev = LaserBoxx::new().with_transport(Box::new(t));
-        assert_eq!(
-            dev.initialize().unwrap_err(),
-            MmError::UnknownPosition
-        );
+        assert_eq!(dev.initialize().unwrap_err(), MmError::UnknownPosition);
 
         let t = MockTransport::new()
             .expect("inf?", "LBX-473-100-CSB")
@@ -846,10 +843,7 @@ mod tests {
             .expect("?sta", "2")
             .expect("?f", "9");
         let mut dev = LaserBoxx::new().with_transport(Box::new(t));
-        assert_eq!(
-            dev.initialize().unwrap_err(),
-            MmError::UnknownPosition
-        );
+        assert_eq!(dev.initialize().unwrap_err(), MmError::UnknownPosition);
     }
 
     #[test]

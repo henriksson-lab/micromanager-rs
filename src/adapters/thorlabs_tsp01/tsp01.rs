@@ -42,25 +42,6 @@ impl ThorlabsTSP01 {
         props
             .set_allowed_values("Thermometer", &["ThorlabsTSP01"])
             .unwrap();
-        props
-            .define_property(
-                "Sensor Serial Number",
-                PropertyValue::String(String::new()),
-                true,
-            )
-            .unwrap();
-        props
-            .define_property("USBDeviceTemp", PropertyValue::Float(24.0), true)
-            .unwrap();
-        props
-            .define_property("USBDeviceHumidity", PropertyValue::Float(50.0), true)
-            .unwrap();
-        props
-            .define_property("TempProbe1", PropertyValue::Float(24.0), true)
-            .unwrap();
-        props
-            .define_property("TempProbe2", PropertyValue::Float(24.0), true)
-            .unwrap();
 
         Self {
             props,
@@ -71,6 +52,25 @@ impl ThorlabsTSP01 {
             temp_probe1: Cell::new(24.0),
             temp_probe2: Cell::new(24.0),
         }
+    }
+
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("Sensor Serial Number") {
+            self.props.define_property(
+                "Sensor Serial Number",
+                PropertyValue::String(String::new()),
+                true,
+            )?;
+            self.props
+                .define_property("USBDeviceTemp", PropertyValue::Float(24.0), true)?;
+            self.props
+                .define_property("USBDeviceHumidity", PropertyValue::Float(50.0), true)?;
+            self.props
+                .define_property("TempProbe1", PropertyValue::Float(24.0), true)?;
+            self.props
+                .define_property("TempProbe2", PropertyValue::Float(24.0), true)?;
+        }
+        Ok(())
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -171,6 +171,7 @@ impl Device for ThorlabsTSP01 {
         }
         let idn = self.cmd("*IDN?")?;
         let serial = idn.split(',').nth(2).unwrap_or("").trim().to_string();
+        self.ensure_runtime_properties()?;
         if let Some(entry) = self.props.entry_mut("Sensor Serial Number") {
             entry.value = PropertyValue::String(serial);
         }
@@ -185,6 +186,9 @@ impl Device for ThorlabsTSP01 {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if !self.props.has_property(name) {
+            return self.props.get(name).cloned();
+        }
         match name {
             "USBDeviceTemp" => Ok(PropertyValue::Float(self.read_internal_temp()?)),
             "USBDeviceHumidity" => Ok(PropertyValue::Float(self.read_humidity()?)),
@@ -195,10 +199,7 @@ impl Device for ThorlabsTSP01 {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        match name {
-            "Thermometer" if self.initialized => Err(MmError::InvalidProperty),
-            _ => self.props.set(name, val),
-        }
+        self.props.set(name, val)
     }
 
     fn property_names(&self) -> Vec<String> {
@@ -328,13 +329,22 @@ mod tests {
     }
 
     #[test]
-    fn initialized_thermometer_change_is_rejected() {
+    fn initialized_thermometer_action_is_noop_like_upstream() {
         let mut d = make_initialized();
-        assert_eq!(
-            d.set_property("Thermometer", PropertyValue::String("other".into()))
-                .unwrap_err(),
-            MmError::InvalidProperty
-        );
+        d.set_property("Thermometer", PropertyValue::String("ThorlabsTSP01".into()))
+            .unwrap();
+    }
+
+    #[test]
+    fn constructor_exposes_only_upstream_pre_init_property() {
+        let d = ThorlabsTSP01::new();
+        assert!(d.has_property("Thermometer"));
+        assert!(!d.has_property("Sensor Serial Number"));
+        assert!(!d.has_property("USBDeviceTemp"));
+        assert!(!d.has_property("USBDeviceHumidity"));
+        assert!(!d.has_property("TempProbe1"));
+        assert!(!d.has_property("TempProbe2"));
+        assert!(d.get_property("USBDeviceTemp").is_err());
     }
 
     #[test]

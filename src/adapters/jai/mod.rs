@@ -1,3 +1,5 @@
+#[cfg(feature = "jai")]
+pub mod camera;
 /// JAI camera adapter (Pleora eBUS SDK).
 ///
 /// Wraps the Pleora eBUS SDK C++ API behind the MicroManager `Camera` trait
@@ -37,7 +39,5 @@
 
 #[cfg(feature = "jai")]
 pub mod ffi;
-#[cfg(feature = "jai")]
-pub mod camera;
 #[cfg(feature = "jai")]
 pub use camera::JAICamera;

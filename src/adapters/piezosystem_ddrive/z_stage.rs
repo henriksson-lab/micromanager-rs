@@ -23,6 +23,8 @@ pub struct PsjDDriveStage {
     props: PropertyMap,
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
+    device_name: String,
+    description: String,
     channel: u8,
     position_um: f64,
     loop_closed: bool,
@@ -36,11 +38,12 @@ impl PsjDDriveStage {
     /// Create a stage for the given internal channel (0-5).
     pub fn new(channel: u8) -> Self {
         let mut props = PropertyMap::new();
+        let external_channel = channel as i64 + 1;
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
         props
-            .define_property("Channel", PropertyValue::Integer(channel as i64), false)
+            .define_property("Channel_", PropertyValue::Integer(external_channel), true)
             .unwrap();
         props
             .define_property("MinVoltage", PropertyValue::Float(0.0), false)
@@ -58,6 +61,8 @@ impl PsjDDriveStage {
             props,
             transport: None,
             initialized: false,
+            device_name: format!("PSJ_Stage{}", external_channel),
+            description: format!("Single Axis Stage Ch{}", external_channel),
             channel,
             position_um: 0.0,
             loop_closed: false,
@@ -122,10 +127,10 @@ impl Default for PsjDDriveStage {
 
 impl Device for PsjDDriveStage {
     fn name(&self) -> &str {
-        "PSJ-dDrive-Stage"
+        &self.device_name
     }
     fn description(&self) -> &str {
-        "Piezosystem Jena dDrive piezo Z stage (single channel)"
+        &self.description
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -280,6 +285,25 @@ mod tests {
         let mut stage = PsjDDriveStage::new(3).with_transport(Box::new(t));
         stage.initialize().unwrap();
         assert!((stage.get_position_um().unwrap() - 35.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn upstream_stage_identity_uses_external_channel_number() {
+        let mut stage = PsjDDriveStage::new(3);
+        assert_eq!(stage.name(), "PSJ_Stage4");
+        assert_eq!(stage.description(), "Single Axis Stage Ch4");
+        assert_eq!(
+            stage.get_property("Channel_").unwrap(),
+            PropertyValue::Integer(4)
+        );
+        assert!(stage.is_property_read_only("Channel_"));
+        stage
+            .set_property("Channel_", PropertyValue::Integer(2))
+            .unwrap();
+        assert_eq!(
+            stage.get_property("Channel_").unwrap(),
+            PropertyValue::Integer(4)
+        );
     }
 
     #[test]

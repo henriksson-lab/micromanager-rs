@@ -40,7 +40,9 @@ impl ZeissShutter {
         props
             .define_property("ZeissShutterNr", PropertyValue::Integer(1), false)
             .unwrap();
-        props.set_allowed_values("ZeissShutterNr", &["1"]).unwrap();
+        props
+            .set_allowed_values("ZeissShutterNr", &["1", "2"])
+            .unwrap();
         props
             .define_property(
                 "External-Internal Shutter",
@@ -126,7 +128,7 @@ impl ZeissShutter {
         let resp = self.send(&format!(
             "{}Ck{},1",
             self.command_prefix(),
-            self.shutter_nr.get()
+            self.standard_command_shutter_nr()
         ))?;
         if resp == "H1" {
             return Ok(false);
@@ -139,6 +141,10 @@ impl ZeissShutter {
             Some('2') => Ok(true),
             _ => Err(MmError::SerialInvalidResponse),
         }
+    }
+
+    fn standard_command_shutter_nr(&self) -> u8 {
+        1
     }
 }
 
@@ -210,7 +216,7 @@ impl Device for ZeissShutter {
                 let max_nr = if self.firmware == ShutterFirmware::Mf {
                     3
                 } else {
-                    1
+                    2
                 };
                 if nr < 1 || nr > max_nr {
                     return Err(MmError::InvalidPropertyValue);
@@ -283,7 +289,7 @@ impl Shutter for ZeissShutter {
             self.hub.execute(&format!(
                 "{}CK{},{}",
                 self.command_prefix(),
-                self.shutter_nr.get(),
+                self.standard_command_shutter_nr(),
                 state
             ))?;
         }
@@ -366,6 +372,27 @@ mod tests {
         assert!(s.get_open().unwrap());
         s.set_open(false).unwrap();
         assert!(!s.get_open().unwrap());
+    }
+
+    #[test]
+    fn standard_shutter_accepts_number_two_but_commands_channel_one() {
+        let commands = Arc::new(Mutex::new(Vec::new()));
+        let t = RecordingTransport::new(&["PH1", "PH2"], commands.clone());
+        let hub = ZeissHub::new().with_transport(Box::new(t));
+        let mut s = ZeissShutter::new_with_hub(hub);
+        s.set_property("ZeissShutterNr", PropertyValue::Integer(2))
+            .unwrap();
+
+        s.initialize().unwrap();
+        s.set_open(true).unwrap();
+        assert_eq!(
+            s.get_property("ZeissShutterNr").unwrap(),
+            PropertyValue::Integer(2)
+        );
+        assert_eq!(
+            commands.lock().unwrap().as_slice(),
+            &["HPCk1,1\r", "HPCK1,2\r"]
+        );
     }
 
     #[test]

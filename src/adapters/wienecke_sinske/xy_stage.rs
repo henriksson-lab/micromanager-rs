@@ -90,8 +90,10 @@ impl WSXYStage {
     fn check_ok(resp: &str) -> MmResult<()> {
         if resp.starts_with("ERR") {
             Err(MmError::LocallyDefined(format!("WS error: {}", resp)))
-        } else {
+        } else if resp == "OK" {
             Ok(())
+        } else {
+            Err(MmError::SerialInvalidResponse)
         }
     }
 
@@ -173,7 +175,6 @@ impl Device for WSXYStage {
         }
         if name == "Velocity (micron/s)" || name == "Acceleration (micron/s^2)" {
             let value = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-            self.props.set(name, PropertyValue::Float(value))?;
             if self.initialized {
                 let cmd = if name == "Velocity (micron/s)" {
                     "VEL"
@@ -182,6 +183,7 @@ impl Device for WSXYStage {
                 };
                 self.set_motion_property(cmd, value)?;
             }
+            self.props.set(name, PropertyValue::Float(value))?;
             return Ok(());
         }
         self.props.set(name, val)
@@ -370,6 +372,33 @@ mod tests {
         let mut s = WSXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!(s.set_xy_position_um(999_999.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn malformed_move_ack_does_not_update_cache() {
+        let t = make_transport().any("DONE");
+        let mut s = WSXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_xy_position_um(50.0, 75.0).unwrap_err(),
+            MmError::SerialInvalidResponse
+        );
+        assert_eq!(s.x_um.get(), 100.0);
+        assert_eq!(s.y_um.get(), 200.0);
+    }
+
+    #[test]
+    fn failed_initialized_motion_property_write_does_not_update_cache() {
+        let t = make_transport().any("OK").any("ERR: rejected");
+        let mut s = WSXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s
+            .set_property("Velocity (micron/s)", PropertyValue::Float(25.0))
+            .is_err());
+        assert_eq!(
+            s.get_property("Velocity (micron/s)").unwrap(),
+            PropertyValue::Float(0.0)
+        );
     }
 
     #[test]

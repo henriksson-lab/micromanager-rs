@@ -5,9 +5,9 @@
 ///   `XVER\r`          → version info
 ///   `CSS?\r`          → channel status: `CSS<A><B><C>` each 6 chars `[S/X][N/F][000-100]`
 ///   `CSN\r`/`CSF\r`   → global on/off
-///   `CAI<NNN>\r`      → set channel A intensity (000-100)
-///   `CBI<NNN>\r`      → set channel B intensity
-///   `CCI<NNN>\r`      → set channel C intensity
+///   `CAI<N>\r`        → set channel A intensity (0-100)
+///   `CBI<N>\r`        → set channel B intensity
+///   `CCI<N>\r`        → set channel C intensity
 ///   `CAS\r`/`CAX\r`  → select/deselect channel A
 ///   `CBS\r`/`CBX\r`  → select/deselect channel B
 ///   `CCS\r`/`CCX\r`  → select/deselect channel C
@@ -16,6 +16,7 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::time::Instant;
 
 /// One channel: A, B, or C.
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +32,8 @@ pub struct CoolLedPE300 {
     initialized: bool,
     global_on: bool,
     channels: [Channel; 3],
+    delay_ms: f64,
+    changed_time: Instant,
 }
 
 impl CoolLedPE300 {
@@ -41,6 +44,12 @@ impl CoolLedPE300 {
             .unwrap();
         props
             .define_property("Version", PropertyValue::String(String::new()), true)
+            .unwrap();
+        props
+            .define_property("Delay_ms", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Delay_ms", 0.0, f64::MAX)
             .unwrap();
         for ch in ['A', 'B', 'C'] {
             let key_int = format!("Intensity{}", ch);
@@ -87,6 +96,8 @@ impl CoolLedPE300 {
                     selected: false,
                 },
             ],
+            delay_ms: 0.0,
+            changed_time: Instant::now(),
         }
     }
 
@@ -111,6 +122,11 @@ impl CoolLedPE300 {
             let resp = t.send_recv(&cmd)?;
             Ok(resp.trim().to_string())
         })
+    }
+
+    fn send_cmd(&mut self, command: &str) -> MmResult<()> {
+        let cmd = format!("{}\r", command);
+        self.call_transport(|t| t.send(&cmd))
     }
 
     /// Parse `CSS` response: `CSS<ch><S/X><N/F><000-100>...`.
@@ -150,6 +166,30 @@ impl CoolLedPE300 {
             .map(|e| e.value = PropertyValue::Integer(if self.global_on { 1 } else { 0 }));
         Ok(())
     }
+
+    fn read_version_description(&mut self) -> MmResult<()> {
+        let (mainboard, pod) = self.call_transport(|t| {
+            t.send("XVER\r")?;
+            let mainboard = t.receive_line()?.trim().to_string();
+            let _hardware = t.receive_line()?;
+            let _data = t.receive_line()?;
+            let pod = t.receive_line()?.trim().to_string();
+            Ok((mainboard, pod))
+        })?;
+
+        let mainboard_version = mainboard.get(8..).unwrap_or(&mainboard);
+        let pod_version = pod.get(8..).unwrap_or(&pod);
+        let description = format!(
+            "CoolLED pE300. Mainboard: v{} Pod: v{}",
+            mainboard_version, pod_version
+        );
+        self.props
+            .define_property("Description", PropertyValue::String(description), true)?;
+        self.props
+            .entry_mut("Version")
+            .map(|e| e.value = PropertyValue::String(mainboard));
+        Ok(())
+    }
 }
 
 impl Default for CoolLedPE300 {
@@ -179,10 +219,7 @@ impl Device for CoolLedPE300 {
             )));
         }
 
-        let ver = self.cmd("XVER")?;
-        self.props
-            .entry_mut("Version")
-            .map(|e| e.value = PropertyValue::String(ver));
+        self.read_version_description()?;
 
         self.cmd("PORT:P=ON")?;
         self.refresh_css()?;
@@ -203,13 +240,21 @@ impl Device for CoolLedPE300 {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
+
         // Intensity{A/B/C}
         for ch in ['A', 'B', 'C'] {
             let key = format!("Intensity{}", ch);
             if name == key {
-                let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
+                let raw = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0..=100).contains(&raw) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let v = raw as u8;
                 if self.initialized {
-                    self.cmd(&format!("C{}I{:03}", ch, v))?;
+                    self.cmd(&format!("C{}I{}", ch, v))?;
                 }
                 let idx = (ch as u8 - b'A') as usize;
                 self.channels[idx].intensity = v;
@@ -217,14 +262,18 @@ impl Device for CoolLedPE300 {
             }
             let key_sel = format!("Selection{}", ch);
             if name == key_sel {
-                let selected = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
+                let raw = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if raw != 0 && raw != 1 {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let selected = raw == 1;
                 if self.initialized {
                     let cmd = if selected {
                         format!("C{}S", ch)
                     } else {
                         format!("C{}X", ch)
                     };
-                    self.cmd(&cmd)?;
+                    self.send_cmd(&cmd)?;
                 }
                 let idx = (ch as u8 - b'A') as usize;
                 self.channels[idx].selected = selected;
@@ -234,7 +283,11 @@ impl Device for CoolLedPE300 {
             }
         }
         if name == "Global State" {
-            let open = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
+            let raw = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+            if raw != 0 && raw != 1 {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            let open = raw == 1;
             if self.initialized {
                 self.set_open(open)?;
             } else {
@@ -243,6 +296,12 @@ impl Device for CoolLedPE300 {
             return self
                 .props
                 .set(name, PropertyValue::Integer(if open { 1 } else { 0 }));
+        }
+        if name == "Delay_ms" {
+            let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            self.props.set(name, PropertyValue::Float(delay))?;
+            self.delay_ms = delay;
+            return Ok(());
         }
         if name == "Lock Pod" {
             let locked = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
@@ -274,7 +333,7 @@ impl Device for CoolLedPE300 {
         DeviceType::Shutter
     }
     fn busy(&self) -> bool {
-        false
+        self.changed_time.elapsed().as_secs_f64() * 1000.0 < self.delay_ms
     }
 }
 
@@ -283,6 +342,7 @@ impl Shutter for CoolLedPE300 {
         let cmd = if open { "CSN" } else { "CSF" };
         self.cmd(cmd)?;
         self.global_on = open;
+        self.changed_time = Instant::now();
         self.props
             .entry_mut("Global State")
             .map(|e| e.value = PropertyValue::Integer(if open { 1 } else { 0 }));
@@ -306,7 +366,10 @@ mod tests {
     fn make_transport() -> MockTransport {
         MockTransport::new()
             .expect("XMODEL\r", "pE-300 v1.0")
-            .expect("XVER\r", "HW:1.0 FW:2.3")
+            .expect("XVER\r", "MainBd: 2.3")
+            .expect("XVER\r", "Hardware: 1.0")
+            .expect("XVER\r", "Data: 1.1")
+            .expect("XVER\r", "PodVer: 4.5")
             .expect("PORT:P=ON\r", "OK")
             // CSS: A=selected/on/50%, B=not selected/off/0%, C=not selected/off/0%
             .expect("CSS?\r", "CSSASN050BXF000CXF000")
@@ -319,6 +382,10 @@ mod tests {
         assert!(dev.channels[0].selected);
         assert_eq!(dev.channels[0].intensity, 50);
         assert!(!dev.channels[1].selected);
+        assert_eq!(
+            dev.get_property("Description").unwrap(),
+            PropertyValue::String("CoolLED pE300. Mainboard: v2.3 Pod: v4.5".into())
+        );
     }
 
     #[test]
@@ -334,12 +401,28 @@ mod tests {
 
     #[test]
     fn set_intensity_a() {
-        let t = make_transport().expect("CAI075\r", "OK");
+        let t = make_transport().expect("CAI75\r", "OK");
         let mut dev = CoolLedPE300::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_property("IntensityA", PropertyValue::Integer(75))
             .unwrap();
         assert_eq!(dev.channels[0].intensity, 75);
+    }
+
+    #[test]
+    fn selection_write_is_send_only_like_upstream() {
+        let t = make_transport();
+        let mut dev = CoolLedPE300::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        dev.set_property("SelectionA", PropertyValue::Integer(0))
+            .unwrap();
+
+        assert!(!dev.channels[0].selected);
+        assert_eq!(
+            dev.get_property("SelectionA").unwrap(),
+            PropertyValue::Integer(0)
+        );
     }
 
     #[test]
@@ -352,6 +435,28 @@ mod tests {
         assert_eq!(
             dev.get_property("Lock Pod").unwrap(),
             PropertyValue::Integer(1)
+        );
+    }
+
+    #[test]
+    fn delay_controls_busy_after_state_change() {
+        let t = make_transport().expect("CSF\r", "OK");
+        let mut dev = CoolLedPE300::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("Delay_ms", PropertyValue::Float(1000.0))
+            .unwrap();
+        dev.set_open(false).unwrap();
+        assert!(dev.busy());
+    }
+
+    #[test]
+    fn rejects_negative_delay() {
+        let mut dev = CoolLedPE300::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("Delay_ms", PropertyValue::Float(-1.0)),
+            Err(MmError::InvalidPropertyValue)
         );
     }
 
@@ -381,5 +486,44 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(CoolLedPE300::new().initialize().is_err());
+    }
+
+    #[test]
+    fn rejects_out_of_range_values_before_writing() {
+        let mut dev = CoolLedPE300::new().with_transport(Box::new(make_transport()));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("IntensityA", PropertyValue::Integer(300)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.set_property("SelectionA", PropertyValue::Integer(2)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.set_property("Global State", PropertyValue::Integer(2)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(dev.channels[0].intensity, 50);
+        assert!(dev.channels[0].selected);
+        assert!(dev.global_on);
+    }
+
+    #[test]
+    fn rejects_initialized_port_changes() {
+        let mut dev = CoolLedPE300::new().with_transport(Box::new(make_transport()));
+        dev.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::CanNotSetProperty)
+        );
+        assert_eq!(
+            dev.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
     }
 }

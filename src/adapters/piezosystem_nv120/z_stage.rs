@@ -33,7 +33,21 @@ pub struct PsjNV120Stage {
 impl PsjNV120Stage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
+            .define_property("Limit Voltage min [V]", PropertyValue::Float(-20.0), true)
+            .unwrap();
+        props
+            .define_property("Limit Voltage max [V]", PropertyValue::Float(130.0), true)
+            .unwrap();
+        props
+            .define_property("Limit um min [microns]", PropertyValue::Float(0.0), true)
+            .unwrap();
+        props
+            .define_property("Limit um max [microns]", PropertyValue::Float(100.0), true)
+            .unwrap();
         Self {
             props,
             transport: None,
@@ -69,7 +83,10 @@ impl PsjNV120Stage {
 
     fn send_only(&mut self, command: &str) -> MmResult<()> {
         let cmd = command.to_string();
-        self.call_transport(|t| { t.send(&cmd)?; Ok(()) })
+        self.call_transport(|t| {
+            t.send(&cmd)?;
+            Ok(())
+        })
     }
 
     /// Parse `<key>,<ch>,<value>` or `<key>,<value>` → last numeric token.
@@ -99,17 +116,35 @@ impl PsjNV120Stage {
         self.min_v = Self::parse_csv_last(&r)?;
         let r = self.cmd("dspvmax")?;
         self.max_v = Self::parse_csv_last(&r)?;
+        if let Some(entry) = self.props.entry_mut("Limit Voltage min [V]") {
+            entry.value = PropertyValue::Float(self.min_v);
+        }
+        if let Some(entry) = self.props.entry_mut("Limit Voltage max [V]") {
+            entry.value = PropertyValue::Float(self.max_v);
+        }
+        if let Some(entry) = self.props.entry_mut("Limit um min [microns]") {
+            entry.value = PropertyValue::Float(self.min_um);
+        }
+        if let Some(entry) = self.props.entry_mut("Limit um max [microns]") {
+            entry.value = PropertyValue::Float(self.max_um);
+        }
         Ok(())
     }
 }
 
 impl Default for PsjNV120Stage {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for PsjNV120Stage {
-    fn name(&self) -> &str { "PSJ-NV120-Stage" }
-    fn description(&self) -> &str { "Piezosystem Jena NV120/1CL piezo Z stage" }
+    fn name(&self) -> &str {
+        "PSJ_Stage"
+    }
+    fn description(&self) -> &str {
+        "Piezosystem stage driver adapter"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
@@ -162,16 +197,27 @@ impl Device for PsjNV120Stage {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
         self.props.set(name, val)
     }
 
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for PsjNV120Stage {
@@ -191,7 +237,9 @@ impl Stage for PsjNV120Stage {
         Ok(())
     }
 
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.position_um) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.position_um)
+    }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
         let new_pos = self.position_um + d;
@@ -202,11 +250,19 @@ impl Stage for PsjNV120Stage {
         self.set_position_um(self.min_um)
     }
 
-    fn stop(&mut self) -> MmResult<()> { Ok(()) }
+    fn stop(&mut self) -> MmResult<()> {
+        Ok(())
+    }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((self.min_um, self.max_um)) }
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((self.min_um, self.max_um))
+    }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -217,14 +273,14 @@ mod tests {
     fn make_transport() -> MockTransport {
         // "setk,1" is send_only — no script entry.
         MockTransport::new()
-            .expect("",           "NV120CLE V1.0>")
+            .expect("", "NV120CLE V1.0>")
             .expect("dspclmin,2", "dspclmin,2,0.0")
             .expect("dspclmax,2", "dspclmax,2,100.0")
-            .expect("dspvmin",    "dspvmin,-20")
-            .expect("dspvmax",    "dspvmax,130")
+            .expect("dspvmin", "dspvmin,-20")
+            .expect("dspvmax", "dspvmax,130")
             // setk,1 is send_only
-            .expect("cloop",      "cloop 0")   // open loop
-            .expect("rk",         "rk,65.0")  // voltage
+            .expect("cloop", "cloop 0") // open loop
+            .expect("rk", "rk,65.0") // voltage
     }
 
     #[test]
@@ -257,5 +313,44 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(PsjNV120Stage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn upstream_name_description_and_limit_properties() {
+        let mut stage = PsjNV120Stage::new().with_transport(Box::new(make_transport()));
+        assert_eq!(stage.name(), "PSJ_Stage");
+        assert_eq!(stage.description(), "Piezosystem stage driver adapter");
+        stage.initialize().unwrap();
+        assert_eq!(
+            stage.get_property("Limit Voltage min [V]").unwrap(),
+            PropertyValue::Float(-20.0)
+        );
+        assert_eq!(
+            stage.get_property("Limit Voltage max [V]").unwrap(),
+            PropertyValue::Float(130.0)
+        );
+        assert_eq!(
+            stage.get_property("Limit um min [microns]").unwrap(),
+            PropertyValue::Float(0.0)
+        );
+        assert_eq!(
+            stage.get_property("Limit um max [microns]").unwrap(),
+            PropertyValue::Float(100.0)
+        );
+        assert!(!stage.has_property("MinVoltage"));
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected() {
+        let mut stage = PsjNV120Stage::new().with_transport(Box::new(make_transport()));
+        stage.initialize().unwrap();
+        assert_eq!(
+            stage.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::CanNotSetProperty)
+        );
+        assert_eq!(
+            stage.get_property("Port").unwrap(),
+            PropertyValue::String("Undefined".into())
+        );
     }
 }

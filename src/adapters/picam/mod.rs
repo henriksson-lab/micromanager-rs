@@ -1,3 +1,5 @@
+#[cfg(feature = "picam")]
+pub mod camera;
 /// Princeton Instruments camera adapter (PVCAM SDK).
 ///
 /// Wraps the PVCAM C API behind the MicroManager `Camera` trait via a thin C
@@ -17,7 +19,10 @@
 ///    for your platform.
 /// 2. Build with: `cargo build -p mm-adapter-picam --features picam`
 ///
-/// Set `PVCAM_ROOT` to override the default SDK search path.
+/// Set `PVCAM_ROOT` to override the default SDK search path. Linux builds
+/// expect `$PVCAM_ROOT/include/pvcam/master.h`, `$PVCAM_ROOT/include/pvcam/pvcam.h`,
+/// and `$PVCAM_ROOT/lib/libpvcam.so`. Use `PVCAM_STUB=1` only for local
+/// compile/test runs without the vendor SDK; it does not exercise real PVCAM.
 ///
 /// # Properties
 ///
@@ -43,7 +48,5 @@
 
 #[cfg(feature = "picam")]
 pub mod ffi;
-#[cfg(feature = "picam")]
-pub mod camera;
 #[cfg(feature = "picam")]
 pub use camera::PICAMCamera;

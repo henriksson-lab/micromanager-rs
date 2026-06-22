@@ -33,8 +33,16 @@ pub struct PgFocusStage {
 impl PgFocusStage {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("Port", PropertyValue::String("Undefined".into()), false).unwrap();
-        Self { props, transport: None, initialized: false, offset: 0.0, locking: false }
+        props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        Self {
+            props,
+            transport: None,
+            initialized: false,
+            offset: 0.0,
+            locking: false,
+        }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -43,7 +51,9 @@ impl PgFocusStage {
     }
 
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
-    where F: FnOnce(&mut dyn Transport) -> MmResult<R> {
+    where
+        F: FnOnce(&mut dyn Transport) -> MmResult<R>,
+    {
         match self.transport.as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
@@ -52,28 +62,43 @@ impl PgFocusStage {
 
     fn cmd(&mut self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { let r = t.send_recv(&c)?; Ok(r.trim().to_string()) })
+        self.call_transport(|t| {
+            let r = t.send_recv(&c)?;
+            Ok(r.trim().to_string())
+        })
     }
 
     /// Send a fire-and-forget command (no response expected / response ignored).
     fn send(&mut self, command: &str) -> MmResult<()> {
         let c = format!("{}\r", command);
-        self.call_transport(|t| { t.send(&c) })
+        self.call_transport(|t| t.send(&c))
     }
 }
 
-impl Default for PgFocusStage { fn default() -> Self { Self::new() } }
+impl Default for PgFocusStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Device for PgFocusStage {
-    fn name(&self) -> &str { "pgFocus-Stage" }
-    fn description(&self) -> &str { "pgFocus open-source laser autofocus stage" }
+    fn name(&self) -> &str {
+        "pgFocus-Stage"
+    }
+    fn description(&self) -> &str {
+        "pgFocus open-source laser autofocus stage"
+    }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() { return Err(MmError::NotConnected); }
+        if self.transport.is_none() {
+            return Err(MmError::NotConnected);
+        }
         // Check firmware version
         let ver = self.cmd("version")?;
         if ver.is_empty() {
-            return Err(MmError::LocallyDefined("pgFocus: no version response".into()));
+            return Err(MmError::LocallyDefined(
+                "pgFocus: no version response".into(),
+            ));
         }
         // Query current offset
         let off_str = self.cmd("l")?;
@@ -91,15 +116,27 @@ impl Device for PgFocusStage {
         Ok(())
     }
 
-    fn get_property(&self, name: &str) -> MmResult<PropertyValue> { self.props.get(name).cloned() }
-    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> { self.props.set(name, val) }
-    fn property_names(&self) -> Vec<String> { self.props.property_names().to_vec() }
-    fn has_property(&self, name: &str) -> bool { self.props.has_property(name) }
+    fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        self.props.get(name).cloned()
+    }
+    fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        self.props.set(name, val)
+    }
+    fn property_names(&self) -> Vec<String> {
+        self.props.property_names().to_vec()
+    }
+    fn has_property(&self, name: &str) -> bool {
+        self.props.has_property(name)
+    }
     fn is_property_read_only(&self, name: &str) -> bool {
         self.props.entry(name).map(|e| e.read_only).unwrap_or(false)
     }
-    fn device_type(&self) -> DeviceType { DeviceType::Stage }
-    fn busy(&self) -> bool { false }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Stage
+    }
+    fn busy(&self) -> bool {
+        false
+    }
 }
 
 impl Stage for PgFocusStage {
@@ -110,7 +147,9 @@ impl Stage for PgFocusStage {
         Ok(())
     }
 
-    fn get_position_um(&self) -> MmResult<f64> { Ok(self.offset) }
+    fn get_position_um(&self) -> MmResult<f64> {
+        Ok(self.offset)
+    }
 
     fn set_relative_position_um(&mut self, dz: f64) -> MmResult<()> {
         let new_z = self.offset + dz;
@@ -129,9 +168,15 @@ impl Stage for PgFocusStage {
         Ok(())
     }
 
-    fn get_limits(&self) -> MmResult<(f64, f64)> { Ok((0.0, MAX_OFFSET)) }
-    fn get_focus_direction(&self) -> FocusDirection { FocusDirection::Unknown }
-    fn is_continuous_focus_drive(&self) -> bool { false }
+    fn get_limits(&self) -> MmResult<(f64, f64)> {
+        Ok((0.0, MAX_OFFSET))
+    }
+    fn get_focus_direction(&self) -> FocusDirection {
+        FocusDirection::Unknown
+    }
+    fn is_continuous_focus_drive(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -141,8 +186,8 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .any("pgFocus_v1.2")  // version
-            .any("32.0")          // l → current offset
+            .any("pgFocus_v1.2") // version
+            .any("32.0") // l → current offset
     }
 
     #[test]
@@ -196,5 +241,7 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() { assert!(PgFocusStage::new().initialize().is_err()); }
+    fn no_transport_error() {
+        assert!(PgFocusStage::new().initialize().is_err());
+    }
 }

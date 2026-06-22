@@ -28,10 +28,11 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
 
 pub struct HydraXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
     /// Range measured flag (needed for get_limits_um)
     range_measured: bool,
@@ -62,7 +63,13 @@ impl HydraXYStage {
             .define_property("Speed [mm/s]", PropertyValue::Float(200.0), false)
             .unwrap();
         props
+            .set_property_limits("Speed [mm/s]", 0.001, 500.0)
+            .unwrap();
+        props
             .define_property("Acceleration [mm/s^2]", PropertyValue::Float(1000.0), false)
+            .unwrap();
+        props
+            .set_property_limits("Acceleration [mm/s^2]", 0.01, 1000.0)
             .unwrap();
 
         Self {
@@ -83,7 +90,7 @@ impl HydraXYStage {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
@@ -92,7 +99,7 @@ impl HydraXYStage {
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
         match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+            Some(t) => f(t.get_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
@@ -115,6 +122,37 @@ impl HydraXYStage {
             .parse()
             .map_err(|_| MmError::SerialInvalidResponse)?;
         Ok((x, y))
+    }
+
+    fn parse_status(resp: &str) -> MmResult<bool> {
+        let code: u8 = resp
+            .trim()
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        Ok((code & 1) == 1)
+    }
+
+    fn query_busy(&self) -> MmResult<bool> {
+        let Some(transport) = self.transport.as_ref() else {
+            return Err(MmError::NotConnected);
+        };
+        let resp = transport.borrow_mut().send_recv("st")?;
+        Self::parse_status(&resp)
+    }
+
+    fn query_with_purge(&self, command: &str) -> MmResult<String> {
+        let Some(transport) = self.transport.as_ref() else {
+            return Err(MmError::NotConnected);
+        };
+        let mut transport = transport.borrow_mut();
+        transport.purge()?;
+        Ok(transport.send_recv(command)?.trim().to_string())
+    }
+
+    fn parse_float_response(resp: &str) -> MmResult<f64> {
+        resp.trim()
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)
     }
 
     /// Apply mirror transform to mm coordinates (device → user).
@@ -168,19 +206,35 @@ impl Device for HydraXYStage {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "Speed [mm/s]" if self.initialized => {
+                let resp = self.query_with_purge("gv")?;
+                Ok(PropertyValue::Float(Self::parse_float_response(&resp)?))
+            }
+            "Acceleration [mm/s^2]" if self.initialized => {
+                let resp = self.query_with_purge("ga")?;
+                Ok(PropertyValue::Float(Self::parse_float_response(&resp)?))
+            }
+            _ => self.props.get(name).cloned(),
+        }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "Speed [mm/s]" => {
                 let v = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.001..=500.0).contains(&v) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 let cmd = format!("{} sv", v);
                 let _ = self.cmd(&cmd)?;
                 self.props.set(name, PropertyValue::Float(v))
             }
             "Acceleration [mm/s^2]" => {
                 let a = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0.01..=1000.0).contains(&a) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
                 let cmd = format!("{} sa", a);
                 let _ = self.cmd(&cmd)?;
                 self.props.set(name, PropertyValue::Float(a))
@@ -206,7 +260,7 @@ impl Device for HydraXYStage {
     }
 
     fn busy(&self) -> bool {
-        false
+        self.query_busy().unwrap_or(false)
     }
 }
 
@@ -219,10 +273,9 @@ impl XYStage for HydraXYStage {
     }
 
     fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
-        // get_xy_position_um takes &self — we cannot call self.cmd()
-        // Callers that need a live position should use a mutable reference.
-        // Return a plausible cached value; real adapters poll in a background thread.
-        Ok((self.origin_x_um, self.origin_y_um))
+        let resp = self.query_with_purge("p")?;
+        let (x_mm, y_mm) = Self::parse_xy(&resp)?;
+        Ok(self.from_device_mm(x_mm, y_mm))
     }
 
     fn set_relative_xy_position_um(&mut self, dx_um: f64, dy_um: f64) -> MmResult<()> {
@@ -247,6 +300,9 @@ impl XYStage for HydraXYStage {
     }
 
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
+        if !self.range_measured {
+            return Err(MmError::UnknownPosition);
+        }
         Ok((self.x_min_um, self.x_max_um, self.y_min_um, self.y_max_um))
     }
 
@@ -312,6 +368,56 @@ mod tests {
     }
 
     #[test]
+    fn get_position_trait_reads_live_position() {
+        let t = MockTransport::new()
+            .expect("version", "Hydra 1.0")
+            .expect("ge", "0")
+            .expect("p", "3.25 4.5");
+        let mut s = HydraXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+
+        let (x, y) = s.get_xy_position_um().unwrap();
+
+        assert!((x - 3250.0).abs() < 1.0);
+        assert!((y - 4500.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn speed_and_acceleration_getters_read_live_values_after_init() {
+        let t = MockTransport::new()
+            .expect("version", "Hydra 1.0")
+            .expect("ge", "0")
+            .expect("gv", "123.5")
+            .expect("ga", "456.25");
+        let mut s = HydraXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+
+        assert_eq!(
+            s.get_property("Speed [mm/s]").unwrap(),
+            PropertyValue::Float(123.5)
+        );
+        assert_eq!(
+            s.get_property("Acceleration [mm/s^2]").unwrap(),
+            PropertyValue::Float(456.25)
+        );
+    }
+
+    #[test]
+    fn malformed_live_speed_is_invalid_response() {
+        let t = MockTransport::new()
+            .expect("version", "Hydra 1.0")
+            .expect("ge", "0")
+            .expect("gv", "fast");
+        let mut s = HydraXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+
+        assert_eq!(
+            s.get_property("Speed [mm/s]"),
+            Err(MmError::SerialInvalidResponse)
+        );
+    }
+
+    #[test]
     fn set_position_sends_m_command() {
         let t = MockTransport::new()
             .expect("version", "Hydra 1.0")
@@ -346,8 +452,21 @@ mod tests {
     }
 
     #[test]
-    fn get_limits_returns_default() {
+    fn get_limits_requires_measured_range() {
         let s = HydraXYStage::new();
+        assert_eq!(s.get_limits_um(), Err(MmError::UnknownPosition));
+    }
+
+    #[test]
+    fn get_limits_returns_cached_range_after_home() {
+        let t = MockTransport::new()
+            .expect("version", "Hydra 1.0")
+            .expect("ge", "0")
+            .expect("ncal", "")
+            .expect("1 nrm", "");
+        let mut s = HydraXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.home().unwrap();
         let (x0, x1, y0, y1) = s.get_limits_um().unwrap();
         assert!((x0 - 0.0).abs() < 1.0);
         assert!((x1 - 120_000.0).abs() < 1.0);
@@ -365,5 +484,68 @@ mod tests {
     #[test]
     fn device_type_is_xystage() {
         assert_eq!(HydraXYStage::new().device_type(), DeviceType::XYStage);
+    }
+
+    #[test]
+    fn busy_polls_status_bit_zero() {
+        let t = MockTransport::new()
+            .expect("version", "Hydra 1.0")
+            .expect("ge", "0")
+            .expect("st", "1")
+            .expect("st", "0");
+        let mut s = HydraXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
+        assert!(!s.busy());
+    }
+
+    #[test]
+    fn malformed_status_is_invalid_response() {
+        assert_eq!(
+            HydraXYStage::parse_status("moving"),
+            Err(MmError::SerialInvalidResponse)
+        );
+    }
+
+    #[test]
+    fn speed_and_acceleration_limits_match_upstream() {
+        let s = HydraXYStage::new();
+
+        assert_eq!(
+            s.props
+                .entry("Speed [mm/s]")
+                .map(|e| (e.has_limits, e.lower_limit, e.upper_limit)),
+            Some((true, 0.001, 500.0))
+        );
+        assert_eq!(
+            s.props.entry("Acceleration [mm/s^2]").map(|e| (
+                e.has_limits,
+                e.lower_limit,
+                e.upper_limit
+            )),
+            Some((true, 0.01, 1000.0))
+        );
+    }
+
+    #[test]
+    fn invalid_speed_and_acceleration_are_rejected_before_command() {
+        let mut s = make_initialized();
+
+        assert_eq!(
+            s.set_property("Speed [mm/s]", PropertyValue::Float(500.1)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            s.set_property("Acceleration [mm/s^2]", PropertyValue::Float(0.009)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            s.props.get("Speed [mm/s]").unwrap(),
+            &PropertyValue::Float(200.0)
+        );
+        assert_eq!(
+            s.props.get("Acceleration [mm/s^2]").unwrap(),
+            &PropertyValue::Float(1000.0)
+        );
     }
 }

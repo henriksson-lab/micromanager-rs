@@ -61,6 +61,21 @@ impl MarzhauserXYStage {
         })
     }
 
+    fn check_tango_error(&mut self) -> MmResult<()> {
+        let resp = self.cmd("?err")?;
+        let err = resp
+            .trim()
+            .parse::<i32>()
+            .map_err(|_| MmError::LocallyDefined(format!("Bad ?err response: {}", resp)))?;
+        if err != 0 {
+            return Err(MmError::LocallyDefined(format!(
+                "Marzhauser controller error: {}",
+                err
+            )));
+        }
+        Ok(())
+    }
+
     /// Parse `<x> <y>` (space-separated floats).
     fn parse_pos(resp: &str) -> MmResult<(f64, f64)> {
         let parts: Vec<&str> = resp.trim().split_whitespace().collect();
@@ -151,6 +166,7 @@ impl Device for MarzhauserXYStage {
 
 impl XYStage for MarzhauserXYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
+        self.cmd("!dim 1 1")?;
         let resp = self.cmd(&format!("!moa {:.3} {:.3}", x, y))?;
         if resp.contains('E') {
             return Err(MmError::LocallyDefined(format!(
@@ -158,6 +174,7 @@ impl XYStage for MarzhauserXYStage {
                 resp
             )));
         }
+        self.check_tango_error()?;
         self.x_um = x;
         self.y_um = y;
         Ok(())
@@ -168,6 +185,7 @@ impl XYStage for MarzhauserXYStage {
     }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
+        self.cmd("!dim 1 1")?;
         let resp = self.cmd(&format!("!mor {:.3} {:.3}", dx, dy))?;
         if resp.contains('E') {
             return Err(MmError::LocallyDefined(format!(
@@ -175,6 +193,7 @@ impl XYStage for MarzhauserXYStage {
                 resp
             )));
         }
+        self.check_tango_error()?;
         self.x_um += dx;
         self.y_um += dy;
         Ok(())
@@ -208,6 +227,14 @@ impl XYStage for MarzhauserXYStage {
     }
 
     fn set_origin(&mut self) -> MmResult<()> {
+        let resp = self.cmd("!pos 0 0")?;
+        if resp.contains('E') {
+            return Err(MmError::LocallyDefined(format!(
+                "Marzhauser error: {}",
+                resp
+            )));
+        }
+        self.check_tango_error()?;
         self.x_um = 0.0;
         self.y_um = 0.0;
         Ok(())
@@ -236,7 +263,10 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = make_transport().any("OK");
+        let t = make_transport()
+            .expect("!dim 1 1\r", "OK")
+            .expect("!moa 300.000 400.000\r", "OK")
+            .expect("?err\r", "0");
         let mut stage = MarzhauserXYStage::new().with_transport(Box::new(t));
         stage.initialize().unwrap();
         stage.set_xy_position_um(300.0, 400.0).unwrap();
@@ -245,13 +275,41 @@ mod tests {
 
     #[test]
     fn move_relative() {
-        let t = make_transport().any("OK");
+        let t = make_transport()
+            .expect("!dim 1 1\r", "OK")
+            .expect("!mor 10.000 20.000\r", "OK")
+            .expect("?err\r", "0");
         let mut stage = MarzhauserXYStage::new().with_transport(Box::new(t));
         stage.initialize().unwrap();
         stage.set_relative_xy_position_um(10.0, 20.0).unwrap();
         let (x, y) = stage.get_xy_position_um().unwrap();
         assert!((x - 110.0).abs() < 1e-9);
         assert!((y - 220.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn move_absolute_queries_tango_error_before_cache_update() {
+        let t = make_transport()
+            .expect("!dim 1 1\r", "OK")
+            .expect("!moa 300.000 400.000\r", "OK")
+            .expect("?err\r", "7");
+        let mut stage = MarzhauserXYStage::new().with_transport(Box::new(t));
+        stage.initialize().unwrap();
+
+        assert!(stage.set_xy_position_um(300.0, 400.0).is_err());
+        assert_eq!(stage.get_xy_position_um().unwrap(), (100.0, 200.0));
+    }
+
+    #[test]
+    fn set_origin_sends_controller_origin_and_checks_error() {
+        let t = make_transport()
+            .expect("!pos 0 0\r", "OK")
+            .expect("?err\r", "0");
+        let mut stage = MarzhauserXYStage::new().with_transport(Box::new(t));
+        stage.initialize().unwrap();
+
+        stage.set_origin().unwrap();
+        assert_eq!(stage.get_xy_position_um().unwrap(), (0.0, 0.0));
     }
 
     #[test]

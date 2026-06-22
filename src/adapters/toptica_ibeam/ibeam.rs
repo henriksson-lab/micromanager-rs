@@ -146,6 +146,101 @@ impl IBeamSmartCW {
             None
         }
     }
+
+    fn parse_fine_percentage(resp: &str) -> Option<f64> {
+        let value_start = resp.find("-> ")? + 3;
+        let value_end = resp[value_start..]
+            .find(" %")
+            .map(|pos| value_start + pos)
+            .unwrap_or(resp.len());
+        resp[value_start..value_end].trim().parse().ok()
+    }
+
+    fn parse_power_mw(resp: &str) -> Option<f64> {
+        let pwr_pos = resp.find("PWR:")?;
+        resp[pwr_pos + 4..]
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+    }
+
+    fn set_on_off_property(&mut self, name: &str, on: bool) {
+        let label = if on { "On" } else { "Off" };
+        self.props
+            .entry_mut(name)
+            .map(|e| e.value = PropertyValue::String(label.into()));
+    }
+
+    /// Refresh one live property through the serial command used by upstream
+    /// `BeforeGet` action handlers.
+    pub fn refresh_live_property(&mut self, name: &str) -> MmResult<PropertyValue> {
+        if !self.initialized {
+            return self.props.get(name).cloned();
+        }
+
+        match name {
+            "Laser Operation" => {
+                let resp = self.cmd("sta la")?;
+                self.is_open = Self::parse_on_off(&resp).ok_or(MmError::SerialInvalidResponse)?;
+                self.set_on_off_property(name, self.is_open);
+                Ok(PropertyValue::String(
+                    if self.is_open { "On" } else { "Off" }.into(),
+                ))
+            }
+            "Power (mW)" => {
+                let resp = self.cmd("sh level pow")?;
+                self.power_mw =
+                    Self::parse_power_mw(&resp).ok_or(MmError::SerialInvalidResponse)?;
+                self.props
+                    .entry_mut(name)
+                    .map(|e| e.value = PropertyValue::Float(self.power_mw));
+                Ok(PropertyValue::Float(self.power_mw))
+            }
+            "Enable ext trigger" => {
+                let resp = self.cmd("sta ext")?;
+                self.ext_on = Self::parse_on_off(&resp).ok_or(MmError::SerialInvalidResponse)?;
+                self.set_on_off_property(name, self.ext_on);
+                Ok(PropertyValue::String(
+                    if self.ext_on { "On" } else { "Off" }.into(),
+                ))
+            }
+            "Enable Fine" => {
+                let resp = self.cmd("sta fine")?;
+                self.fine_on = Self::parse_on_off(&resp).ok_or(MmError::SerialInvalidResponse)?;
+                self.set_on_off_property(name, self.fine_on);
+                Ok(PropertyValue::String(
+                    if self.fine_on { "On" } else { "Off" }.into(),
+                ))
+            }
+            "Fine A (%)" | "Fine B (%)" => {
+                let fine = if name == "Fine A (%)" { 'a' } else { 'b' };
+                let resp = self.cmd("sh data")?;
+                let needle = format!("fine {}", fine);
+                if !resp.contains(&needle) {
+                    return Err(MmError::SerialInvalidResponse);
+                }
+                let pct =
+                    Self::parse_fine_percentage(&resp).ok_or(MmError::SerialInvalidResponse)?;
+                if fine == 'a' {
+                    self.fine_a_pct = pct;
+                } else {
+                    self.fine_b_pct = pct;
+                }
+                self.props
+                    .entry_mut(name)
+                    .map(|e| e.value = PropertyValue::Float(pct));
+                Ok(PropertyValue::Float(pct))
+            }
+            "Clipping status" => {
+                let clip = self.cmd("sta clip")?;
+                self.props
+                    .entry_mut(name)
+                    .map(|e| e.value = PropertyValue::String(clip.clone()));
+                Ok(PropertyValue::String(clip))
+            }
+            _ => self.props.get(name).cloned(),
+        }
+    }
 }
 
 impl Default for IBeamSmartCW {
@@ -160,7 +255,7 @@ impl Device for IBeamSmartCW {
     }
 
     fn description(&self) -> &str {
-        "Toptica iBeam smart laser in CW mode"
+        "Toptica iBeam smart laser in CW mode."
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -203,18 +298,49 @@ impl Device for IBeamSmartCW {
 
         // Get power level (response: "CH2, PWR: <f> mW")
         if let Ok(pow_resp) = self.cmd("sh level pow") {
-            // Parse "CH2, PWR: 10.0 mW" pattern
-            if let Some(pwr_pos) = pow_resp.find("PWR:") {
-                let rest = &pow_resp[pwr_pos + 4..];
-                let mw: f64 = rest
-                    .split_whitespace()
-                    .next()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0.0);
+            if let Some(mw) = Self::parse_power_mw(&pow_resp) {
                 self.power_mw = mw;
                 self.props
                     .entry_mut("Power (mW)")
                     .map(|e| e.value = PropertyValue::Float(mw));
+            }
+        }
+
+        if let Ok(ext) = self.cmd("sta ext") {
+            self.ext_on = Self::parse_on_off(&ext).unwrap_or(false);
+            let label = if self.ext_on { "On" } else { "Off" };
+            self.props
+                .entry_mut("Enable ext trigger")
+                .map(|e| e.value = PropertyValue::String(label.into()));
+        }
+
+        if let Ok(fine) = self.cmd("sta fine") {
+            self.fine_on = Self::parse_on_off(&fine).unwrap_or(false);
+            let label = if self.fine_on { "On" } else { "Off" };
+            self.props
+                .entry_mut("Enable Fine")
+                .map(|e| e.value = PropertyValue::String(label.into()));
+        }
+
+        if let Ok(fine_a) = self.cmd("sh data") {
+            if fine_a.contains("fine a") {
+                if let Some(pct) = Self::parse_fine_percentage(&fine_a) {
+                    self.fine_a_pct = pct;
+                    self.props
+                        .entry_mut("Fine A (%)")
+                        .map(|e| e.value = PropertyValue::Float(pct));
+                }
+            }
+        }
+
+        if let Ok(fine_b) = self.cmd("sh data") {
+            if fine_b.contains("fine b") {
+                if let Some(pct) = Self::parse_fine_percentage(&fine_b) {
+                    self.fine_b_pct = pct;
+                    self.props
+                        .entry_mut("Fine B (%)")
+                        .map(|e| e.value = PropertyValue::Float(pct));
+                }
             }
         }
 
@@ -253,13 +379,14 @@ impl Device for IBeamSmartCW {
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "Power (mW)" => {
                 let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 if !(0.0..=self.max_power_mw).contains(&mw) {
                     return Err(MmError::InvalidPropertyValue);
                 }
                 if self.initialized {
-                    self.cmd(&format!("set pow {:.2}", mw))?;
+                    self.cmd(&format!("set pow {}", mw))?;
                 }
                 self.power_mw = mw;
                 self.props
@@ -364,8 +491,7 @@ impl Shutter for IBeamSmartCW {
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)?;
-        self.set_open(false)
+        Err(MmError::UnsupportedCommand)
     }
 }
 
@@ -382,6 +508,10 @@ mod tests {
             .expect("sta clip", "PASS")
             .expect("sta la", "OFF")
             .expect("sh level pow", "CH2, PWR: 0.0 mW")
+            .expect("sta ext", "OFF")
+            .expect("sta fine", "ON")
+            .expect("sh data", "fine a -> 12.5 %")
+            .expect("sh data", "fine b -> 33.5 %")
     }
 
     #[test]
@@ -396,6 +526,18 @@ mod tests {
         assert_eq!(
             dev.get_property("Clipping status").unwrap(),
             PropertyValue::String("PASS".into())
+        );
+        assert_eq!(
+            dev.get_property("Enable Fine").unwrap(),
+            PropertyValue::String("On".into())
+        );
+        assert_eq!(
+            dev.get_property("Fine A (%)").unwrap(),
+            PropertyValue::Float(12.5)
+        );
+        assert_eq!(
+            dev.get_property("Fine B (%)").unwrap(),
+            PropertyValue::Float(33.5)
         );
     }
 
@@ -414,7 +556,7 @@ mod tests {
 
     #[test]
     fn set_power() {
-        let t = make_transport().expect("set pow 50.00", "[OK]");
+        let t = make_transport().expect("set pow 50", "[OK]");
         let mut dev = IBeamSmartCW::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_property("Power (mW)", PropertyValue::Float(50.0))
@@ -455,8 +597,97 @@ mod tests {
     }
 
     #[test]
+    fn fire_is_unsupported_like_upstream_generic_device() {
+        let mut dev = IBeamSmartCW::new();
+        assert_eq!(dev.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
     fn no_transport_error() {
         let mut dev = IBeamSmartCW::new();
         assert!(dev.initialize().is_err());
+    }
+
+    #[test]
+    fn description_matches_upstream_registration() {
+        let dev = IBeamSmartCW::new();
+        assert_eq!(dev.description(), "Toptica iBeam smart laser in CW mode.");
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected_like_upstream() {
+        let mut dev = IBeamSmartCW::new().with_transport(Box::new(make_transport()));
+        dev.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
+    }
+
+    #[test]
+    fn refresh_live_property_mirrors_upstream_before_get_handlers() {
+        let t = make_transport()
+            .expect("sta la", "ON")
+            .expect("sh level pow", "CH2, PWR: 42.5 mW")
+            .expect("sta ext", "ON")
+            .expect("sta fine", "OFF")
+            .expect("sh data", "fine a -> 22.25 %")
+            .expect("sh data", "fine b -> 77.75 %")
+            .expect("sta clip", "GOOD");
+        let mut dev = IBeamSmartCW::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.refresh_live_property("Laser Operation").unwrap(),
+            PropertyValue::String("On".into())
+        );
+        assert!(dev.get_open().unwrap());
+        assert_eq!(
+            dev.refresh_live_property("Power (mW)").unwrap(),
+            PropertyValue::Float(42.5)
+        );
+        assert_eq!(
+            dev.refresh_live_property("Enable ext trigger").unwrap(),
+            PropertyValue::String("On".into())
+        );
+        assert_eq!(
+            dev.refresh_live_property("Enable Fine").unwrap(),
+            PropertyValue::String("Off".into())
+        );
+        assert_eq!(
+            dev.refresh_live_property("Fine A (%)").unwrap(),
+            PropertyValue::Float(22.25)
+        );
+        assert_eq!(
+            dev.refresh_live_property("Fine B (%)").unwrap(),
+            PropertyValue::Float(77.75)
+        );
+        assert_eq!(
+            dev.refresh_live_property("Clipping status").unwrap(),
+            PropertyValue::String("GOOD".into())
+        );
+    }
+
+    #[test]
+    fn refresh_live_property_rejects_unparseable_live_response() {
+        let t = make_transport().expect("sh level pow", "CH2, PWR: bad mW");
+        let mut dev = IBeamSmartCW::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.refresh_live_property("Power (mW)").unwrap_err(),
+            MmError::SerialInvalidResponse
+        );
+        assert_eq!(
+            dev.get_property("Power (mW)").unwrap(),
+            PropertyValue::Float(0.0)
+        );
     }
 }

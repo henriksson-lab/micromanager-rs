@@ -482,7 +482,7 @@ impl Device for JAICamera {
         "JAICamera"
     }
     fn description(&self) -> &str {
-        "JAI camera (Pleora eBUS SDK)"
+        "JAI camera"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -735,16 +735,15 @@ impl Camera for JAICamera {
         self.exposure_ms
     }
 
-    fn set_exposure(&mut self, exp_ms: f64) {
+    fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()> {
         if self.seq.is_some() {
-            return;
+            return Err(MmError::CameraBusyAcquiring);
         }
+        self.props.set("Exposure", PropertyValue::Float(exp_ms))?;
         self.exposure_ms = exp_ms;
-        self.props
-            .set("Exposure", PropertyValue::Float(exp_ms))
-            .ok();
         self.dev_set_float("ExposureTimeAbs", exp_ms * 1_000.0);
         self.dev_set_float("ExposureTime", exp_ms * 1_000.0);
+        Ok(())
     }
 
     fn get_binning(&self) -> i32 {

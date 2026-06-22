@@ -328,7 +328,7 @@ impl Device for ThorlabsEll14 {
                 if !(0.0..=359.99).contains(&deg) {
                     return Err(MmError::InvalidPropertyValue);
                 }
-                self.set_position_um(deg)
+                self.set_position_um(deg as i64 as f64)
             }
             "Home offset" => {
                 let deg = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
@@ -339,6 +339,7 @@ impl Device for ThorlabsEll14 {
                     self.cmd(&self.channel_cmd(&format!("so{}", self.deg_to_pulses_hex(deg))))?;
                 self.expect_status_ok(&resp)?;
                 self.offset_deg = deg;
+                self.position_deg = self.query_position()?;
                 self.props.set(name, PropertyValue::Float(deg))
             }
             "Home" => {
@@ -651,6 +652,7 @@ mod tests {
             .expect("0go", "0HO00000000")
             .expect("0gj", "0GJ00008C00")
             .expect("0so00004600", "0GS00")
+            .expect("0gp", po_resp_0())
             .expect("0sj00004600", "0GS00")
             .expect("0bw", "0PO00000000")
             .expect("0s1", "0GS00")
@@ -712,5 +714,20 @@ mod tests {
             ThorlabsEll14::status_to_error("0C"),
             MmError::InvalidPropertyValue
         );
+    }
+
+    #[test]
+    fn position_property_truncates_like_upstream_long_action() {
+        let t = MockTransport::new()
+            .expect("0in", idn_resp())
+            .expect("0gp", po_resp_0())
+            .expect("0go", "0HO00000000")
+            .expect("0gj", "0GJ00008C00")
+            .expect("0ma00004600", "0PO00004600");
+        let mut d = ThorlabsEll14::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        d.set_property("Position", PropertyValue::Float(45.9))
+            .unwrap();
+        assert!((d.position_deg - 45.0).abs() < 0.1);
     }
 }

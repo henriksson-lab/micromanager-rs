@@ -120,7 +120,10 @@ impl TeensyPulseGenerator {
             ((param >> 16) & 0xFF) as u8,
             ((param >> 24) & 0xFF) as u8,
         ];
-        self.call_transport(|t| t.send_bytes(&bytes))
+        self.call_transport(|t| {
+            t.purge()?;
+            t.send_bytes(&bytes)
+        })
     }
 
     /// Send a 2-byte enquire [0xFF, cmd].
@@ -221,7 +224,7 @@ impl Device for TeensyPulseGenerator {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.send_command(CMD_STOP, 0);
+            let _ = self.set_param(CMD_STOP, 0);
             self.initialized = false;
         }
         Ok(())
@@ -283,17 +286,19 @@ impl Device for TeensyPulseGenerator {
             }
             "Run_Until_Stopped" if self.initialized => {
                 let on = val.as_str() == "On";
-                let param = if on { 0u32 } else { self.nr_pulses };
-                let resp = self.set_param(CMD_NR_PULSES, param)?;
-                if resp != param {
-                    return Err(MmError::SerialInvalidResponse);
+                if on != self.run_until_stopped {
+                    let param = if on { 0u32 } else { self.nr_pulses };
+                    let resp = self.set_param(CMD_NR_PULSES, param)?;
+                    if resp != param {
+                        return Err(MmError::SerialInvalidResponse);
+                    }
+                    self.run_until_stopped = on;
                 }
-                self.run_until_stopped = on;
                 Ok(())
             }
             "Number_of_Pulses" if self.initialized => {
                 let n = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u32;
-                if !self.run_until_stopped {
+                if n != self.nr_pulses && !self.run_until_stopped {
                     let resp = self.set_param(CMD_NR_PULSES, n)?;
                     if resp != n {
                         return Err(MmError::SerialInvalidResponse);
@@ -346,6 +351,7 @@ impl Generic for TeensyPulseGenerator {}
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use std::sync::{Arc, Mutex};
 
     /// Build a 5-byte response packet.
     fn resp(cmd: u8, val: u32) -> Vec<u8> {
@@ -401,5 +407,77 @@ mod tests {
             dev.get_property("Number_of_Actual_Pulses").unwrap(),
             PropertyValue::Integer(3)
         );
+    }
+
+    #[test]
+    fn setting_run_until_stopped_to_current_value_does_not_write() {
+        let mut dev = TeensyPulseGenerator::new().with_transport(Box::new(MockTransport::new()));
+        dev.initialized = true;
+        dev.run_until_stopped = true;
+
+        dev.set_property("Run_Until_Stopped", PropertyValue::String("On".into()))
+            .unwrap();
+
+        assert!(dev.run_until_stopped);
+    }
+
+    #[test]
+    fn setting_same_number_of_pulses_does_not_write_when_finite() {
+        let mut dev = TeensyPulseGenerator::new().with_transport(Box::new(MockTransport::new()));
+        dev.initialized = true;
+        dev.run_until_stopped = false;
+        dev.nr_pulses = 7;
+
+        dev.set_property("Number_of_Pulses", PropertyValue::Integer(7))
+            .unwrap();
+
+        assert_eq!(dev.nr_pulses, 7);
+    }
+
+    struct ReceiveCountingTransport {
+        receives: Arc<Mutex<usize>>,
+        purges: Arc<Mutex<usize>>,
+    }
+
+    impl Transport for ReceiveCountingTransport {
+        fn send(&mut self, _cmd: &str) -> MmResult<()> {
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            Err(MmError::SerialTimeout)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            *self.purges.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        fn send_bytes(&mut self, _bytes: &[u8]) -> MmResult<()> {
+            Ok(())
+        }
+
+        fn receive_bytes(&mut self, _n: usize) -> MmResult<Vec<u8>> {
+            *self.receives.lock().unwrap() += 1;
+            Ok(resp(CMD_STOP, 0))
+        }
+    }
+
+    #[test]
+    fn shutdown_consumes_stop_response_like_upstream_set_stop() {
+        let receives = Arc::new(Mutex::new(0));
+        let purges = Arc::new(Mutex::new(0));
+        let transport = ReceiveCountingTransport {
+            receives: Arc::clone(&receives),
+            purges: Arc::clone(&purges),
+        };
+        let mut dev = TeensyPulseGenerator::new().with_transport(Box::new(transport));
+        dev.initialized = true;
+
+        dev.shutdown().unwrap();
+
+        assert_eq!(*receives.lock().unwrap(), 1);
+        assert_eq!(*purges.lock().unwrap(), 1);
+        assert!(!dev.initialized);
     }
 }

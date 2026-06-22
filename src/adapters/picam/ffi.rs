@@ -1,7 +1,6 @@
-/// Raw `extern "C"` bindings to the PVCAM shim (`src/shim.c`).
-
 #![allow(dead_code)]
 
+/// Raw `extern "C"` bindings to the PVCAM shim (`src/shim.c`).
 use std::ffi::c_char;
 use std::os::raw::{c_double, c_int, c_uint};
 
@@ -44,11 +43,7 @@ extern "C" {
     pub fn pvcam_set_temp_setpoint(ctx: *mut PvcamCtx, celsius: c_double) -> c_int;
 
     // ROI
-    pub fn pvcam_set_roi(
-        ctx: *mut PvcamCtx,
-        x: u16, y: u16, w: u16, h: u16,
-        xbin: u16, ybin: u16,
-    );
+    pub fn pvcam_set_roi(ctx: *mut PvcamCtx, x: u16, y: u16, w: u16, h: u16, xbin: u16, ybin: u16);
     pub fn pvcam_clear_roi(ctx: *mut PvcamCtx);
 
     // Snap

@@ -40,44 +40,6 @@ impl ThorlabsPM100x {
             .define_pre_init_property("PowerMeter", PropertyValue::String(String::new()))
             .unwrap();
         props.set_allowed_values("PowerMeter", &[""]).unwrap();
-        props
-            .define_property(
-                "Sensor Serial Number",
-                PropertyValue::String(String::new()),
-                true,
-            )
-            .unwrap();
-        props
-            .define_property(
-                "Calibration Date",
-                PropertyValue::String(String::new()),
-                true,
-            )
-            .unwrap();
-        props
-            .define_property("Author", PropertyValue::String(String::new()), true)
-            .unwrap();
-        props
-            .define_property("Power", PropertyValue::String("0W".into()), true)
-            .unwrap();
-        props
-            .define_property("RawPower", PropertyValue::String("0.0".into()), true)
-            .unwrap();
-        props
-            .define_property("RawUnit", PropertyValue::String("W".into()), true)
-            .unwrap();
-        props
-            .define_property("Wavelength", PropertyValue::Float(488.0), false)
-            .unwrap();
-        props
-            .define_property("AutoRange", PropertyValue::String("On".into()), false)
-            .unwrap();
-        props
-            .set_allowed_values("AutoRange", &["On", "Off"])
-            .unwrap();
-        props
-            .define_property("PowerRange", PropertyValue::Float(100.0), false)
-            .unwrap();
 
         Self {
             props,
@@ -88,6 +50,37 @@ impl ThorlabsPM100x {
             auto_range: Cell::new(true),
             power_range_w: Cell::new(100.0),
         }
+    }
+
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("Sensor Serial Number") {
+            self.props.define_property(
+                "Sensor Serial Number",
+                PropertyValue::String(String::new()),
+                true,
+            )?;
+            self.props.define_property(
+                "Calibration Date",
+                PropertyValue::String(String::new()),
+                true,
+            )?;
+            self.props
+                .define_property("Author", PropertyValue::String(String::new()), true)?;
+            self.props
+                .define_property("Power", PropertyValue::String("0".into()), true)?;
+            self.props
+                .define_property("RawPower", PropertyValue::String("0.0".into()), true)?;
+            self.props
+                .define_property("RawUnit", PropertyValue::String("W".into()), true)?;
+            self.props
+                .define_property("Wavelength", PropertyValue::Float(488.0), false)?;
+            self.props
+                .define_property("AutoRange", PropertyValue::String("On".into()), false)?;
+            self.props.set_allowed_values("AutoRange", &["On", "Off"])?;
+            self.props
+                .define_property("PowerRange", PropertyValue::Float(100.0), false)?;
+        }
+        Ok(())
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -150,6 +143,33 @@ impl ThorlabsPM100x {
         format!("{}{}", power, unit)
     }
 
+    fn format_raw_power(power: f64) -> String {
+        if !power.is_finite() {
+            return power.to_string();
+        }
+        if power == 0.0 {
+            return "0".into();
+        }
+
+        let abs = power.abs();
+        let exponent = abs.log10().floor() as i32;
+        if !(-4..4).contains(&exponent) {
+            let raw = format!("{:.3e}", power);
+            let (mantissa, exponent) = raw.split_once('e').unwrap_or((raw.as_str(), "0"));
+            let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
+            let exponent = exponent.parse::<i32>().unwrap_or(0);
+            return format!("{}e{:+03}", mantissa, exponent);
+        }
+
+        let decimals = (3 - exponent).max(0) as usize;
+        let raw = format!("{:.*}", decimals, power);
+        if raw.contains('.') {
+            raw.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            raw
+        }
+    }
+
     /// Measure power and cache the result.
     pub fn measure_power(&mut self) -> MmResult<f64> {
         self.read_raw_power()
@@ -203,18 +223,10 @@ impl Device for ThorlabsPM100x {
         // Identify the device
         let idn = self.cmd("*IDN?")?;
         let serial = idn.split(',').nth(2).unwrap_or("").trim().to_string();
+        self.ensure_runtime_properties()?;
         if let Some(entry) = self.props.entry_mut("Sensor Serial Number") {
             entry.value = PropertyValue::String(serial);
         }
-        // Read current wavelength
-        let wl_resp = self.cmd("SENS:CORR:WAV?")?;
-        if let Ok(wl) = wl_resp.parse::<f64>() {
-            self.wavelength_nm.set(wl);
-        }
-        // Read auto-range state
-        let ar_resp = self.cmd("SENS:POW:RANG:AUTO?")?;
-        self.auto_range
-            .set(ar_resp.trim().eq_ignore_ascii_case("on") || ar_resp.trim() == "1");
         self.initialized = true;
         Ok(())
     }
@@ -226,14 +238,16 @@ impl Device for ThorlabsPM100x {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if !self.props.has_property(name) {
+            return self.props.get(name).cloned();
+        }
         match name {
             "Power" => {
                 let (power, unit) = self.measure_power_with_unit()?;
                 Ok(PropertyValue::String(Self::format_power(power, &unit)))
             }
-            "RawPower" => Ok(PropertyValue::String(format!(
-                "{:.4}",
-                self.read_raw_power()?
+            "RawPower" => Ok(PropertyValue::String(Self::format_raw_power(
+                self.read_raw_power()?,
             ))),
             "RawUnit" => Ok(PropertyValue::String(Self::parse_power_unit(
                 &self.cmd("SENS:POW:UNIT?")?,
@@ -265,6 +279,9 @@ impl Device for ThorlabsPM100x {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if !self.props.has_property(name) {
+            return self.props.set(name, val);
+        }
         match name {
             "PowerMeter" if self.initialized => Err(MmError::InvalidProperty),
             "Wavelength" => {
@@ -327,10 +344,7 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn initialized_device() -> ThorlabsPM100x {
-        let t = MockTransport::new()
-            .expect("*IDN?", "Thorlabs,PM100USB,M00123456,1.0")
-            .expect("SENS:CORR:WAV?", "488.00")
-            .expect("SENS:POW:RANG:AUTO?", "ON");
+        let t = MockTransport::new().expect("*IDN?", "Thorlabs,PM100USB,M00123456,1.0");
         ThorlabsPM100x::new().with_transport(Box::new(t))
     }
 
@@ -371,6 +385,23 @@ mod tests {
     }
 
     #[test]
+    fn constructor_exposes_only_upstream_pre_init_property() {
+        let mut d = ThorlabsPM100x::new();
+        assert!(d.has_property("PowerMeter"));
+        assert!(!d.has_property("Power"));
+        assert!(!d.has_property("RawPower"));
+        assert!(!d.has_property("RawUnit"));
+        assert!(!d.has_property("Wavelength"));
+        assert!(!d.has_property("AutoRange"));
+        assert!(!d.has_property("PowerRange"));
+        assert!(!d.has_property("Sensor Serial Number"));
+        assert!(d.get_property("Power").is_err());
+        assert!(d
+            .set_property("Wavelength", PropertyValue::Float(532.0))
+            .is_err());
+    }
+
+    #[test]
     fn no_transport_error() {
         assert!(ThorlabsPM100x::new().initialize().is_err());
     }
@@ -379,8 +410,6 @@ mod tests {
     fn measure_power_parses_float() {
         let t = MockTransport::new()
             .expect("*IDN?", "Thorlabs,PM100USB,M00123,1.0")
-            .expect("SENS:CORR:WAV?", "532.00")
-            .expect("SENS:POW:RANG:AUTO?", "ON")
             .expect("MEAS:POW?", "1.23e-3");
         let mut d = ThorlabsPM100x::new().with_transport(Box::new(t));
         d.initialize().unwrap();
@@ -392,8 +421,6 @@ mod tests {
     fn get_property_reads_live_power_surfaces() {
         let t = MockTransport::new()
             .expect("*IDN?", "Thorlabs,PM100USB,M00123,1.0")
-            .expect("SENS:CORR:WAV?", "488.00")
-            .expect("SENS:POW:RANG:AUTO?", "ON")
             .expect("SENS:POW:UNIT?", "W")
             .expect("MEAS:POW?", "2.5e-6")
             .expect("MEAS:POW?", "2.5e-6")
@@ -406,7 +433,7 @@ mod tests {
         );
         assert_eq!(
             d.get_property("RawPower").unwrap(),
-            PropertyValue::String("0.0000".into())
+            PropertyValue::String("2.5e-06".into())
         );
         assert_eq!(
             d.get_property("RawUnit").unwrap(),
@@ -418,8 +445,6 @@ mod tests {
     fn set_wavelength_sends_command() {
         let t = MockTransport::new()
             .expect("*IDN?", "Thorlabs,PM100USB,M00123,1.0")
-            .expect("SENS:CORR:WAV?", "488.00")
-            .expect("SENS:POW:RANG:AUTO?", "ON")
             .expect("SENS:CORR:WAV 532.00", "");
         let mut d = ThorlabsPM100x::new().with_transport(Box::new(t));
         d.initialize().unwrap();
@@ -447,6 +472,8 @@ mod tests {
 
     #[test]
     fn power_property_is_read_only() {
-        assert!(ThorlabsPM100x::new().is_property_read_only("Power"));
+        let mut d = initialized_device();
+        d.initialize().unwrap();
+        assert!(d.is_property_read_only("Power"));
     }
 }

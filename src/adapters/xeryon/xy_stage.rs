@@ -189,8 +189,8 @@ impl Device for XeryonXYStage {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.axis_send('X', "STOP", 1);
-            let _ = self.axis_send('Y', "STOP", 1);
+            let _ = self.axis_send('X', "STOP", 0);
+            let _ = self.axis_send('Y', "STOP", 0);
             self.initialized = false;
         }
         Ok(())
@@ -249,8 +249,8 @@ impl XYStage for XeryonXYStage {
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        self.axis_send('X', "STOP", 1)?;
-        self.axis_send('Y', "STOP", 1)?;
+        self.axis_send('X', "STOP", 0)?;
+        self.axis_send('Y', "STOP", 0)?;
         Ok(())
     }
 
@@ -333,8 +333,8 @@ mod tests {
     #[test]
     fn stop() {
         let t = make_init_transport()
-            .expect("X:STOP=1\n", "X:STOP=OK")
-            .expect("Y:STOP=1\n", "Y:STOP=OK");
+            .expect("X:STOP=0\n", "X:STOP=OK")
+            .expect("Y:STOP=0\n", "Y:STOP=OK");
         let mut s = XeryonXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.stop().unwrap();

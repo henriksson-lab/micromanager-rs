@@ -3,8 +3,9 @@
 /// Protocol (TX/RX `\r`):
 ///   `<ch>in\r`    → device info (same as stage)
 ///   `<ch>gp\r`    → `<ch>PO<8-hex>`   get position (0x00000000 or non-zero)
-///   `<ch>mofb\r`  → `<ch>PO...`       move forward  (to position 1)
-///   `<ch>mobk\r`  → `<ch>PO...`       move backward (to position 0)
+///   `<ch>fw\r`    → `<ch>PO...`       ELL6 move forward  (to position 1)
+///   `<ch>bw\r`    → `<ch>PO...`       ELL6 move backward (to position 0)
+///   `<ch>ma<8-hex>\r` → `<ch>PO...`   ELL9 absolute state move
 ///
 use crate::adapters::elliptec::status;
 use crate::error::{MmError, MmResult};
@@ -272,7 +273,15 @@ impl StateDevice for ElliptecSlider {
                 positions.len() - 1
             ))
         })?;
-        let response = self.cmd(&format!("ma{}", hex))?;
+        let command = match self.model {
+            ElliptecSliderModel::Ell6 | ElliptecSliderModel::Ell6Shutter => match pos {
+                0 => "bw".to_string(),
+                1 => "fw".to_string(),
+                _ => unreachable!("ELL6 positions are checked above"),
+            },
+            ElliptecSliderModel::Ell9 => format!("ma{}", hex),
+        };
+        let response = self.cmd(&command)?;
         if let Some(err) = Self::status_error(&response) {
             return Err(err);
         }
@@ -372,11 +381,11 @@ mod tests {
     }
 
     #[test]
-    fn ell6_move_uses_absolute_positions_and_live_gp_helper() {
+    fn ell6_state_uses_upstream_fw_bw_commands_and_live_gp_helper() {
         let t = MockTransport::new()
             .expect("0in\r", "0IN06123456782200100000000002710")
-            .expect("0ma0000001F\r", "0PO0000001F")
-            .expect("0ma00000000\r", "0PO00000000")
+            .expect("0fw\r", "0PO0000001F")
+            .expect("0bw\r", "0PO00000000")
             .expect("0gp\r", "0PO0000001F");
         let mut s = ElliptecSlider::new('0').with_transport(Box::new(t));
         s.initialize().unwrap();

@@ -90,7 +90,7 @@ impl Device for LStepZStage {
         "ZAxis"
     }
     fn description(&self) -> &str {
-        "LStep Z Axis"
+        "L-Step Z axis driver"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -106,7 +106,7 @@ impl Device for LStepZStage {
             )));
         }
 
-        let _ = self.send_only("!autostatus 0");
+        self.send_only("!autostatus 0")?;
 
         let det = self.cmd("?det")?;
         let config: i32 = det.trim().parse().unwrap_or(0);
@@ -118,7 +118,7 @@ impl Device for LStepZStage {
             )));
         }
 
-        let _ = self.send_only("!dim z 1");
+        self.send_only("!dim z 1")?;
         let pos_str = self.cmd("?pos z")?;
         self.position_um = pos_str
             .trim()
@@ -161,8 +161,8 @@ impl Device for LStepZStage {
 
 impl Stage for LStepZStage {
     fn set_position_um(&mut self, pos: f64) -> MmResult<()> {
-        let _ = self.send_only("!dim z 1");
-        let _ = self.send_only(&format!("!moa z {}", pos));
+        self.send_only("!dim z 1")?;
+        self.send_only(&format!("!moa z {}", pos))?;
         self.check_err()?;
         self.position_um = pos;
         Ok(())
@@ -173,21 +173,19 @@ impl Stage for LStepZStage {
     }
 
     fn set_relative_position_um(&mut self, d: f64) -> MmResult<()> {
-        let _ = self.send_only("!dim z 1");
-        let _ = self.send_only(&format!("!mor z {}", d));
+        self.send_only("!dim z 1")?;
+        self.send_only(&format!("!mor z {}", d))?;
         self.check_err()?;
         self.position_um += d;
         Ok(())
     }
 
     fn home(&mut self) -> MmResult<()> {
-        let _ = self.send_only("!cal z");
-        self.position_um = 0.0;
-        Ok(())
+        Err(MmError::UnsupportedCommand)
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        let _ = self.send_only("a");
+        self.send_only("a")?;
         Ok(())
     }
 
@@ -206,6 +204,51 @@ impl Stage for LStepZStage {
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use std::collections::VecDeque;
+
+    struct FailingSendTransport {
+        fail_on: String,
+        last_sent: String,
+        replies: VecDeque<(String, String)>,
+    }
+
+    impl FailingSendTransport {
+        fn new(fail_on: &str, replies: Vec<(&str, &str)>) -> Self {
+            Self {
+                fail_on: fail_on.to_string(),
+                last_sent: String::new(),
+                replies: replies
+                    .into_iter()
+                    .map(|(cmd, resp)| (cmd.to_string(), resp.to_string()))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Transport for FailingSendTransport {
+        fn send(&mut self, cmd: &str) -> MmResult<()> {
+            if cmd == self.fail_on {
+                return Err(MmError::LocallyDefined("send failed".into()));
+            }
+            self.last_sent = cmd.to_string();
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            let (expected, reply) = self.replies.pop_front().ok_or(MmError::SerialTimeout)?;
+            if self.last_sent != expected {
+                return Err(MmError::LocallyDefined(format!(
+                    "expected {}, got {}",
+                    expected, self.last_sent
+                )));
+            }
+            Ok(reply)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            Ok(())
+        }
+    }
 
     fn make_transport() -> MockTransport {
         // send_only calls ("!autostatus 0", "!dim z 1") do NOT consume script entries.
@@ -220,6 +263,8 @@ mod tests {
     #[test]
     fn initialize() {
         let mut stage = LStepZStage::new().with_transport(Box::new(make_transport()));
+        assert_eq!(stage.name(), "ZAxis");
+        assert_eq!(stage.description(), "L-Step Z axis driver");
         stage.initialize().unwrap();
         assert!((stage.get_position_um().unwrap() - 50.0).abs() < 1e-9);
     }
@@ -257,5 +302,29 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(LStepZStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn home_is_unsupported_like_upstream_z_stage() {
+        let mut stage = LStepZStage::new().with_transport(Box::new(make_transport()));
+        stage.initialize().unwrap();
+        assert_eq!(stage.home(), Err(MmError::UnsupportedCommand));
+        assert!((stage.get_position_um().unwrap() - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn move_send_failure_preserves_cached_position() {
+        let t = FailingSendTransport::new(
+            "!mor z 10\r",
+            vec![
+                ("?ver\r", "Vers:LS v3.1"),
+                ("?det\r", "48"),
+                ("?pos z\r", "50.000"),
+            ],
+        );
+        let mut stage = LStepZStage::new().with_transport(Box::new(t));
+        stage.initialize().unwrap();
+        assert!(stage.set_relative_position_um(10.0).is_err());
+        assert!((stage.get_position_um().unwrap() - 50.0).abs() < 1e-9);
     }
 }

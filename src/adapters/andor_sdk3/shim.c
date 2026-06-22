@@ -18,17 +18,21 @@
  * and AcquisitionStart called once; each frame is retrieved with WaitBuffer
  * and re-queued after copying.
  *
- * Pixel encoding: the shim forces "Mono16" on open so every pixel is exactly
- * 2 bytes.  AOIStride (bytes per row in the acquisition buffer, including
- * padding) is read after each ROI/binning change and used during unpacking.
+ * AOIStride (bytes per row in the acquisition buffer, including padding) is
+ * read after each ROI/binning change and used during unpacking.
  */
 
 #include "atcore.h"
+#include "atutility.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <wchar.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /* ── Portable aligned allocation ──────────────────────────────────────────── */
 
@@ -65,6 +69,10 @@ static void narrow(const wchar_t* src, char* dst, int len) {
 /* ── Andor3Ctx ─────────────────────────────────────────────────────────────── */
 
 #define MAX_CONT_BUFS 8
+#define LENGTH_FIELD_SIZE 4
+#define CID_FIELD_SIZE 4
+#define CID_FPGA_TICKS 1
+#define ANDOR3_ERR_HARDWARE_OVERFLOW AT_ERR_HARDWARE_OVERFLOW
 
 typedef struct Andor3Ctx {
     AT_H handle;
@@ -89,6 +97,14 @@ typedef struct Andor3Ctx {
     int      in_sequence;
     uint8_t* cont_bufs[MAX_CONT_BUFS];
     size_t   cont_buf_bytes;
+
+    AT_64    last_timestamp;
+    int      last_timestamp_valid;
+    int      last_wait_error;
+    int      buffer_overflow_event_registered;
+    int      buffer_overflow_event_fired;
+    int      exposure_end_event_registered;
+    int      exposure_end_event_fired;
 } Andor3Ctx;
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
@@ -99,7 +115,7 @@ static void refresh_geometry(Andor3Ctx* ctx) {
     AT_GetInt(ctx->handle, L"AOIHeight", &v); ctx->img_height = (int)v;
     AT_GetInt(ctx->handle, L"AOIStride", &v); ctx->stride     = (int)v;
     AT_GetInt(ctx->handle, L"BitDepth",  &v); ctx->bit_depth  = (int)v;
-    ctx->bytes_per_pixel = 2; /* Mono16 */
+    ctx->bytes_per_pixel = (ctx->bit_depth > 16) ? 4 : 2;
 }
 
 static int ensure_acq_buf(Andor3Ctx* ctx) {
@@ -140,13 +156,147 @@ static void unpack_frame(Andor3Ctx* ctx, const uint8_t* src) {
     ctx->frame_bytes = ctx->img_width * ctx->img_height * ctx->bytes_per_pixel;
 }
 
+static int is_software_trigger_mode(Andor3Ctx* ctx) {
+    wchar_t trigger_mode[128] = {0};
+    int trigger_idx = 0;
+    return AT_GetEnumIndex(ctx->handle, L"TriggerMode", &trigger_idx) == AT_SUCCESS &&
+           AT_GetEnumStringByIndex(ctx->handle, L"TriggerMode", trigger_idx,
+                                   trigger_mode, 128) == AT_SUCCESS &&
+           wcscmp(trigger_mode, L"Software") == 0;
+}
+
+static void send_software_trigger_if_needed(Andor3Ctx* ctx) {
+    if (is_software_trigger_mode(ctx)) {
+        AT_Command(ctx->handle, L"SoftwareTrigger");
+    }
+}
+
+static int AT_EXP_CONV andor3_event_callback(AT_H handle, const AT_WC* feature, void* context) {
+    (void)handle;
+    Andor3Ctx* ctx = (Andor3Ctx*)context;
+    if (!ctx || !feature) return AT_CALLBACK_SUCCESS;
+    if (wcscmp(feature, L"BufferOverflowEvent") == 0) {
+        ctx->buffer_overflow_event_fired = 1;
+    } else if (wcscmp(feature, L"ExposureEndEvent") == 0) {
+        ctx->exposure_end_event_fired = 1;
+        if (ctx->in_sequence && is_software_trigger_mode(ctx)) {
+            AT_Command(ctx->handle, L"SoftwareTrigger");
+        }
+    }
+    return AT_CALLBACK_SUCCESS;
+}
+
+static int register_event(Andor3Ctx* ctx, const wchar_t* event_name) {
+    AT_BOOL implemented = AT_FALSE;
+    if (AT_IsImplemented(ctx->handle, event_name, &implemented) != AT_SUCCESS ||
+        implemented != AT_TRUE) {
+        return 0;
+    }
+    if (AT_RegisterFeatureCallback(ctx->handle, event_name, andor3_event_callback, ctx) != AT_SUCCESS) {
+        return 0;
+    }
+
+    AT_BOOL event_selector_implemented = AT_FALSE;
+    AT_BOOL event_enable_implemented = AT_FALSE;
+    if (AT_IsImplemented(ctx->handle, L"EventSelector", &event_selector_implemented) == AT_SUCCESS &&
+        AT_IsImplemented(ctx->handle, L"EventEnable", &event_enable_implemented) == AT_SUCCESS &&
+        event_selector_implemented == AT_TRUE &&
+        event_enable_implemented == AT_TRUE) {
+        AT_SetEnumString(ctx->handle, L"EventSelector", event_name);
+        AT_SetBool(ctx->handle, L"EventEnable", AT_TRUE);
+    }
+    return 1;
+}
+
+static void reset_event_flag(Andor3Ctx* ctx, const wchar_t* event_name) {
+    if (wcscmp(event_name, L"BufferOverflowEvent") == 0) {
+        ctx->buffer_overflow_event_fired = 0;
+    } else if (wcscmp(event_name, L"ExposureEndEvent") == 0) {
+        ctx->exposure_end_event_fired = 0;
+    }
+}
+
+static int normalize_wait_error(Andor3Ctx* ctx, int rc) {
+    if (rc == AT_SUCCESS) return AT_SUCCESS;
+    if (rc == AT_ERR_HARDWARE_OVERFLOW ||
+        (ctx->buffer_overflow_event_registered && ctx->buffer_overflow_event_fired)) {
+        reset_event_flag(ctx, L"BufferOverflowEvent");
+        return ANDOR3_ERR_HARDWARE_OVERFLOW;
+    }
+    return rc;
+}
+
+static uint32_t read_le_u32(const uint8_t* p) {
+    return ((uint32_t)p[0]) |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static AT_64 read_le_i64(const uint8_t* p) {
+    uint64_t v = ((uint64_t)p[0]) |
+                 ((uint64_t)p[1] << 8) |
+                 ((uint64_t)p[2] << 16) |
+                 ((uint64_t)p[3] << 24) |
+                 ((uint64_t)p[4] << 32) |
+                 ((uint64_t)p[5] << 40) |
+                 ((uint64_t)p[6] << 48) |
+                 ((uint64_t)p[7] << 56);
+    return (AT_64)v;
+}
+
+static void parse_frame_metadata(Andor3Ctx* ctx, const uint8_t* frame, int frame_size) {
+    if (!ctx) return;
+    ctx->last_timestamp = 0;
+    ctx->last_timestamp_valid = 0;
+    if (!frame || frame_size <= 0) return;
+
+    const uint8_t* begin = frame;
+    const uint8_t* p = frame + frame_size;
+    while (p > begin + LENGTH_FIELD_SIZE + CID_FIELD_SIZE) {
+        p -= LENGTH_FIELD_SIZE;
+        uint32_t feature_size = read_le_u32(p);
+        if (feature_size < CID_FIELD_SIZE || (size_t)(p - begin) < CID_FIELD_SIZE) return;
+
+        p -= CID_FIELD_SIZE;
+        uint32_t cid = read_le_u32(p);
+        uint32_t payload_size = feature_size - CID_FIELD_SIZE;
+        if ((size_t)(p - begin) < payload_size) return;
+        p -= payload_size;
+
+        if (cid == CID_FPGA_TICKS && payload_size >= 8) {
+            ctx->last_timestamp = read_le_i64(p);
+            ctx->last_timestamp_valid = 1;
+            return;
+        }
+    }
+}
+
+static AT_64 current_binning_factor(Andor3Ctx* ctx) {
+    int idx = 0;
+    wchar_t value[128] = {0};
+    if (AT_GetEnumIndex(ctx->handle, L"AOIBinning", &idx) != AT_SUCCESS ||
+        AT_GetEnumStringByIndex(ctx->handle, L"AOIBinning", idx, value, 128) != AT_SUCCESS) {
+        return 1;
+    }
+    if (wcscmp(value, L"2x2") == 0) return 2;
+    if (wcscmp(value, L"4x4") == 0) return 4;
+    return 1;
+}
+
 /* ── SDK lifecycle ─────────────────────────────────────────────────────────── */
 
 int andor3_sdk_open(void) {
-    return AT_InitialiseLibrary() == AT_SUCCESS ? 0 : -1;
+    if (AT_InitialiseLibrary() != AT_SUCCESS) return -1;
+    if (AT_InitialiseUtilityLibrary() != AT_SUCCESS) {
+        AT_FinaliseLibrary();
+        return -1;
+    }
+    return 0;
 }
 
 void andor3_sdk_close(void) {
+    AT_FinaliseUtilityLibrary();
     AT_FinaliseLibrary();
 }
 
@@ -167,9 +317,10 @@ Andor3Ctx* andor3_open(int camera_index) {
     if (!ctx) { AT_Close(handle); return NULL; }
     ctx->handle         = handle;
     ctx->bytes_per_pixel = 2;
+    ctx->last_wait_error = AT_SUCCESS;
+    ctx->buffer_overflow_event_registered = register_event(ctx, L"BufferOverflowEvent");
+    ctx->exposure_end_event_registered = register_event(ctx, L"ExposureEndEvent");
 
-    /* Force Mono16 encoding for a uniform 2-bytes-per-pixel output. */
-    AT_SetEnumString(handle, L"PixelEncoding", L"Mono16");
     /* Internal trigger, single-frame acquisition mode for snap. */
     AT_SetEnumString(handle, L"TriggerMode",   L"Internal");
 
@@ -187,6 +338,12 @@ void andor3_close(Andor3Ctx* ctx) {
             ctx->cont_bufs[i] = NULL;
         }
         ctx->in_sequence = 0;
+    }
+    if (ctx->buffer_overflow_event_registered) {
+        AT_UnregisterFeatureCallback(ctx->handle, L"BufferOverflowEvent", andor3_event_callback, ctx);
+    }
+    if (ctx->exposure_end_event_registered) {
+        AT_UnregisterFeatureCallback(ctx->handle, L"ExposureEndEvent", andor3_event_callback, ctx);
     }
     AT_Close(ctx->handle);
     shim_free_aligned(ctx->acq_buf);
@@ -233,12 +390,29 @@ double andor3_get_temperature(Andor3Ctx* ctx) {
     return v;
 }
 
+int andor3_is_implemented(Andor3Ctx* ctx, const char* feature) {
+    if (!ctx) return 0;
+    WIDEN(feature, wfeature);
+    AT_BOOL v = AT_FALSE;
+    if (AT_IsImplemented(ctx->handle, wfeature, &v) != AT_SUCCESS) return 0;
+    return v == AT_TRUE ? 1 : 0;
+}
+
+int andor3_is_read_only(Andor3Ctx* ctx, const char* feature) {
+    if (!ctx) return 0;
+    WIDEN(feature, wfeature);
+    AT_BOOL v = AT_FALSE;
+    if (AT_IsReadOnly(ctx->handle, wfeature, &v) != AT_SUCCESS) return 0;
+    return v == AT_TRUE ? 1 : 0;
+}
+
 /* String feature (narrow output). */
 int andor3_get_string(Andor3Ctx* ctx, const char* feature, char* buf, int len) {
     if (!ctx || !buf) return -1;
     WIDEN(feature, wfeature);
     wchar_t wbuf[256] = {0};
-    if (AT_GetString(ctx->handle, wfeature, wbuf, 256) != AT_SUCCESS) return -1;
+    AT_H handle = strcmp(feature, "SoftwareVersion") == 0 ? AT_HANDLE_SYSTEM : ctx->handle;
+    if (AT_GetString(handle, wfeature, wbuf, 256) != AT_SUCCESS) return -1;
     narrow(wbuf, buf, len);
     return 0;
 }
@@ -260,7 +434,21 @@ int andor3_set_enum(Andor3Ctx* ctx, const char* feature, const char* value) {
     if (!ctx) return -1;
     WIDEN(feature, wfeature);
     WIDEN(value,   wvalue);
-    return AT_SetEnumString(ctx->handle, wfeature, wvalue) == AT_SUCCESS ? 0 : -1;
+    if (AT_SetEnumString(ctx->handle, wfeature, wvalue) != AT_SUCCESS) return -1;
+    if (strcmp(feature, "PixelEncoding") == 0 || strcmp(feature, "AOIBinning") == 0) {
+        refresh_geometry(ctx);
+    }
+    return 0;
+}
+
+int andor3_set_enum_index(Andor3Ctx* ctx, const char* feature, int index) {
+    if (!ctx) return -1;
+    WIDEN(feature, wfeature);
+    if (AT_SetEnumIndex(ctx->handle, wfeature, index) != AT_SUCCESS) return -1;
+    if (strcmp(feature, "PixelEncoding") == 0 || strcmp(feature, "AOIBinning") == 0) {
+        refresh_geometry(ctx);
+    }
+    return 0;
 }
 
 /* Enumerate available enum values for a feature (newline-separated, narrow). */
@@ -288,36 +476,116 @@ int andor3_enum_values(Andor3Ctx* ctx, const char* feature, char* buf, int len) 
     return written;
 }
 
+int andor3_get_float(Andor3Ctx* ctx, const char* feature, double* value) {
+    if (!ctx || !value) return -1;
+    WIDEN(feature, wfeature);
+    return AT_GetFloat(ctx->handle, wfeature, value) == AT_SUCCESS ? 0 : -1;
+}
+
+int andor3_set_float(Andor3Ctx* ctx, const char* feature, double value) {
+    if (!ctx) return -1;
+    WIDEN(feature, wfeature);
+    return AT_SetFloat(ctx->handle, wfeature, value) == AT_SUCCESS ? 0 : -1;
+}
+
+int andor3_get_float_limits(Andor3Ctx* ctx, const char* feature, double* min, double* max) {
+    if (!ctx || !min || !max) return -1;
+    WIDEN(feature, wfeature);
+    if (AT_GetFloatMin(ctx->handle, wfeature, min) != AT_SUCCESS) return -1;
+    if (AT_GetFloatMax(ctx->handle, wfeature, max) != AT_SUCCESS) return -1;
+    return 0;
+}
+
+int andor3_get_int(Andor3Ctx* ctx, const char* feature, AT_64* value) {
+    if (!ctx || !value) return -1;
+    WIDEN(feature, wfeature);
+    return AT_GetInt(ctx->handle, wfeature, value) == AT_SUCCESS ? 0 : -1;
+}
+
+int andor3_set_int(Andor3Ctx* ctx, const char* feature, AT_64 value) {
+    if (!ctx) return -1;
+    WIDEN(feature, wfeature);
+    return AT_SetInt(ctx->handle, wfeature, value) == AT_SUCCESS ? 0 : -1;
+}
+
+int andor3_get_int_limits(Andor3Ctx* ctx, const char* feature, AT_64* min, AT_64* max) {
+    if (!ctx || !min || !max) return -1;
+    WIDEN(feature, wfeature);
+    if (AT_GetIntMin(ctx->handle, wfeature, min) != AT_SUCCESS) return -1;
+    if (AT_GetIntMax(ctx->handle, wfeature, max) != AT_SUCCESS) return -1;
+    return 0;
+}
+
+int andor3_get_bool(Andor3Ctx* ctx, const char* feature, int* value) {
+    if (!ctx || !value) return -1;
+    WIDEN(feature, wfeature);
+    AT_BOOL v = AT_FALSE;
+    if (AT_GetBool(ctx->handle, wfeature, &v) != AT_SUCCESS) return -1;
+    *value = v == AT_TRUE ? 1 : 0;
+    return 0;
+}
+
+int andor3_set_bool(Andor3Ctx* ctx, const char* feature, int value) {
+    if (!ctx) return -1;
+    WIDEN(feature, wfeature);
+    return AT_SetBool(ctx->handle, wfeature, value ? AT_TRUE : AT_FALSE) == AT_SUCCESS ? 0 : -1;
+}
+
+int andor3_command(Andor3Ctx* ctx, const char* feature) {
+    if (!ctx) return -1;
+    WIDEN(feature, wfeature);
+    return AT_Command(ctx->handle, wfeature) == AT_SUCCESS ? 0 : -1;
+}
+
 /* AOI / Binning. */
 int andor3_set_aoi(Andor3Ctx* ctx, int left, int top, int width, int height) {
     if (!ctx) return -1;
+    AT_64 old_left = 0, old_top = 0, old_width = 0, old_height = 0;
+    if (AT_GetInt(ctx->handle, L"AOILeft",   &old_left) != AT_SUCCESS) return -1;
+    if (AT_GetInt(ctx->handle, L"AOITop",    &old_top) != AT_SUCCESS) return -1;
+    if (AT_GetInt(ctx->handle, L"AOIWidth",  &old_width) != AT_SUCCESS) return -1;
+    if (AT_GetInt(ctx->handle, L"AOIHeight", &old_height) != AT_SUCCESS) return -1;
+
     /* SDK3 AOI is 1-based. */
-    AT_SetInt(ctx->handle, L"AOILeft",   (AT_64)(left   + 1));
-    AT_SetInt(ctx->handle, L"AOITop",    (AT_64)(top    + 1));
-    AT_SetInt(ctx->handle, L"AOIWidth",  (AT_64)width);
-    AT_SetInt(ctx->handle, L"AOIHeight", (AT_64)height);
+    if (AT_SetInt(ctx->handle, L"AOILeft",   1) != AT_SUCCESS) goto rollback;
+    if (AT_SetInt(ctx->handle, L"AOITop",    1) != AT_SUCCESS) goto rollback;
+    if (AT_SetInt(ctx->handle, L"AOIWidth",  (AT_64)width) != AT_SUCCESS) goto rollback;
+    if (AT_SetInt(ctx->handle, L"AOIHeight", (AT_64)height) != AT_SUCCESS) goto rollback;
+    if (AT_SetInt(ctx->handle, L"AOILeft",   (AT_64)(left   + 1)) != AT_SUCCESS) goto rollback;
+    if (AT_SetInt(ctx->handle, L"AOITop",    (AT_64)(top    + 1)) != AT_SUCCESS) goto rollback;
     refresh_geometry(ctx);
     return 0;
+
+rollback:
+    AT_SetInt(ctx->handle, L"AOILeft",   1);
+    AT_SetInt(ctx->handle, L"AOITop",    1);
+    AT_SetInt(ctx->handle, L"AOIWidth",  old_width);
+    AT_SetInt(ctx->handle, L"AOIHeight", old_height);
+    AT_SetInt(ctx->handle, L"AOILeft",   old_left);
+    AT_SetInt(ctx->handle, L"AOITop",    old_top);
+    refresh_geometry(ctx);
+    return -1;
 }
 
 int andor3_clear_aoi(Andor3Ctx* ctx) {
     if (!ctx) return -1;
     AT_64 sw = 0, sh = 0;
-    AT_GetInt(ctx->handle, L"SensorWidth",  &sw);
-    AT_GetInt(ctx->handle, L"SensorHeight", &sh);
-    AT_SetInt(ctx->handle, L"AOILeft",   1);
-    AT_SetInt(ctx->handle, L"AOITop",    1);
-    AT_SetInt(ctx->handle, L"AOIWidth",  sw);
-    AT_SetInt(ctx->handle, L"AOIHeight", sh);
+    AT_64 binning = current_binning_factor(ctx);
+    if (AT_GetInt(ctx->handle, L"SensorWidth",  &sw) != AT_SUCCESS) return -1;
+    if (AT_GetInt(ctx->handle, L"SensorHeight", &sh) != AT_SUCCESS) return -1;
+    if (AT_SetInt(ctx->handle, L"AOILeft",   1) != AT_SUCCESS) return -1;
+    if (AT_SetInt(ctx->handle, L"AOITop",    1) != AT_SUCCESS) return -1;
+    if (AT_SetInt(ctx->handle, L"AOIWidth",  sw / binning) != AT_SUCCESS) return -1;
+    if (AT_SetInt(ctx->handle, L"AOIHeight", sh / binning) != AT_SUCCESS) return -1;
     refresh_geometry(ctx);
     return 0;
 }
 
 int andor3_get_aoi(Andor3Ctx* ctx, int* left, int* top, int* w, int* h) {
-    if (!ctx) return -1;
+    if (!ctx || !left || !top || !w || !h) return -1;
     AT_64 l = 0, t = 0;
-    AT_GetInt(ctx->handle, L"AOILeft",   &l);
-    AT_GetInt(ctx->handle, L"AOITop",    &t);
+    if (AT_GetInt(ctx->handle, L"AOILeft",   &l) != AT_SUCCESS) return -1;
+    if (AT_GetInt(ctx->handle, L"AOITop",    &t) != AT_SUCCESS) return -1;
     *left = (int)(l - 1);  /* convert 1-based → 0-based */
     *top  = (int)(t - 1);
     *w    = ctx->img_width;
@@ -343,16 +611,20 @@ int andor3_snap(Andor3Ctx* ctx, int timeout_ms) {
         return -1;
     }
 
+    send_software_trigger_if_needed(ctx);
+
     AT_U8* returned_buf = NULL;
     int    returned_size = 0;
     int rc = AT_WaitBuffer(ctx->handle, &returned_buf, &returned_size,
                            (unsigned int)timeout_ms);
+    ctx->last_wait_error = normalize_wait_error(ctx, rc);
 
     AT_Command(ctx->handle, L"AcquisitionStop");
     AT_Flush(ctx->handle);
 
-    if (rc != AT_SUCCESS || !returned_buf) return -1;
+    if (ctx->last_wait_error != AT_SUCCESS || !returned_buf || returned_size < (int)img_bytes) return -1;
 
+    parse_frame_metadata(ctx, returned_buf, returned_size);
     unpack_frame(ctx, returned_buf);
     return 0;
 }
@@ -363,6 +635,18 @@ const uint8_t* andor3_get_frame_ptr(Andor3Ctx* ctx) {
 
 int andor3_get_frame_bytes(Andor3Ctx* ctx) {
     return ctx ? ctx->frame_bytes : 0;
+}
+
+long long andor3_get_last_timestamp(Andor3Ctx* ctx) {
+    return (ctx && ctx->last_timestamp_valid) ? (long long)ctx->last_timestamp : 0;
+}
+
+int andor3_has_last_timestamp(Andor3Ctx* ctx) {
+    return (ctx && ctx->last_timestamp_valid) ? 1 : 0;
+}
+
+int andor3_get_last_wait_error(Andor3Ctx* ctx) {
+    return ctx ? ctx->last_wait_error : -1;
 }
 
 /* ── Continuous acquisition ─────────────────────────────────────────────────── */
@@ -402,6 +686,8 @@ int andor3_start_cont(Andor3Ctx* ctx) {
         AT_Flush(ctx->handle);
         return -1;
     }
+    send_software_trigger_if_needed(ctx);
+    reset_event_flag(ctx, L"ExposureEndEvent");
     ctx->in_sequence = 1;
     return 0;
 }
@@ -413,8 +699,15 @@ int andor3_get_next_frame(Andor3Ctx* ctx, int timeout_ms) {
     int    returned_size = 0;
     int rc = AT_WaitBuffer(ctx->handle, &returned_buf, &returned_size,
                            (unsigned int)timeout_ms);
-    if (rc != AT_SUCCESS || !returned_buf) return -1;
+    if (!ctx->exposure_end_event_registered) {
+        send_software_trigger_if_needed(ctx);
+    }
+    ctx->last_wait_error = normalize_wait_error(ctx, rc);
+    AT_64 img_bytes = 0;
+    AT_GetInt(ctx->handle, L"ImageSizeBytes", &img_bytes);
+    if (ctx->last_wait_error != AT_SUCCESS || !returned_buf || returned_size < (int)img_bytes) return -1;
 
+    parse_frame_metadata(ctx, returned_buf, returned_size);
     unpack_frame(ctx, returned_buf);
 
     /* Re-queue the buffer so the camera can use it for the next frame. */
@@ -429,3 +722,7 @@ int andor3_stop_cont(Andor3Ctx* ctx) {
     ctx->in_sequence = 0;
     return 0;
 }
+
+#ifdef __cplusplus
+}
+#endif

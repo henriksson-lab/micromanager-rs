@@ -63,10 +63,14 @@ impl PeconCO2Control {
     }
 
     fn raw_cmd(&mut self, cmd: &str) -> MmResult<Vec<u8>> {
+        self.raw_cmd_bytes(cmd, 3)
+    }
+
+    fn raw_cmd_bytes(&mut self, cmd: &str, count: usize) -> MmResult<Vec<u8>> {
         let c = cmd.to_string();
         self.call_transport(|t| {
             t.send(&c)?;
-            t.receive_bytes(3)
+            t.receive_bytes(count)
         })
     }
 
@@ -98,6 +102,19 @@ impl PeconCO2Control {
         }
         Err(MmError::SerialInvalidResponse)
     }
+
+    fn read_status_frame(&mut self) -> MmResult<Vec<u8>> {
+        self.wake_up()?;
+        self.raw_cmd_bytes("S001", 11)
+    }
+
+    fn read_nominal_from_status(&mut self) -> MmResult<f64> {
+        let status = self.read_status_frame()?;
+        if status.len() < 6 {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        Ok(PeconTempControl::decode_temp(&status[3..6]))
+    }
 }
 
 impl Default for PeconCO2Control {
@@ -108,10 +125,10 @@ impl Default for PeconCO2Control {
 
 impl Device for PeconCO2Control {
     fn name(&self) -> &str {
-        "PeconCO2Control"
+        "CO2Controller"
     }
     fn description(&self) -> &str {
-        "Pecon CO2 Controller"
+        "Pecon Incubation CO2 Controller adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -122,9 +139,13 @@ impl Device for PeconCO2Control {
         self.wake_up()?;
         let bytes = self.raw_cmd("R000")?;
         self.actual_co2 = PeconTempControl::decode_temp(&bytes);
+        self.nominal_co2 = self.read_nominal_from_status()?;
         self.props
             .entry_mut("CO2_Actual_%")
             .map(|e| e.value = PropertyValue::Float(self.actual_co2));
+        self.props
+            .entry_mut("CO2_Nominal_%")
+            .map(|e| e.value = PropertyValue::Float(self.nominal_co2));
         self.initialized = true;
         Ok(())
     }
@@ -145,9 +166,14 @@ impl Device for PeconCO2Control {
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         if name == "CO2_Nominal_%" {
             let pct = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            let pct = pct.clamp(0.0, 10.0);
             if self.initialized {
                 self.wake_up()?;
-                self.raw_cmd(&PeconTempControl::encode_temp('N', pct))?;
+                let cmd = PeconTempControl::encode_temp('N', pct);
+                let answer = self.raw_cmd(&cmd)?;
+                if answer.as_slice() != cmd.as_bytes().get(1..).unwrap_or_default() {
+                    return Err(MmError::SerialInvalidResponse);
+                }
             }
             self.nominal_co2 = pct;
             self.props
@@ -186,10 +212,18 @@ mod tests {
             .expect_binary(b"000")
             .expect_binary(b"020")
             .expect_binary(b"000")
-            .expect_binary(b"052"); // R000 → 5.2%
+            .expect_binary(b"052") // R000 → 5.2%
+            .expect_binary(b"000")
+            .expect_binary(b"05207010000"); // S001 → nominal 7.0%
         let mut dev = PeconCO2Control::new().with_transport(Box::new(t));
+        assert_eq!(dev.name(), "CO2Controller");
+        assert_eq!(dev.description(), "Pecon Incubation CO2 Controller adapter");
         dev.initialize().unwrap();
         assert!((dev.actual_co2 - 5.2).abs() < 0.05);
+        assert_eq!(
+            dev.get_property("CO2_Nominal_%").unwrap(),
+            PropertyValue::Float(7.0)
+        );
     }
 
     #[test]
@@ -200,12 +234,36 @@ mod tests {
             .expect_binary(b"000")
             .expect_binary(b"052")
             .expect_binary(b"000")
+            .expect_binary(b"05205010000")
+            .expect_binary(b"000")
             .expect_binary(b"070"); // N070 response for 7.0%
         let mut dev = PeconCO2Control::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_property("CO2_Nominal_%", PropertyValue::Float(7.0))
             .unwrap();
         assert_eq!(dev.nominal_co2, 7.0);
+    }
+
+    #[test]
+    fn set_nominal_clamps_and_keeps_cache_on_bad_echo() {
+        let t = MockTransport::new()
+            .expect_binary(b"000")
+            .expect_binary(b"020")
+            .expect_binary(b"000")
+            .expect_binary(b"052")
+            .expect_binary(b"000")
+            .expect_binary(b"05205010000")
+            .expect_binary(b"000")
+            .expect_binary(b"999");
+        let mut dev = PeconCO2Control::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        assert!(dev
+            .set_property("CO2_Nominal_%", PropertyValue::Float(12.0))
+            .is_err());
+        assert_eq!(
+            dev.get_property("CO2_Nominal_%").unwrap(),
+            PropertyValue::Float(5.0)
+        );
     }
 
     #[test]

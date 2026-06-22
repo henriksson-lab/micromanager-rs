@@ -6,7 +6,7 @@
 /// # Setup
 ///
 /// 1. Install the Aravis library (≥ 0.8.14):
-///    - Debian/Ubuntu: `apt install libaravis-0.8-dev`
+///    - Debian/Ubuntu: `apt install libaravis-dev libusb-1.0-0-dev`
 ///    - macOS: `brew install aravis`
 ///    - From source: <https://github.com/AravisProject/aravis>
 /// 2. Build with: `cargo build --features aravis`

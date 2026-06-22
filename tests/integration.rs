@@ -39,6 +39,59 @@ fn sequence_acquisition_start_stop() {
     assert!(!core.is_sequence_running().unwrap());
 }
 
+#[test]
+fn snap_image_is_rejected_during_active_sequence() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+    core.initialize_all_devices().unwrap();
+    core.set_camera_device("Camera").unwrap();
+    core.start_sequence_acquisition(2, 0.0).unwrap();
+
+    assert_eq!(core.snap_image().unwrap_err(), MmError::CameraBusyAcquiring);
+    assert!(core.is_sequence_running().unwrap());
+}
+
+#[test]
+fn sequence_frame_hook_pushes_frames_to_core_buffer() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+    core.initialize_all_devices().unwrap();
+    core.set_camera_device("Camera").unwrap();
+    core.insert_image(micromanager::ImageFrame::new(vec![1], 1, 1, 1));
+    assert_eq!(core.get_remaining_image_count(), 1);
+
+    core.start_sequence_acquisition(2, 0.0).unwrap();
+    assert_eq!(core.get_remaining_image_count(), 0);
+    core.snap_sequence_image_to_buffer().unwrap();
+    core.snap_sequence_image_to_buffer().unwrap();
+
+    assert!(!core.is_sequence_running().unwrap());
+    assert_eq!(core.get_remaining_image_count(), 2);
+    let frame = core.pop_next_image().unwrap();
+    assert_eq!(frame.width, 512);
+    assert_eq!(frame.height, 512);
+    assert_eq!(frame.bytes_per_pixel, 1);
+    assert_eq!(frame.data.len(), 512 * 512);
+}
+
+#[test]
+fn failed_sequence_start_preserves_existing_buffer() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+    core.initialize_all_devices().unwrap();
+    core.set_camera_device("Camera").unwrap();
+    core.start_sequence_acquisition(2, 0.0).unwrap();
+    core.snap_sequence_image_to_buffer().unwrap();
+    assert_eq!(core.get_remaining_image_count(), 1);
+
+    assert_eq!(
+        core.start_sequence_acquisition(1, 0.0).unwrap_err(),
+        MmError::CameraBusyAcquiring
+    );
+    assert_eq!(core.get_remaining_image_count(), 1);
+    assert!(core.pop_next_image().is_some());
+}
+
 // ─── Stage movement ───────────────────────────────────────────────────────────
 
 #[test]
@@ -116,6 +169,42 @@ fn shutter_open_close() {
     assert!(core.get_shutter_open().unwrap());
 }
 
+#[test]
+fn auto_shutter_opens_for_snap_and_restores_previous_state() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+    core.load_device("Shutter", "demo", "DShutter").unwrap();
+    core.initialize_all_devices().unwrap();
+    core.set_camera_device("Camera").unwrap();
+    core.set_shutter_device("Shutter").unwrap();
+    core.set_auto_shutter(true);
+
+    core.set_shutter_open(false).unwrap();
+    core.snap_image().unwrap();
+    assert!(!core.get_shutter_open().unwrap());
+
+    core.set_shutter_open(true).unwrap();
+    core.snap_image().unwrap();
+    assert!(core.get_shutter_open().unwrap());
+}
+
+#[test]
+fn auto_shutter_opens_for_sequence_and_restores_closed_on_stop() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+    core.load_device("Shutter", "demo", "DShutter").unwrap();
+    core.initialize_all_devices().unwrap();
+    core.set_camera_device("Camera").unwrap();
+    core.set_shutter_device("Shutter").unwrap();
+    core.set_auto_shutter(true);
+    core.set_shutter_open(false).unwrap();
+
+    core.start_sequence_acquisition(2, 0.0).unwrap();
+    assert!(core.get_shutter_open().unwrap());
+    core.stop_sequence_acquisition().unwrap();
+    assert!(!core.get_shutter_open().unwrap());
+}
+
 // ─── Property access via core ─────────────────────────────────────────────────
 
 #[test]
@@ -148,6 +237,129 @@ fn config_save_and_reload() {
     core2.load_system_configuration(&cfg_text).unwrap();
     let val = core2.get_property("Camera", "Exposure").unwrap();
     assert_eq!(val.as_f64().unwrap(), 25.0);
+    core2.set_camera_device("Camera").unwrap();
+    core2.snap_image().unwrap();
+    assert_eq!(core2.get_image().unwrap().width, 512);
+}
+
+#[test]
+fn config_core_camera_property_assigns_role() {
+    let mut core = make_core();
+    core.load_system_configuration(
+        "Device,Camera,demo,DCam\n\
+         Property,Core,Camera,Camera\n\
+         Property,Core,Initialize,1\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        core.get_property("Core", "Camera").unwrap(),
+        PropertyValue::String("Camera".into())
+    );
+    core.snap_image().unwrap();
+    assert_eq!(core.get_image().unwrap().width, 512);
+}
+
+#[test]
+fn config_groups_can_target_core_role_properties() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+    core.initialize_all_devices().unwrap();
+    core.define_config("Roles", "Default", "Core", "Camera", "Camera");
+
+    core.set_config("Roles", "Default").unwrap();
+    core.snap_image().unwrap();
+}
+
+#[test]
+fn load_system_configuration_applies_system_startup_preset() {
+    let mut core = make_core();
+    core.load_system_configuration(
+        "Device,Camera,demo,DCam\n\
+         Property,Core,Initialize,1\n\
+         ConfigGroup,System,Startup,Camera,Exposure,25\n\
+         ConfigGroup,System,Startup,Core,Camera,Camera\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        core.get_property("Camera", "Exposure").unwrap(),
+        PropertyValue::Float(25.0)
+    );
+    core.snap_image().unwrap();
+}
+
+#[test]
+fn config_label_lines_define_state_labels_before_presets() {
+    let mut core = make_core();
+    core.load_system_configuration(
+        "Device,Wheel,demo,DWheel\n\
+         Label,Wheel,2,DAPI\n\
+         Property,Core,Initialize,1\n\
+         ConfigGroup,Channel,DAPI,Wheel,Label,DAPI\n",
+    )
+    .unwrap();
+
+    core.set_config("Channel", "DAPI").unwrap();
+    assert_eq!(
+        core.get_property("Wheel", "State").unwrap(),
+        PropertyValue::Integer(2)
+    );
+
+    let saved = core.save_system_configuration().unwrap();
+    assert!(saved.contains("Label,Wheel,2,DAPI"));
+    assert!(!saved.contains("Property,Wheel,Label,DAPI"));
+}
+
+#[test]
+fn config_parent_lines_are_applied_and_saved() {
+    let mut core = make_core();
+    core.load_system_configuration(
+        "Device,Camera,demo,DCam\n\
+         Device,Shutter,demo,DShutter\n\
+         Parent,Camera,Shutter\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        core.get_parent_label("Camera").unwrap(),
+        Some("Shutter".to_string())
+    );
+    assert!(core
+        .save_system_configuration()
+        .unwrap()
+        .contains("Parent,Camera,Shutter"));
+}
+
+#[test]
+fn core_initialize_zero_resets_loaded_devices() {
+    let mut core = make_core();
+    core.load_device("Camera", "demo", "DCam").unwrap();
+    core.set_camera_device("Camera").unwrap();
+    assert!(core.device_labels().contains(&"Camera"));
+
+    core.set_property("Core", "Initialize", PropertyValue::Integer(0))
+        .unwrap();
+
+    assert!(!core.device_labels().contains(&"Camera"));
+    assert_eq!(
+        core.snap_image().unwrap_err(),
+        MmError::CoreCameraNotAvailable
+    );
+}
+
+#[test]
+fn core_is_exposed_as_pseudo_device() {
+    let core = make_core();
+    assert!(core.device_labels().contains(&"Core"));
+    assert_eq!(
+        core.get_device_type("Core").unwrap(),
+        micromanager::DeviceType::Core
+    );
+    assert_eq!(
+        core.get_property("Core", "Initialize").unwrap(),
+        PropertyValue::Integer(0)
+    );
 }
 
 // ─── Unload device ────────────────────────────────────────────────────────────

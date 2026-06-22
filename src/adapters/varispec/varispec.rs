@@ -29,6 +29,12 @@ pub struct VarispecLCTF {
     wavelength_sequence: Vec<f64>,
 }
 
+enum VarispecStatus {
+    Ready,
+    NeedsExercise,
+    NeedsInitialization,
+}
+
 impl VarispecLCTF {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
@@ -36,13 +42,16 @@ impl VarispecLCTF {
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
         props
-            .define_property("Baud", PropertyValue::String("9600".into()), false)
+            .define_property("Baud Rate", PropertyValue::String("9600".into()), false)
             .unwrap();
         props
-            .define_property("Wavelength", PropertyValue::Float(550.0), false)
+            .set_allowed_values("Baud Rate", &["115200", "9600"])
             .unwrap();
         props
-            .define_property("Wavelength_nm", PropertyValue::Float(550.0), false)
+            .define_property("Wavelength", PropertyValue::Float(546.0), false)
+            .unwrap();
+        props
+            .define_property("Wavelength_nm", PropertyValue::Float(546.0), false)
             .unwrap();
         props
             .define_property("MinWavelength_nm", PropertyValue::Float(400.0), true)
@@ -88,7 +97,7 @@ impl VarispecLCTF {
             props,
             transport: RefCell::new(None),
             initialized: false,
-            wavelength_nm: 550.0,
+            wavelength_nm: 546.0,
             min_nm: 400.0,
             max_nm: 720.0,
             delay_ms: 200.0,
@@ -145,18 +154,30 @@ impl VarispecLCTF {
         })
     }
 
-    fn get_status(&self) -> MmResult<()> {
+    fn read_status(&self) -> MmResult<VarispecStatus> {
         let bytes = self.status_bytes(b'@')?;
         let status = bytes[1];
         if status & 0x20 != 0 {
-            let _ = self.query_cmd("R?");
-            let _ = self.send_cmd("R1");
+            self.query_cmd("R?")?;
+            self.send_cmd("R1")?;
             return Err(MmError::Err);
         }
         if status & 0x02 == 0 || status & 0x01 == 0 {
-            return Err(MmError::Err);
+            if status & 0x02 == 0 {
+                return Ok(VarispecStatus::NeedsExercise);
+            }
+            return Ok(VarispecStatus::NeedsInitialization);
         }
-        Ok(())
+        Ok(VarispecStatus::Ready)
+    }
+
+    fn get_status(&self) -> MmResult<()> {
+        match self.read_status()? {
+            VarispecStatus::Ready => Ok(()),
+            VarispecStatus::NeedsExercise | VarispecStatus::NeedsInitialization => {
+                Err(MmError::Err)
+            }
+        }
     }
 
     fn reports_busy(&self) -> MmResult<bool> {
@@ -164,7 +185,7 @@ impl VarispecLCTF {
         match bytes[1] {
             b'<' => Ok(true),
             b'>' => Ok(false),
-            _ => Err(MmError::SerialInvalidResponse),
+            _ => Ok(false),
         }
     }
 
@@ -268,12 +289,18 @@ impl Device for VarispecLCTF {
         self.call_transport(|t| t.purge())?;
         self.send_cmd("B0")?;
         self.send_cmd("G0")?;
-        if self.get_status().is_err() {
-            self.send_cmd("I1")?;
-            self.wait_until_ready()?;
-            self.send_cmd("E1")?;
-            self.wait_until_ready()?;
-            self.get_status()?;
+        loop {
+            match self.read_status()? {
+                VarispecStatus::Ready => break,
+                VarispecStatus::NeedsInitialization => {
+                    self.send_cmd("I1")?;
+                    self.wait_until_ready()?;
+                }
+                VarispecStatus::NeedsExercise => {
+                    self.send_cmd("E1")?;
+                    self.wait_until_ready()?;
+                }
+            }
         }
         let r = self.query_cmd("V?")?;
         if let Some((rev, min, max)) = Self::parse_version(&r) {
@@ -291,18 +318,6 @@ impl Device for VarispecLCTF {
             self.props
                 .entry_mut("MaxWavelength_nm")
                 .map(|e| e.value = PropertyValue::Float(max));
-        } else {
-            return Err(MmError::SerialInvalidResponse);
-        }
-        let r = self.query_cmd("W?")?;
-        if let Some(wl) = Self::parse_wavelength(&r) {
-            self.wavelength_nm = wl;
-            self.props
-                .entry_mut("Wavelength")
-                .map(|e| e.value = PropertyValue::Float(wl));
-            self.props
-                .entry_mut("Wavelength_nm")
-                .map(|e| e.value = PropertyValue::Float(wl));
         } else {
             return Err(MmError::SerialInvalidResponse);
         }
@@ -370,7 +385,7 @@ impl Device for VarispecLCTF {
                 .map(|e| e.value = PropertyValue::String(response));
             return Ok(());
         }
-        if self.initialized && (name == "Port" || name == "Baud") {
+        if self.initialized && (name == "Port" || name == "Baud Rate") {
             return Err(MmError::InvalidInputParam);
         }
         self.props.set(name, val)
@@ -440,17 +455,35 @@ mod tests {
             .expect_binary(&[b'@', 0x03])
             .expect("V?\r", "V?")
             .any("V 1.2 400.0 720.0 SN12345")
-            .expect("W?\r", "W?")
-            .any("W 550.000")
     }
 
     #[test]
     fn initialize() {
         let mut dev = VarispecLCTF::new().with_transport(Box::new(make_transport()));
         dev.initialize().unwrap();
-        assert_eq!(dev.wavelength_nm, 550.0);
+        assert_eq!(dev.wavelength_nm, 546.0);
         assert_eq!(dev.min_nm, 400.0);
         assert_eq!(dev.max_nm, 720.0);
+    }
+
+    #[test]
+    fn constructor_uses_upstream_cached_wavelength_default() {
+        let dev = VarispecLCTF::new();
+        assert_eq!(
+            dev.get_property("Wavelength").unwrap(),
+            PropertyValue::Float(546.0)
+        );
+        assert_eq!(
+            dev.get_property("Wavelength_nm").unwrap(),
+            PropertyValue::Float(546.0)
+        );
+    }
+
+    #[test]
+    fn baud_rate_property_matches_upstream_surface() {
+        let dev = VarispecLCTF::new();
+        assert!(dev.has_property("Baud Rate"));
+        assert!(!dev.has_property("Baud"));
     }
 
     #[test]
@@ -532,5 +565,53 @@ mod tests {
         dev.initialize().unwrap();
         dev.start_wavelength_sequence().unwrap();
         dev.stop_wavelength_sequence().unwrap();
+    }
+
+    #[test]
+    fn initialize_runs_only_needed_status_actions_in_upstream_order() {
+        let t = MockTransport::new()
+            .expect("B0\r", "B0")
+            .expect("G0\r", "G0")
+            .expect_binary(&[b'@', 0x02])
+            .expect("I1\r", "I1")
+            .expect_binary(&[b'!', b'>'])
+            .expect_binary(&[b'@', 0x01])
+            .expect("E1\r", "E1")
+            .expect_binary(&[b'!', b'>'])
+            .expect_binary(&[b'@', 0x03])
+            .expect("V?\r", "V?")
+            .any("V 1.2 400.0 720.0 SN12345");
+        let mut dev = VarispecLCTF::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+    }
+
+    #[test]
+    fn malformed_busy_response_is_treated_as_not_busy_like_upstream() {
+        let t = MockTransport::new()
+            .expect("B0\r", "B0")
+            .expect("G0\r", "G0")
+            .expect_binary(&[b'@', 0x02])
+            .expect("I1\r", "I1")
+            .expect_binary(&[b'!', b'?'])
+            .expect_binary(&[b'@', 0x03])
+            .expect("V?\r", "V?")
+            .any("V 1.2 400.0 720.0 SN12345");
+        let mut dev = VarispecLCTF::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+    }
+
+    #[test]
+    fn status_error_propagates_error_query_failure() {
+        let t = make_transport()
+            .expect("W?\r", "W?")
+            .any("W 610.000")
+            .expect_binary(&[b'@', 0x23])
+            .expect("R?\r", "bad");
+        let mut dev = VarispecLCTF::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        assert_eq!(
+            dev.get_property("Wavelength"),
+            Err(MmError::SerialInvalidResponse)
+        );
     }
 }

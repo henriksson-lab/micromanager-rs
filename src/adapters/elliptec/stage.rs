@@ -96,8 +96,10 @@ impl ElliptecStage {
     }
 
     /// Parse 8-char hex as signed i32 position in pulses.
-    fn parse_pos_hex(hex: &str) -> i32 {
-        u32::from_str_radix(hex.trim(), 16).unwrap_or(0) as i32
+    fn parse_pos_hex(hex: &str) -> MmResult<i32> {
+        u32::from_str_radix(hex.trim(), 16)
+            .map(|value| value as i32)
+            .map_err(|_| MmError::SerialInvalidResponse)
     }
 
     fn pulses_to_um(&self, pulses: i32) -> f64 {
@@ -137,7 +139,7 @@ impl ElliptecStage {
         if gp.len() < 11 || &gp[1..3] != "PO" {
             return Err(MmError::SerialInvalidResponse);
         }
-        let pulses = Self::parse_pos_hex(&gp[3..11]);
+        let pulses = Self::parse_pos_hex(&gp[3..11])?;
         Ok(self.pulses_to_um(pulses).round())
     }
 
@@ -238,11 +240,7 @@ impl Stage for ElliptecStage {
         if let Some(err) = Self::status_error(&response) {
             return Err(err);
         }
-        if response.len() >= 3 && &response[1..3] == "PO" {
-            Ok(())
-        } else {
-            Err(MmError::SerialInvalidResponse)
-        }
+        Ok(())
     }
 
     fn get_position_um(&self) -> MmResult<f64> {
@@ -355,5 +353,24 @@ mod tests {
         let t = MockTransport::new().expect("0in\r", "0IN091234567822001000003C00002710");
         let mut s = ElliptecStage::new('0').with_transport(Box::new(t));
         assert_eq!(s.initialize().unwrap_err(), MmError::WrongDeviceType);
+    }
+
+    #[test]
+    fn rejects_malformed_position_hex() {
+        let t = make_init_transport().expect("0gp\r", "0POnot_hex");
+        let mut s = ElliptecStage::new('0').with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.get_position_um().unwrap_err(),
+            MmError::SerialInvalidResponse
+        );
+    }
+
+    #[test]
+    fn set_position_accepts_non_error_confirmation_like_upstream() {
+        let t = make_init_transport().expect("0ma00002710\r", "0OK");
+        let mut s = ElliptecStage::new('0').with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_position_um(1000.0).unwrap();
     }
 }

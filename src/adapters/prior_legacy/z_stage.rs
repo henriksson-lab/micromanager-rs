@@ -14,14 +14,15 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Stage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, FocusDirection, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 const STEP_SIZE_UM: f64 = 0.1;
 
 pub struct PriorLegacyZStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
-    cur_steps: i64,
+    cur_steps: Cell<i64>,
 }
 
 impl PriorLegacyZStage {
@@ -32,33 +33,37 @@ impl PriorLegacyZStage {
             .unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
-            cur_steps: 0,
+            cur_steps: Cell::new(0),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
             let r = t.send_recv(&c)?;
             Ok(r.trim().to_string())
         })
+    }
+
+    fn clear_port(&self) -> MmResult<()> {
+        self.call_transport(|t| t.purge())
     }
 
     fn check_ack(resp: &str) -> MmResult<()> {
@@ -77,7 +82,8 @@ impl PriorLegacyZStage {
         }
     }
 
-    fn query_steps(&mut self) -> MmResult<i64> {
+    fn query_steps(&self) -> MmResult<i64> {
+        self.clear_port()?;
         let resp = self.cmd("PZ")?;
         if resp.starts_with('E') && resp.len() > 2 {
             return Err(MmError::LocallyDefined(format!(
@@ -85,7 +91,9 @@ impl PriorLegacyZStage {
                 resp
             )));
         }
-        Ok(resp.trim().parse().unwrap_or(0))
+        resp.trim()
+            .parse()
+            .map_err(|_| MmError::LocallyDefined(format!("Prior H128 Z bad position: {}", resp)))
     }
 
     /// Move delta steps: positive = up, negative = down.
@@ -103,7 +111,7 @@ impl PriorLegacyZStage {
         let dir_cmd = if delta >= 0 { "U" } else { "D" };
         let resp = self.cmd(dir_cmd)?;
         Self::check_ack(&resp)?;
-        self.cur_steps += delta;
+        self.cur_steps.set(self.cur_steps.get() + delta);
         Ok(())
     }
 }
@@ -123,10 +131,10 @@ impl Device for PriorLegacyZStage {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
-        self.cur_steps = self.query_steps()?;
+        self.cur_steps.set(self.query_steps()?);
         self.initialized = true;
         Ok(())
     }
@@ -162,12 +170,14 @@ impl Device for PriorLegacyZStage {
 impl Stage for PriorLegacyZStage {
     fn set_position_um(&mut self, pos: f64) -> MmResult<()> {
         let target = (pos / STEP_SIZE_UM + 0.5) as i64;
-        let delta = target - self.cur_steps;
+        let delta = target - self.cur_steps.get();
         self.move_steps(delta)
     }
 
     fn get_position_um(&self) -> MmResult<f64> {
-        Ok(self.cur_steps as f64 * STEP_SIZE_UM)
+        let steps = self.query_steps()?;
+        self.cur_steps.set(steps);
+        Ok(steps as f64 * STEP_SIZE_UM)
     }
 
     fn set_relative_position_um(&mut self, dz: f64) -> MmResult<()> {
@@ -206,7 +216,7 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let t = MockTransport::new().any("1000"); // 1000 steps * 0.1 µm = 100 µm
+        let t = MockTransport::new().any("1000").expect("PZ\r", "1000"); // 1000 steps * 0.1 µm = 100 µm
         let mut s = PriorLegacyZStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!((s.get_position_um().unwrap() - 100.0).abs() < 1e-9);
@@ -215,7 +225,11 @@ mod tests {
     #[test]
     fn move_absolute_up() {
         // start at step 0, move to 100 µm = 1000 steps up
-        let t = MockTransport::new().any("0").any("OK").any("R");
+        let t = MockTransport::new()
+            .any("0")
+            .any("OK")
+            .any("R")
+            .expect("PZ\r", "1000");
         let mut s = PriorLegacyZStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_position_um(100.0).unwrap();
@@ -225,7 +239,11 @@ mod tests {
     #[test]
     fn move_absolute_down() {
         // start at 1000 steps (100 µm), move to 0
-        let t = MockTransport::new().any("1000").any("OK").any("R");
+        let t = MockTransport::new()
+            .any("1000")
+            .any("OK")
+            .any("R")
+            .expect("PZ\r", "0");
         let mut s = PriorLegacyZStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_position_um(0.0).unwrap();
@@ -234,7 +252,11 @@ mod tests {
 
     #[test]
     fn move_relative() {
-        let t = MockTransport::new().any("0").any("OK").any("R");
+        let t = MockTransport::new()
+            .any("0")
+            .any("OK")
+            .any("R")
+            .expect("PZ\r", "500");
         let mut s = PriorLegacyZStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_position_um(50.0).unwrap();
@@ -244,5 +266,22 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(PriorLegacyZStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn malformed_position_response_fails_initialize() {
+        let t = MockTransport::new().any("not-a-number");
+        let mut s = PriorLegacyZStage::new().with_transport(Box::new(t));
+        assert!(s.initialize().is_err());
+    }
+
+    #[test]
+    fn get_position_queries_live_pz_each_time() {
+        let t = MockTransport::new()
+            .expect("PZ\r", "1000")
+            .expect("PZ\r", "1250");
+        let mut s = PriorLegacyZStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!((s.get_position_um().unwrap() - 125.0).abs() < 1e-9);
     }
 }

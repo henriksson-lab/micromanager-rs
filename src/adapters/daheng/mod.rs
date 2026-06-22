@@ -7,6 +7,7 @@
 ///
 /// 1. Install the [Daheng Galaxy SDK](https://www.dahengimaging.com/) for your platform
 /// 2. Ensure `libgxiapi.so` (Linux) or `GxIAPI.dll` (Windows) is in the library path
+///    or set `DAHENG_SDK_ROOT` / `GALAXY_ROOT` to the SDK root.
 /// 3. Build with: `cargo build --features daheng`
 ///
 /// # Properties
@@ -22,9 +23,9 @@
 /// | `Height` | R | Active image height in pixels |
 
 #[cfg(feature = "daheng")]
-pub mod ffi;
-#[cfg(feature = "daheng")]
 pub mod camera;
+#[cfg(feature = "daheng")]
+pub mod ffi;
 #[cfg(feature = "daheng")]
 pub use camera::DahengCamera;
 
@@ -39,7 +40,7 @@ pub const DEVICE_NAME: &str = "DahengCamera";
 #[cfg(feature = "daheng")]
 static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
     name: DEVICE_NAME,
-    description: "Daheng Galaxy camera",
+    description: "Daheng Camera",
     device_type: DeviceType::Camera,
 }];
 
@@ -61,5 +62,19 @@ impl AdapterModule for DahengAdapter {
             DEVICE_NAME => Some(AnyDevice::Camera(Box::new(DahengCamera::new()))),
             _ => None,
         }
+    }
+}
+
+#[cfg(all(test, feature = "daheng"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_device_matches_upstream_name_description_and_type() {
+        let devices = DahengAdapter.devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].name, "DahengCamera");
+        assert_eq!(devices[0].description, "Daheng Camera");
+        assert_eq!(devices[0].device_type, DeviceType::Camera);
     }
 }

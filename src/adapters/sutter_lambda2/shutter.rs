@@ -71,11 +71,20 @@ impl Lambda2Shutter {
             (ShutterId::B, true) => 0xBA,
             (ShutterId::B, false) => 0xBC,
         };
+        let alternate_echo: u8 = match (shutter, open) {
+            (ShutterId::A, true) => 0xAC,
+            (ShutterId::A, false) => 0xAA,
+            (ShutterId::B, true) => 0xBC,
+            (ShutterId::B, false) => 0xBA,
+        };
         self.call_transport(|t| {
             t.send_bytes(&[cmd_byte])?;
-            // Controller echoes the command byte then sends CR (0x0D)
+            // Controller sometimes echoes the opposite shutter command, then CR.
             let resp = t.receive_bytes(2)?;
-            if resp.last() != Some(&0x0D) {
+            if resp.len() != 2
+                || (resp[0] != cmd_byte && resp[0] != alternate_echo)
+                || resp[1] != 0x0D
+            {
                 return Err(MmError::SerialInvalidResponse);
             }
             Ok(())
@@ -91,23 +100,19 @@ impl Device for Lambda2Shutter {
         }
     }
     fn description(&self) -> &str {
-        "Sutter Lambda 2 shutter"
+        "Sutter Lambda shutter adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        self.send_shutter_cmd(false)?;
-        self.is_open = false;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.send_shutter_cmd(false);
-            self.is_open = false;
             self.initialized = false;
         }
         Ok(())
@@ -118,6 +123,9 @@ impl Device for Lambda2Shutter {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::InvalidPropertyValue);
+        }
         self.props.set(name, val)
     }
 
@@ -162,7 +170,6 @@ mod tests {
     #[test]
     fn shutter_a_open_close() {
         let t = MockTransport::new()
-            .expect_binary(&[0xAC, 0x0D]) // init → close
             .expect_binary(&[0xAA, 0x0D]) // open
             .expect_binary(&[0xAC, 0x0D]); // close
         let mut s = Lambda2Shutter::new(ShutterId::A).with_transport(Box::new(t));
@@ -176,9 +183,7 @@ mod tests {
 
     #[test]
     fn shutter_b_open() {
-        let t = MockTransport::new()
-            .expect_binary(&[0xBC, 0x0D])
-            .expect_binary(&[0xBA, 0x0D]);
+        let t = MockTransport::new().expect_binary(&[0xBA, 0x0D]);
         let mut s = Lambda2Shutter::new(ShutterId::B).with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
@@ -187,7 +192,7 @@ mod tests {
 
     #[test]
     fn fire_is_unsupported() {
-        let t = MockTransport::new().expect_binary(&[0xAC, 0x0D]); // init close
+        let t = MockTransport::new();
         let mut s = Lambda2Shutter::new(ShutterId::A).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert_eq!(s.fire(10.0), Err(MmError::UnsupportedCommand));
@@ -198,5 +203,46 @@ mod tests {
     fn no_transport_error() {
         let mut s = Lambda2Shutter::new(ShutterId::A);
         assert!(s.initialize().is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_echo_without_mutating_state() {
+        let t = MockTransport::new().expect_binary(&[0xBA, 0x0D]);
+        let mut s = Lambda2Shutter::new(ShutterId::A).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.set_open(true), Err(MmError::SerialInvalidResponse));
+        assert!(!s.get_open().unwrap());
+    }
+
+    #[test]
+    fn accepts_upstream_alternate_shutter_echo() {
+        let t = MockTransport::new().expect_binary(&[0xAC, 0x0D]);
+        let mut a = Lambda2Shutter::new(ShutterId::A).with_transport(Box::new(t));
+        a.initialize().unwrap();
+        a.set_open(true).unwrap();
+        assert!(a.get_open().unwrap());
+
+        let t = MockTransport::new().expect_binary(&[0xBA, 0x0D]);
+        let mut b = Lambda2Shutter::new(ShutterId::B).with_transport(Box::new(t));
+        b.initialize().unwrap();
+        b.set_open(false).unwrap();
+        assert!(!b.get_open().unwrap());
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected_and_preserved() {
+        let t = MockTransport::new();
+        let mut s = Lambda2Shutter::new(ShutterId::A).with_transport(Box::new(t));
+        s.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            s.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
     }
 }

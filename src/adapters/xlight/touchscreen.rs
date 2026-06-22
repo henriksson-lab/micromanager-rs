@@ -58,7 +58,16 @@ impl Device for XLightTouchScreen {
         self.0.get_property(name)
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.0.set_property(name, val)
+        match name {
+            "State" => {
+                let pos = val
+                    .as_i64()
+                    .ok_or(crate::error::MmError::InvalidPropertyValue)?;
+                let pos = pos.clamp(0, 1) as u64;
+                self.0.set_position(pos)
+            }
+            _ => self.0.set_property(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.0.property_names()
@@ -79,7 +88,7 @@ impl Device for XLightTouchScreen {
 
 impl StateDevice for XLightTouchScreen {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
-        self.0.set_position(pos)
+        self.0.set_position(pos.min(1))
     }
     fn get_position(&self) -> MmResult<u64> {
         self.0.get_position()
@@ -126,5 +135,21 @@ mod tests {
         d.initialize().unwrap();
         d.set_position(0).unwrap();
         assert_eq!(d.get_position().unwrap(), 0);
+    }
+
+    #[test]
+    fn state_writes_clamp_like_upstream() {
+        let t = MockTransport::new()
+            .expect("rM\r", "rM1")
+            .expect("M0\r", "M0")
+            .expect("M1\r", "M1");
+        let mut d = XLightTouchScreen::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+
+        d.set_property("State", PropertyValue::Integer(-4)).unwrap();
+        assert_eq!(d.get_position().unwrap(), 0);
+
+        d.set_position(9).unwrap();
+        assert_eq!(d.get_position().unwrap(), 1);
     }
 }

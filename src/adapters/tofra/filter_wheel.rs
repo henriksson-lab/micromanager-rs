@@ -172,6 +172,22 @@ impl Device for TofraFilterWheel {
             return Err(MmError::NotConnected);
         }
         self.rebuild_labels();
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)?;
+        }
+        if !self.props.has_property("Label") {
+            self.props.define_property(
+                "Label",
+                PropertyValue::String(
+                    self.labels
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "Filter-01".into()),
+                ),
+                false,
+            )?;
+        }
         let home = match self.home_offset.cmp(&0) {
             std::cmp::Ordering::Greater => format!("D{}", self.home_offset),
             std::cmp::Ordering::Less => format!("P{}", -self.home_offset),
@@ -303,6 +319,9 @@ impl Device for TofraFilterWheel {
         DeviceType::State
     }
     fn busy(&self) -> bool {
+        if self.clear_port().is_err() {
+            return false;
+        }
         self.cmd("Q")
             .and_then(|resp| Self::parse_status(&resp))
             .map(|status| status == '@')
@@ -322,7 +341,7 @@ impl StateDevice for TofraFilterWheel {
             let d2 = if d1 > 0 {
                 d1 - TURN_MSTEPS
             } else {
-                TURN_MSTEPS + d1
+                TURN_MSTEPS - d1
             };
             let d = if d1.abs() > d2.abs() { d2 } else { d1 };
             let move_cmd = if d > 0 {
@@ -382,6 +401,7 @@ impl StateDevice for TofraFilterWheel {
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use std::sync::{Arc, Mutex};
 
     fn init_cmd() -> String {
         format!(
@@ -397,7 +417,11 @@ mod tests {
     #[test]
     fn initialize() {
         let mut fw = TofraFilterWheel::new().with_transport(Box::new(make_init_transport()));
+        assert!(!fw.has_property("State"));
+        assert!(!fw.has_property("Label"));
         fw.initialize().unwrap();
+        assert!(fw.has_property("State"));
+        assert!(fw.has_property("Label"));
         assert_eq!(fw.get_position().unwrap(), 0);
         assert_eq!(fw.get_number_of_positions(), 10);
     }
@@ -422,6 +446,20 @@ mod tests {
         fw.initialize().unwrap();
         fw.set_position(9).unwrap();
         assert_eq!(fw.get_position().unwrap(), 9);
+    }
+
+    #[test]
+    fn negative_delta_matches_upstream_no_wrap_shortcut() {
+        // Upstream computes d2 = turnmsteps - d1 for negative d1, so 9->0 uses
+        // the direct negative delta instead of wrapping forward by 320.
+        let t = make_init_transport()
+            .expect("/1D320R\r", "/00")
+            .expect("/1D2880R\r", "/00");
+        let mut fw = TofraFilterWheel::new().with_transport(Box::new(t));
+        fw.initialize().unwrap();
+        fw.set_position(9).unwrap();
+        fw.set_position(0).unwrap();
+        assert_eq!(fw.get_position().unwrap(), 0);
     }
 
     #[test]
@@ -452,6 +490,52 @@ mod tests {
         let mut fw = TofraFilterWheel::new().with_transport(Box::new(t));
         fw.initialize().unwrap();
         assert!(fw.busy());
+    }
+
+    struct PurgeCountingTransport {
+        purge_count: Arc<Mutex<usize>>,
+        last_command: String,
+    }
+
+    impl PurgeCountingTransport {
+        fn new(purge_count: Arc<Mutex<usize>>) -> Self {
+            Self {
+                purge_count,
+                last_command: String::new(),
+            }
+        }
+    }
+
+    impl Transport for PurgeCountingTransport {
+        fn send(&mut self, cmd: &str) -> MmResult<()> {
+            self.last_command = cmd.to_string();
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            match self.last_command.as_str() {
+                "/1Q\r" => Ok("/0@".into()),
+                other => Err(MmError::LocallyDefined(format!(
+                    "unexpected command: {}",
+                    other
+                ))),
+            }
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            *self.purge_count.lock().unwrap() += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn busy_clears_port_before_status_query() {
+        let purge_count = Arc::new(Mutex::new(0));
+        let t = PurgeCountingTransport::new(Arc::clone(&purge_count));
+        let fw = TofraFilterWheel::new().with_transport(Box::new(t));
+
+        assert!(fw.busy());
+        assert_eq!(*purge_count.lock().unwrap(), 1);
     }
 
     #[test]

@@ -109,10 +109,18 @@ impl Default for Motion8XYStage {
 
 impl Device for Motion8XYStage {
     fn name(&self) -> &str {
-        "ScientificaMotion8-XYStage"
+        match self.device_id {
+            0 => "Scientifica-Motion8-XY_Device_1",
+            1 => "Scientifica-Moiton8-XY_Device_2",
+            _ => "Scientifica-Motion8-XY_Device_1",
+        }
     }
     fn description(&self) -> &str {
-        "Scientifica Motion8 XY stage"
+        match self.device_id {
+            0 => "XY Stage (Device 1)",
+            1 => "XY Stage (Device 2)",
+            _ => "XY Stage (Device 1)",
+        }
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -260,6 +268,8 @@ mod tests {
         let (x, y) = s.get_xy_position_um().unwrap();
         assert!((x - 50.0).abs() < 1e-9);
         assert!((y - 70.0).abs() < 1e-9);
+        assert_eq!(s.name(), "Scientifica-Moiton8-XY_Device_2");
+        assert_eq!(s.description(), "XY Stage (Device 2)");
     }
 
     #[test]

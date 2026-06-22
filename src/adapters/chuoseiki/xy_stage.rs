@@ -103,10 +103,25 @@ impl ChuoSeikiXYStage {
         })
     }
 
-    /// Check that the last 2 chars of response are "00" (no error).
+    /// Check MD5000 error-code responses using the same precedence as upstream.
     fn check_ok(resp: &str) -> MmResult<()> {
         let s = resp.trim();
-        if s.len() >= 2 && &s[s.len() - 2..] == "00" {
+        let error_code = if s.len() >= 16 {
+            let first = &s[6..8];
+            if first == "00" {
+                &s[14..16]
+            } else {
+                first
+            }
+        } else if s.len() >= 8 {
+            &s[6..8]
+        } else if s.len() >= 6 {
+            &s[4..6]
+        } else {
+            "00"
+        };
+
+        if error_code == "00" {
             Ok(())
         } else {
             Err(MmError::LocallyDefined(format!("ChuoSeiki error: {}", s)))
@@ -442,8 +457,13 @@ mod tests {
 
     #[test]
     fn check_ok_passes() {
-        assert!(ChuoSeikiXYStage::check_ok("ABA X 100 00").is_ok());
-        assert!(ChuoSeikiXYStage::check_ok("ABA X 100 01").is_err());
+        assert!(ChuoSeikiXYStage::check_ok("ABB 00").is_ok());
+        assert!(ChuoSeikiXYStage::check_ok("ERS X 00").is_ok());
+        assert!(ChuoSeikiXYStage::check_ok("ERS X 00ERS Y 00").is_ok());
+        assert!(ChuoSeikiXYStage::check_ok("ABB 01").is_err());
+        assert!(ChuoSeikiXYStage::check_ok("ERS X 06").is_err());
+        assert!(ChuoSeikiXYStage::check_ok("ERS X 06ERS Y 00").is_err());
+        assert!(ChuoSeikiXYStage::check_ok("ERS X 00ERS Y 06").is_err());
     }
 
     #[test]

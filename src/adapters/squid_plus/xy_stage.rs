@@ -100,28 +100,41 @@ impl SquidPlusXYStage {
         common::send_and_wait(t.as_mut(), pkt)
     }
 
-    fn send_axis_velocity(&mut self, axis: u8) -> MmResult<()> {
+    fn send_axis_velocity_values(
+        &mut self,
+        axis: u8,
+        max_velocity_mm_s: f64,
+        acceleration_mm_s2: f64,
+    ) -> MmResult<()> {
         let id = self.next_cmd_id();
         let pkt = protocol::build_set_max_velocity_acceleration(
             id,
             axis,
-            self.max_velocity_mm_s,
-            self.acceleration_mm_s2,
+            max_velocity_mm_s,
+            acceleration_mm_s2,
         );
         self.send_and_wait(&pkt)
     }
 
+    fn configure_velocity_values(
+        &mut self,
+        max_velocity_mm_s: f64,
+        acceleration_mm_s2: f64,
+    ) -> MmResult<()> {
+        self.send_axis_velocity_values(protocol::AXIS_X, max_velocity_mm_s, acceleration_mm_s2)?;
+        self.send_axis_velocity_values(protocol::AXIS_Y, max_velocity_mm_s, acceleration_mm_s2)
+    }
+
     fn configure_velocity(&mut self) -> MmResult<()> {
-        self.send_axis_velocity(protocol::AXIS_X)?;
-        self.send_axis_velocity(protocol::AXIS_Y)
+        self.configure_velocity_values(self.max_velocity_mm_s, self.acceleration_mm_s2)
     }
 
     fn um_to_usteps_x(um: f64) -> i32 {
-        (um / 1000.0 * USTEPS_PER_MM_XY / DIRECTION_X) as i32
+        (um / 1000.0 * USTEPS_PER_MM_XY / DIRECTION_X).round_ties_even() as i32
     }
 
     fn um_to_usteps_y(um: f64) -> i32 {
-        (um / 1000.0 * USTEPS_PER_MM_XY / DIRECTION_Y) as i32
+        (um / 1000.0 * USTEPS_PER_MM_XY / DIRECTION_Y).round_ties_even() as i32
     }
 
     fn read_configuration(&mut self) -> MmResult<()> {
@@ -177,11 +190,11 @@ impl SquidPlusXYStage {
     }
 
     fn pos_to_usteps_x(&self, um: f64) -> i32 {
-        (um / 1000.0 * self.usteps_per_mm_x() / self.direction_x) as i32
+        (um / 1000.0 * self.usteps_per_mm_x() / self.direction_x).round_ties_even() as i32
     }
 
     fn pos_to_usteps_y(&self, um: f64) -> i32 {
-        (um / 1000.0 * self.usteps_per_mm_y() / self.direction_y) as i32
+        (um / 1000.0 * self.usteps_per_mm_y() / self.direction_y).round_ties_even() as i32
     }
 }
 
@@ -241,11 +254,11 @@ impl Device for SquidPlusXYStage {
                 if !(1.0..=655.35).contains(&value) {
                     return Err(MmError::InvalidPropertyValue);
                 }
+                if self.initialized {
+                    self.configure_velocity_values(value, self.acceleration_mm_s2)?;
+                }
                 self.max_velocity_mm_s = value;
                 self.props.set(name, PropertyValue::Float(value))?;
-                if self.initialized {
-                    self.configure_velocity()?;
-                }
                 Ok(())
             }
             "Acceleration" => {
@@ -253,11 +266,11 @@ impl Device for SquidPlusXYStage {
                 if !(1.0..=6553.5).contains(&value) {
                     return Err(MmError::InvalidPropertyValue);
                 }
+                if self.initialized {
+                    self.configure_velocity_values(self.max_velocity_mm_s, value)?;
+                }
                 self.acceleration_mm_s2 = value;
                 self.props.set(name, PropertyValue::Float(value))?;
-                if self.initialized {
-                    self.configure_velocity()?;
-                }
                 Ok(())
             }
             _ => self.props.set(name, val),
@@ -437,6 +450,14 @@ mod tests {
         dev.initialize().unwrap();
         assert!(dev.initialized);
         assert_eq!(dev.get_xy_position_um().unwrap(), (0.0, 0.0));
+        assert_eq!(
+            dev.get_property("MaxVelocity").unwrap(),
+            PropertyValue::Float(25.0)
+        );
+        assert_eq!(
+            dev.get_property("Acceleration").unwrap(),
+            PropertyValue::Float(500.0)
+        );
     }
 
     #[test]
@@ -489,16 +510,17 @@ mod tests {
     fn step_size() {
         let dev = SquidPlusXYStage::new();
         let (sx, sy) = dev.get_step_size_um();
-        // C++ default DirectionX/Y is Negative, making the exposed step size signed.
         assert!((sx + 0.0496).abs() < 0.001);
         assert_eq!(sx, sy);
     }
 
     #[test]
     fn ustep_conversion() {
-        // 1 mm = 1000 µm → 20157 usteps
-        let usteps = SquidPlusXYStage::um_to_usteps_x(1000.0);
-        assert_eq!(usteps, -20157);
+        // 1 mm = 1000 um; upstream Cephla defaults DirectionX/Y to Negative.
+        assert_eq!(SquidPlusXYStage::um_to_usteps_x(1000.0), -20157);
+        assert_eq!(SquidPlusXYStage::um_to_usteps_y(1000.0), -20157);
+        assert_eq!(SquidPlusXYStage::um_to_usteps_x(0.1), -2);
+        assert_eq!(SquidPlusXYStage::um_to_usteps_y(-0.1), 2);
     }
 
     #[test]
@@ -522,12 +544,42 @@ mod tests {
     }
 
     #[test]
+    fn velocity_property_cache_updates_only_after_both_axis_acks() {
+        let mut failed = ok_response(4);
+        failed[1] = protocol::STATUS_CHECKSUM_ERROR;
+        failed[protocol::MSG_LENGTH - 1] = protocol::crc8(&failed[..protocol::MSG_LENGTH - 1]);
+
+        let t = make_init_transport()
+            .expect_binary(&ok_response(3))
+            .expect_binary(&failed);
+        let mut dev = SquidPlusXYStage::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("MaxVelocity", PropertyValue::Float(10.0)),
+            Err(MmError::SerialCommandFailed)
+        );
+        assert_eq!(
+            dev.get_property("MaxVelocity").unwrap(),
+            PropertyValue::Float(DEFAULT_MAX_VELOCITY_MM_S)
+        );
+    }
+
+    #[test]
     fn exposes_upstream_stage_configuration_properties() {
         let dev = SquidPlusXYStage::new();
         assert!(dev.has_property("FullStepsPerRevX"));
         assert!(dev.has_property("ScrewPitchYmm"));
         assert!(dev.has_property("MicroSteppingDefaultX"));
         assert!(dev.has_property("DirectionY"));
+        assert_eq!(
+            dev.get_property("DirectionX").unwrap(),
+            PropertyValue::String("Negative".into())
+        );
+        assert_eq!(
+            dev.get_property("DirectionY").unwrap(),
+            PropertyValue::String("Negative".into())
+        );
         assert!(dev.has_property("Acceleration"));
         assert!(dev.has_property("MaxVelocity"));
     }

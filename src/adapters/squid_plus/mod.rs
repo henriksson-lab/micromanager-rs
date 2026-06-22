@@ -46,9 +46,9 @@ impl AdapterModule for SquidPlusAdapter {
 
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
-            DEVICE_NAME_FILTER_WHEEL => {
-                Some(AnyDevice::StateDevice(Box::new(SquidPlusFilterWheel::new())))
-            }
+            DEVICE_NAME_FILTER_WHEEL => Some(AnyDevice::StateDevice(Box::new(
+                SquidPlusFilterWheel::new(),
+            ))),
             DEVICE_NAME_Z_STAGE => Some(AnyDevice::Stage(Box::new(SquidPlusZStage::new()))),
             DEVICE_NAME_XY_STAGE => Some(AnyDevice::XYStage(Box::new(SquidPlusXYStage::new()))),
             _ => None,

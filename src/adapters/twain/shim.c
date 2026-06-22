@@ -28,18 +28,26 @@
 #else
 #  include <dlfcn.h>
 #  include <unistd.h>
+#  include <wchar.h>
    typedef void* lib_handle_t;
    static void shim_sleep_ms(int ms) { usleep((useconds_t)(ms) * 1000u); }
    /* Stub HWND for Linux where TWAIN message routing is optional. */
    typedef void* HWND;
    typedef unsigned int UINT;
+#  ifndef FALSE
+#    define FALSE 0
+#  endif
 #endif
 
 /* ── TWAIN header ──────────────────────────────────────────────────────────── */
 
 /* twain.h from TWAIN Working Group (BSD-licensed).  Included from the
    reference source tree via the build.rs include path. */
-#include "TWAIN.H"
+#ifdef _WIN32
+#  include "TWAIN.H"
+#else
+#  include "twain.h"
+#endif
 
 #include <stdlib.h>
 #include <string.h>

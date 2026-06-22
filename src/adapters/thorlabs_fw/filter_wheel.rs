@@ -33,18 +33,14 @@ impl ThorlabsFilterWheel {
             .collect();
         let mut props = PropertyMap::new();
         props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props
-            .define_property("Label", PropertyValue::String("Filter-1".into()), false)
-            .unwrap();
-        props
             .define_property("Port", PropertyValue::String(String::new()), false)
             .unwrap();
         props
-            .define_property("Delay", PropertyValue::Float(0.0), false)
+            .define_property("Delay_ms", PropertyValue::Float(0.0), false)
             .unwrap();
-        props.set_property_limits("Delay", 0.0, f64::MAX).unwrap();
+        props
+            .set_property_limits("Delay_ms", 0.0, f64::MAX)
+            .unwrap();
 
         Self {
             props,
@@ -102,6 +98,18 @@ impl Device for ThorlabsFilterWheel {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
+        if self.initialized {
+            return Ok(());
+        }
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)?;
+        }
+        if !self.props.has_property("Label") {
+            self.props
+                .define_property("Label", PropertyValue::String("Filter-1".into()), false)?;
+        }
+        self.mark_changed();
         self.initialized = true;
         Ok(())
     }
@@ -113,30 +121,35 @@ impl Device for ThorlabsFilterWheel {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(self.position as i64)),
-            "Label" => Ok(PropertyValue::String(
+            "State" if self.props.has_property("State") => {
+                Ok(PropertyValue::Integer(self.position as i64))
+            }
+            "Label" if self.props.has_property("Label") => Ok(PropertyValue::String(
                 self.labels
                     .get(self.position as usize)
                     .cloned()
                     .unwrap_or_default(),
             )),
-            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
+            "Delay_ms" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
-            "State" => {
+            "Port" if self.initialized => self.props.set(
+                name,
+                PropertyValue::String(self.props.get(name)?.as_str().to_string()),
+            ),
+            "State" if self.props.has_property("State") => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
                 self.set_position(pos)
             }
-            "Label" => {
+            "Label" if self.props.has_property("Label") => {
                 let label = val.as_str().to_string();
                 self.set_position_by_label(&label)
             }
-            "Delay" => {
+            "Delay_ms" => {
                 self.delay_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, PropertyValue::Float(self.delay_ms))
             }
@@ -165,12 +178,14 @@ impl Device for ThorlabsFilterWheel {
 
 impl StateDevice for ThorlabsFilterWheel {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
+        if self.initialized {
+            self.mark_changed();
+        }
         if pos >= NUM_POSITIONS {
             return Err(MmError::UnknownPosition);
         }
         if self.initialized {
             self.send_cmd(&format!("pos={}", pos + 1))?; // 1-indexed in command
-            self.mark_changed();
         }
         self.position = pos;
         Ok(())
@@ -226,7 +241,13 @@ mod tests {
     #[test]
     fn initialize_reads_position() {
         let mut fw = ThorlabsFilterWheel::new();
+        assert!(!fw.has_property("State"));
+        assert!(!fw.has_property("Label"));
+        assert!(fw.has_property("Delay_ms"));
+        assert!(!fw.has_property("Delay"));
         fw.initialize().unwrap();
+        assert!(fw.has_property("State"));
+        assert!(fw.has_property("Label"));
         assert_eq!(fw.get_position().unwrap(), 0);
     }
 
@@ -274,10 +295,12 @@ mod tests {
     fn delay_tracks_busy_after_successful_move() {
         let t = MockTransport::new();
         let mut fw = ThorlabsFilterWheel::new().with_transport(Box::new(t));
-        fw.set_property("Delay", PropertyValue::Float(50.0))
+        fw.set_property("Delay_ms", PropertyValue::Float(50.0))
             .unwrap();
         fw.initialize().unwrap();
 
+        assert!(fw.busy());
+        std::thread::sleep(Duration::from_millis(60));
         assert!(!fw.busy());
         fw.set_position(1).unwrap();
         assert!(fw.busy());
@@ -286,14 +309,25 @@ mod tests {
     }
 
     #[test]
-    fn initialized_port_change_is_rejected() {
+    fn initialized_port_change_is_reverted_without_error() {
         let mut fw = ThorlabsFilterWheel::new();
+        fw.set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
         fw.initialize().unwrap();
 
-        assert_eq!(
-            fw.set_property("Port", PropertyValue::String("COM2".into()))
-                .unwrap_err(),
-            MmError::InvalidPropertyValue
-        );
+        fw.set_property("Port", PropertyValue::String("COM2".into()))
+            .unwrap();
+        assert_eq!(fw.get_property("Port").unwrap().as_str(), "COM1");
+    }
+
+    #[test]
+    fn out_of_range_move_still_starts_delay_when_initialized() {
+        let mut fw = ThorlabsFilterWheel::new();
+        fw.set_property("Delay_ms", PropertyValue::Float(50.0))
+            .unwrap();
+        fw.initialize().unwrap();
+
+        assert_eq!(fw.set_position(6).unwrap_err(), MmError::UnknownPosition);
+        assert!(fw.busy());
     }
 }

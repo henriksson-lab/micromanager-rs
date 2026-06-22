@@ -14,15 +14,16 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 const STEP_SIZE_UM: f64 = 0.1;
 
 pub struct LudlXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
-    x_um: f64,
-    y_um: f64,
+    x_um: Cell<f64>,
+    y_um: Cell<f64>,
     step_size_um: f64,
     step_size_x_um: f64,
     step_size_y_um: f64,
@@ -59,8 +60,8 @@ impl LudlXYStage {
             props,
             transport: None,
             initialized: false,
-            x_um: 0.0,
-            y_um: 0.0,
+            x_um: Cell::new(0.0),
+            y_um: Cell::new(0.0),
             step_size_um: 1.0,
             step_size_x_um: 0.1,
             step_size_y_um: 0.1,
@@ -71,21 +72,21 @@ impl LudlXYStage {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
             let r = t.send_recv(&c)?;
@@ -116,6 +117,32 @@ impl LudlXYStage {
         let x: i64 = parts[0].parse().unwrap_or(0);
         let y: i64 = parts[1].parse().unwrap_or(0);
         Ok((x as f64 * STEP_SIZE_UM, y as f64 * STEP_SIZE_UM))
+    }
+
+    fn query_position_um(&self) -> MmResult<(f64, f64)> {
+        self.call_transport(|t| t.purge())?;
+        let pos = self.cmd("WHERE X Y")?;
+        let (x, y) = Self::parse_xy(&pos)?;
+        self.x_um.set(x);
+        self.y_um.set(y);
+        Ok((x, y))
+    }
+
+    fn poll_module_busy(&self) -> bool {
+        self.call_transport(|t| {
+            if t.purge().is_err() || t.send("STATUS S\r").is_err() {
+                return Ok(false);
+            }
+            Ok(match t.receive_line() {
+                Ok(resp) => match resp.trim().as_bytes().first().copied() {
+                    Some(b'N') => false,
+                    Some(b'B') => true,
+                    _ => true,
+                },
+                Err(_) => true,
+            })
+        })
+        .unwrap_or(false)
     }
 }
 
@@ -216,7 +243,7 @@ impl Device for LudlXYStage {
         DeviceType::XYStage
     }
     fn busy(&self) -> bool {
-        false
+        self.poll_module_busy()
     }
 }
 
@@ -226,20 +253,24 @@ impl XYStage for LudlXYStage {
         let ys = (y / self.step_size_y_um).round() as i64;
         let r = self.cmd(&format!("MOVE X={} Y={}", xs, ys))?;
         Self::check_a(&r)?;
-        self.x_um = x;
-        self.y_um = y;
+        self.x_um.set(x);
+        self.y_um.set(y);
         Ok(())
     }
     fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
-        Ok((self.x_um, self.y_um))
+        if self.initialized && self.transport.is_some() {
+            self.query_position_um()
+        } else {
+            Ok((self.x_um.get(), self.y_um.get()))
+        }
     }
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let xs = (dx / self.step_size_x_um).round() as i64;
         let ys = (dy / self.step_size_y_um).round() as i64;
         let r = self.cmd(&format!("MOVREL X={} Y={}", xs, ys))?;
         Self::check_a(&r)?;
-        self.x_um += dx;
-        self.y_um += dy;
+        self.x_um.set(self.x_um.get() + dx);
+        self.y_um.set(self.y_um.get() + dy);
         Ok(())
     }
     fn home(&mut self) -> MmResult<()> {
@@ -260,10 +291,7 @@ impl XYStage for LudlXYStage {
     fn set_origin(&mut self) -> MmResult<()> {
         let r = self.cmd("HERE X=0 Y=0")?;
         Self::check_a(&r)?;
-        let pos = self.cmd("WHERE X Y")?;
-        let (x, y) = Self::parse_xy(&pos)?;
-        self.x_um = x;
-        self.y_um = y;
+        self.query_position_um()?;
         Ok(())
     }
 }
@@ -279,7 +307,8 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let mut s = LudlXYStage::new().with_transport(Box::new(make_transport()));
+        let t = make_transport().expect("WHERE X Y\r", ":A 0 0");
+        let mut s = LudlXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert_eq!(s.get_xy_position_um().unwrap(), (0.0, 0.0));
         assert!(s.has_property("StepSize"));
@@ -293,7 +322,9 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = make_transport().any(":A");
+        let t = make_transport()
+            .expect("MOVE X=3000 Y=4000\r", ":A")
+            .expect("WHERE X Y\r", ":A 3000 4000");
         let mut s = LudlXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_xy_position_um(300.0, 400.0).unwrap();
@@ -302,7 +333,9 @@ mod tests {
 
     #[test]
     fn move_relative_uses_upstream_movrel() {
-        let t = make_transport().expect("MOVREL X=20 Y=-30\r", ":A");
+        let t = make_transport()
+            .expect("MOVREL X=20 Y=-30\r", ":A")
+            .expect("WHERE X Y\r", ":A 20 -30");
         let mut s = LudlXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_xy_position_um(2.0, -3.0).unwrap();
@@ -337,6 +370,7 @@ mod tests {
     fn set_origin_queries_current_stage_position_like_upstream() {
         let t = make_transport()
             .expect("HERE X=0 Y=0\r", ":A")
+            .expect("WHERE X Y\r", ":A 15 -25")
             .expect("WHERE X Y\r", ":A 15 -25");
         let mut s = LudlXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
@@ -347,5 +381,18 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(LudlXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn busy_polls_module_status_like_upstream() {
+        let t = make_transport()
+            .expect("STATUS S\r", "B")
+            .expect("STATUS S\r", "N")
+            .expect("STATUS S\r", "?");
+        let mut s = LudlXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
+        assert!(!s.busy());
+        assert!(s.busy());
     }
 }

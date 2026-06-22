@@ -14,6 +14,5 @@
 ///
 /// This is a GenericDevice (no specific MicroManager type beyond Device).
 /// The user selects Stage and Slot as properties, then sets Command = ORG/GET/PUT/AES/DRT.
-
 pub mod wptr;
 pub use wptr::AsiWPTR;

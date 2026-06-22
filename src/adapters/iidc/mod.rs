@@ -1,3 +1,5 @@
+#[cfg(feature = "iidc")]
+pub mod camera;
 /// IIDC (IEEE 1394 FireWire) camera adapter.
 ///
 /// Wraps libdc1394 behind the MicroManager `Camera` trait.
@@ -28,7 +30,5 @@
 
 #[cfg(feature = "iidc")]
 pub mod ffi;
-#[cfg(feature = "iidc")]
-pub mod camera;
 #[cfg(feature = "iidc")]
 pub use camera::IIDCCamera;

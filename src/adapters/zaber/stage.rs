@@ -90,12 +90,6 @@ impl ZaberStage {
                 PropertyValue::Float(DEFAULT_LINEAR_MOTION_MM),
             )
             .unwrap();
-        props
-            .define_property(PROP_SPEED, PropertyValue::Float(0.0), false)
-            .unwrap();
-        props
-            .define_property(PROP_ACCEL, PropertyValue::Float(0.0), false)
-            .unwrap();
         Self {
             props,
             transport: RefCell::new(None),
@@ -133,7 +127,7 @@ impl ZaberStage {
         self.call_transport(|t| {
             let r = t.send_recv(&full)?;
             let resp = r.trim().to_string();
-            Self::reject_error(&resp)?;
+            Self::validate_response(&resp, device_addr, axis)?;
             Ok(resp)
         })
     }
@@ -163,13 +157,26 @@ impl ZaberStage {
         resp.split_whitespace().nth(2)
     }
 
-    fn reject_error(resp: &str) -> MmResult<()> {
+    fn validate_response(resp: &str, expected_device: u32, expected_axis: u32) -> MmResult<()> {
+        if !resp.starts_with('@') || resp.split_whitespace().count() < 4 {
+            return Err(MmError::SerialInvalidResponse);
+        }
         let mut fields = resp.split_whitespace();
-        let _device = fields.next();
-        let _axis = fields.next();
+        let device = fields.next();
+        let axis = fields.next();
         let _status = fields.next();
         let flags = fields.next();
         let data = fields.next();
+        let parsed_device = device
+            .and_then(|s| s.strip_prefix('@'))
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or(MmError::SerialInvalidResponse)?;
+        let parsed_axis = axis
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or(MmError::SerialInvalidResponse)?;
+        if parsed_device != expected_device || parsed_axis != expected_axis {
+            return Err(MmError::SerialInvalidResponse);
+        }
         if flags == Some("RJ") {
             return match data {
                 Some("BADCOMMAND") => Err(MmError::UnsupportedCommand),
@@ -241,18 +248,25 @@ impl Default for ZaberStage {
 
 impl Device for ZaberStage {
     fn name(&self) -> &str {
-        "ZaberStage"
+        "Stage"
     }
     fn description(&self) -> &str {
-        "Zaber linear stage"
+        "Zaber stage driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
+        if self.initialized {
+            return Ok(());
+        }
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
         let resolution = self.get_setting_i64("resolution")? as f64;
         self.step_size_um = self.linear_motion_mm / self.motor_steps / resolution * 1000.0;
+        self.props
+            .define_property(PROP_SPEED, PropertyValue::Float(0.0), false)?;
+        self.props
+            .define_property(PROP_ACCEL, PropertyValue::Float(0.0), false)?;
         let min_steps = self.get_setting_i64("limit.min")?;
         let max_steps = self.get_setting_i64("limit.max")?;
         self.limit_min_um = min_steps as f64;
@@ -489,6 +503,29 @@ mod tests {
     }
 
     #[test]
+    fn malformed_move_response_does_not_update_cached_position() {
+        let t = make_init_transport().expect("/1 1 move abs 640\n", "garbled");
+        let mut s = ZaberStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_position_um(100.0).unwrap_err(),
+            MmError::SerialInvalidResponse
+        );
+        assert_eq!(s.position_um, 0.0);
+    }
+
+    #[test]
+    fn mismatched_response_address_is_rejected() {
+        let t = make_init_transport().expect("/1 1 get pos\n", "@01 02 IDLE -- 0");
+        let mut s = ZaberStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.get_position_um().unwrap_err(),
+            MmError::SerialInvalidResponse
+        );
+    }
+
+    #[test]
     fn speed_accel_properties_use_live_settings() {
         let t = make_init_transport()
             .expect("/1 1 get maxspeed\n", "@01 01 IDLE -- 10486")
@@ -529,5 +566,24 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(ZaberStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn upstream_name_and_description() {
+        let s = ZaberStage::new();
+        assert_eq!(s.name(), "Stage");
+        assert_eq!(s.description(), "Zaber stage driver adapter");
+    }
+
+    #[test]
+    fn speed_and_accel_are_initialize_properties() {
+        let t = make_init_transport();
+        let mut s = ZaberStage::new().with_transport(Box::new(t));
+        assert!(!s.has_property(PROP_SPEED));
+        assert!(!s.has_property(PROP_ACCEL));
+        s.initialize().unwrap();
+        assert!(s.has_property(PROP_SPEED));
+        assert!(s.has_property(PROP_ACCEL));
+        s.initialize().unwrap();
     }
 }

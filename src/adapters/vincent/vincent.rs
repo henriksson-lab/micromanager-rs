@@ -79,17 +79,6 @@ impl VincentShutter {
         props
             .define_property("Time to open (ms)", PropertyValue::Float(35.0), false)
             .unwrap();
-        props
-            .define_property("Command", PropertyValue::String("Close".into()), false)
-            .unwrap();
-        match model {
-            VincentModel::D1 => props
-                .set_allowed_values("Command", &["Close", "Open", "Trigger", "Reset"])
-                .unwrap(),
-            VincentModel::D3 => props
-                .set_allowed_values("Command", &["Close", "Open"])
-                .unwrap(),
-        }
 
         Self {
             props,
@@ -103,6 +92,20 @@ impl VincentShutter {
             closing_time_ms: 35.0,
             last_command: "Undefined".into(),
             changed_time: None,
+        }
+    }
+
+    fn ensure_command_property(&mut self) -> MmResult<()> {
+        if self.props.has_property("Command") {
+            return Ok(());
+        }
+        self.props
+            .define_property("Command", PropertyValue::String("Close".into()), false)?;
+        match self.model {
+            VincentModel::D1 => self
+                .props
+                .set_allowed_values("Command", &["Close", "Open", "Trigger", "Reset"]),
+            VincentModel::D3 => self.props.set_allowed_values("Command", &["Close", "Open"]),
         }
     }
 
@@ -223,6 +226,7 @@ impl Device for VincentShutter {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
+        self.ensure_command_property()?;
         if self.model == VincentModel::D1 {
             self.execute_command("Close")?;
         }
@@ -321,6 +325,9 @@ impl Device for VincentShutter {
 
 impl Shutter for VincentShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
+        if !self.initialized {
+            return Err(MmError::UnknownLabel("Command".into()));
+        }
         self.execute_command(if open { "Open" } else { "Close" })
     }
     fn get_open(&self) -> MmResult<bool> {
@@ -423,6 +430,37 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(VincentShutter::new(VincentModel::D1).initialize().is_err());
+    }
+
+    #[test]
+    fn command_property_is_created_during_initialize() {
+        let mut d1 = VincentShutter::new(VincentModel::D1);
+        assert!(!d1.has_property("Command"));
+        assert_eq!(
+            d1.set_open(true),
+            Err(MmError::UnknownLabel("Command".into()))
+        );
+
+        d1 = d1.with_transport(Box::new(MockTransport::new()));
+        d1.initialize().unwrap();
+        assert!(d1.has_property("Command"));
+        assert_eq!(
+            d1.get_property("Command").unwrap(),
+            PropertyValue::String("Close".into())
+        );
+    }
+
+    #[test]
+    fn d3_initialize_creates_command_without_closing() {
+        let mut d3 =
+            VincentShutter::new(VincentModel::D3).with_transport(Box::new(MockTransport::new()));
+        assert!(!d3.has_property("Command"));
+
+        d3.initialize().unwrap();
+
+        assert!(d3.has_property("Command"));
+        assert!(!d3.busy());
+        assert!(!d3.get_open().unwrap());
     }
 
     #[test]

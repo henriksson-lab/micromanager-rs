@@ -504,7 +504,10 @@ mod tests {
         laser.initialize().unwrap();
 
         laser
-            .set_property("Set Laser Mode", PropertyValue::String("Constant Power".into()))
+            .set_property(
+                "Set Laser Mode",
+                PropertyValue::String("Constant Power".into()),
+            )
             .unwrap();
         assert_eq!(laser.laser_mode, "Constant Power");
     }

@@ -16,15 +16,16 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 const STEP_SIZE_UM: f64 = 0.1;
 
 pub struct PriorLegacyXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: RefCell<Option<Box<dyn Transport>>>,
     initialized: bool,
-    x_um: f64,
-    y_um: f64,
+    x_um: Cell<f64>,
+    y_um: Cell<f64>,
 }
 
 impl PriorLegacyXYStage {
@@ -35,34 +36,38 @@ impl PriorLegacyXYStage {
             .unwrap();
         Self {
             props,
-            transport: None,
+            transport: RefCell::new(None),
             initialized: false,
-            x_um: 0.0,
-            y_um: 0.0,
+            x_um: Cell::new(0.0),
+            y_um: Cell::new(0.0),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = RefCell::new(Some(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
+        match self.transport.borrow_mut().as_mut() {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
             let r = t.send_recv(&c)?;
             Ok(r.trim().to_string())
         })
+    }
+
+    fn clear_port(&self) -> MmResult<()> {
+        self.call_transport(|t| t.purge())
     }
 
     fn check_ack(resp: &str) -> MmResult<()> {
@@ -81,7 +86,8 @@ impl PriorLegacyXYStage {
         }
     }
 
-    fn query_axis_steps(&mut self, axis: char) -> MmResult<i64> {
+    fn query_axis_steps(&self, axis: char) -> MmResult<i64> {
+        self.clear_port()?;
         let resp = self.cmd(&format!("P{}", axis))?;
         if resp.starts_with('E') && resp.len() > 2 {
             return Err(MmError::LocallyDefined(format!(
@@ -89,7 +95,9 @@ impl PriorLegacyXYStage {
                 resp
             )));
         }
-        Ok(resp.trim().parse().unwrap_or(0))
+        resp.trim().parse().map_err(|_| {
+            MmError::LocallyDefined(format!("Prior H128 bad {} position: {}", axis, resp))
+        })
     }
 }
 
@@ -108,13 +116,13 @@ impl Device for PriorLegacyXYStage {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
+        if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
         let x_steps = self.query_axis_steps('X')?;
         let y_steps = self.query_axis_steps('Y')?;
-        self.x_um = x_steps as f64 * STEP_SIZE_UM;
-        self.y_um = y_steps as f64 * STEP_SIZE_UM;
+        self.x_um.set(x_steps as f64 * STEP_SIZE_UM);
+        self.y_um.set(y_steps as f64 * STEP_SIZE_UM);
         self.initialized = true;
         Ok(())
     }
@@ -153,13 +161,17 @@ impl XYStage for PriorLegacyXYStage {
         let ys = (y / STEP_SIZE_UM).round() as i64;
         let resp = self.cmd(&format!("G,{},{}", xs, ys))?;
         Self::check_ack(&resp)?;
-        self.x_um = x;
-        self.y_um = y;
+        self.x_um.set(x);
+        self.y_um.set(y);
         Ok(())
     }
 
     fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
-        Ok((self.x_um, self.y_um))
+        let x = self.query_axis_steps('X')? as f64 * STEP_SIZE_UM;
+        let y = self.query_axis_steps('Y')? as f64 * STEP_SIZE_UM;
+        self.x_um.set(x);
+        self.y_um.set(y);
+        Ok((x, y))
     }
 
     fn set_relative_xy_position_um(&mut self, _dx: f64, _dy: f64) -> MmResult<()> {
@@ -199,8 +211,8 @@ impl XYStage for PriorLegacyXYStage {
                 resp
             )));
         }
-        self.x_um = 0.0;
-        self.y_um = 0.0;
+        self.x_um.set(0.0);
+        self.y_um.set(0.0);
         Ok(())
     }
 }
@@ -218,7 +230,10 @@ mod tests {
 
     #[test]
     fn initialize() {
-        let mut s = PriorLegacyXYStage::new().with_transport(Box::new(make_transport()));
+        let t = make_transport()
+            .expect("PX\r", "1000")
+            .expect("PY\r", "2000");
+        let mut s = PriorLegacyXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         let (x, y) = s.get_xy_position_um().unwrap();
         assert!((x - 100.0).abs() < 1e-9);
@@ -227,7 +242,10 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = make_transport().any("R");
+        let t = make_transport()
+            .any("R")
+            .expect("PX\r", "3000")
+            .expect("PY\r", "4000");
         let mut s = PriorLegacyXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_xy_position_um(300.0, 400.0).unwrap();
@@ -243,8 +261,18 @@ mod tests {
     }
 
     #[test]
+    fn malformed_position_response_fails_initialize() {
+        let t = MockTransport::new().any("not-a-number");
+        let mut s = PriorLegacyXYStage::new().with_transport(Box::new(t));
+        assert!(s.initialize().is_err());
+    }
+
+    #[test]
     fn set_origin() {
-        let t = make_transport().any("0");
+        let t = make_transport()
+            .any("0")
+            .expect("PX\r", "0")
+            .expect("PY\r", "0");
         let mut s = PriorLegacyXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_origin().unwrap();
@@ -262,5 +290,19 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(PriorLegacyXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn get_position_queries_live_px_py_each_time() {
+        let t = MockTransport::new()
+            .expect("PX\r", "1000")
+            .expect("PY\r", "2000")
+            .expect("PX\r", "1500")
+            .expect("PY\r", "2500");
+        let mut s = PriorLegacyXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        let (x, y) = s.get_xy_position_um().unwrap();
+        assert!((x - 150.0).abs() < 1e-9);
+        assert!((y - 250.0).abs() < 1e-9);
     }
 }

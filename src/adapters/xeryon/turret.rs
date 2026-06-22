@@ -62,6 +62,12 @@ impl SquidPlusObjectiveTurret {
             .unwrap();
 
         let labels = vec!["Pos-1".to_string(), "Pos-2".to_string()];
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Label", PropertyValue::String(labels[0].clone()), false)
+            .unwrap();
 
         Self {
             props,
@@ -201,7 +207,7 @@ impl Device for SquidPlusObjectiveTurret {
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.axis_send("STOP", 1);
+            let _ = self.axis_send("STOP", 0);
             self.initialized = false;
         }
         Ok(())
@@ -387,5 +393,14 @@ mod tests {
     #[test]
     fn encoder_resolution_parsing_accepts_validated_3n_command() {
         assert!((SquidPlusObjectiveTurret::resolution_from_cmd("XLS3=1251") - 1250.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn state_and_label_are_advertised_properties() {
+        let dev = SquidPlusObjectiveTurret::new();
+        assert!(dev.has_property("State"));
+        assert!(dev.has_property("Label"));
+        assert!(dev.property_names().contains(&"State".to_string()));
+        assert!(dev.property_names().contains(&"Label".to_string()));
     }
 }

@@ -38,16 +38,16 @@ impl Psj30DV50Stage {
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
         props
-            .define_property("MinVoltage", PropertyValue::Float(-20.0), false)
+            .define_property("Voltage min", PropertyValue::Float(-20.0), true)
             .unwrap();
         props
-            .define_property("MaxVoltage", PropertyValue::Float(130.0), false)
+            .define_property("Voltage max", PropertyValue::Float(130.0), true)
             .unwrap();
         props
-            .define_property("MinPosition_um", PropertyValue::Float(0.0), false)
+            .define_property("um min", PropertyValue::Float(0.0), true)
             .unwrap();
         props
-            .define_property("MaxPosition_um", PropertyValue::Float(80.0), false)
+            .define_property("um max", PropertyValue::Float(80.0), true)
             .unwrap();
         Self {
             props,
@@ -116,10 +116,10 @@ impl Default for Psj30DV50Stage {
 
 impl Device for Psj30DV50Stage {
     fn name(&self) -> &str {
-        "PSJ-30DV50-Stage"
+        "PSJStage"
     }
     fn description(&self) -> &str {
-        "Piezosystem Jena 30DV50 piezo Z stage"
+        "Piezosystem stage driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -163,6 +163,9 @@ impl Device for Psj30DV50Stage {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
         self.props.set(name, val)
     }
 
@@ -208,7 +211,7 @@ impl Stage for Psj30DV50Stage {
     }
 
     fn home(&mut self) -> MmResult<()> {
-        self.set_position_um(0.0)
+        Err(MmError::UnsupportedCommand)
     }
 
     fn stop(&mut self) -> MmResult<()> {
@@ -278,5 +281,44 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(Psj30DV50Stage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn upstream_name_description_and_limit_properties() {
+        let stage = Psj30DV50Stage::new();
+        assert_eq!(stage.name(), "PSJStage");
+        assert_eq!(stage.description(), "Piezosystem stage driver adapter");
+        assert!(stage.has_property("Voltage min"));
+        assert!(stage.has_property("Voltage max"));
+        assert!(stage.has_property("um min"));
+        assert!(stage.has_property("um max"));
+        assert!(stage.is_property_read_only("Voltage min"));
+        assert!(stage.is_property_read_only("Voltage max"));
+        assert!(stage.is_property_read_only("um min"));
+        assert!(stage.is_property_read_only("um max"));
+        assert!(!stage.has_property("MinVoltage"));
+    }
+
+    #[test]
+    fn home_is_unsupported_like_upstream_origin() {
+        let mut stage = Psj30DV50Stage::new().with_transport(Box::new(make_transport()));
+        stage.initialize().unwrap();
+        let pos = stage.get_position_um().unwrap();
+        assert_eq!(stage.home(), Err(MmError::UnsupportedCommand));
+        assert!((stage.get_position_um().unwrap() - pos).abs() < 1e-9);
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected() {
+        let mut stage = Psj30DV50Stage::new().with_transport(Box::new(make_transport()));
+        stage.initialize().unwrap();
+        assert_eq!(
+            stage.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::CanNotSetProperty)
+        );
+        assert_eq!(
+            stage.get_property("Port").unwrap(),
+            PropertyValue::String("Undefined".into())
+        );
     }
 }

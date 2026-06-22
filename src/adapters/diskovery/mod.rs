@@ -21,20 +21,14 @@
 ///   `A:MOTOR_RUNNING_SD,<n>\r`→ set motor running state
 ///
 /// Devices (all StateDevice):
-///   DiskoverySD       — spinning disk position (4 presets)
+///   DiskoverySD       — spinning disk position (5 presets)
 ///   DiskoveryWF       — wide-field illumination size (4 presets)
 ///   DiskoveryFilterW  — filter wheel W (4 presets)
 ///   DiskoveryFilterT  — filter turret T (4 presets)
 ///   DiskoveryIris     — objective selector / iris (4 presets)
 ///   DiskoveryMotor    — spinning disk motor running (2 states)
-
 pub mod state_device;
 
 pub use state_device::{
-    DiskoverySD,
-    DiskoveryWF,
-    DiskoveryFilterW,
-    DiskoveryFilterT,
-    DiskoveryIris,
-    DiskoveryMotor,
+    DiskoveryFilterT, DiskoveryFilterW, DiskoveryIris, DiskoveryMotor, DiskoverySD, DiskoveryWF,
 };

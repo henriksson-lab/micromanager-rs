@@ -21,6 +21,7 @@ pub const DEVICE_NAME_HUB: &str = "ZeissScope";
 pub const DEVICE_NAME_SHUTTER: &str = "ZeissShutter";
 pub const DEVICE_NAME_SHUTTER_MF: &str = "ZeissShutterMFFirmware";
 pub const DEVICE_NAME_FOCUS: &str = "Focus";
+pub const DEVICE_NAME_Z_STAGE: &str = "ZStage";
 pub const DEVICE_NAME_XY: &str = "ZeissXYStage";
 pub const DEVICE_NAME_REFLECTOR: &str = "ZeissReflectorTurret";
 pub const DEVICE_NAME_OBJECTIVES: &str = "ZeissObjectives";
@@ -33,7 +34,7 @@ pub const DEVICE_NAME_TUBELENS: &str = "ZeissTubelens";
 pub const DEVICE_NAME_BASE_PORT: &str = "ZeissBasePortSlider";
 pub const DEVICE_NAME_SIDE_PORT: &str = "ZeissSidePortTurret";
 pub const DEVICE_NAME_LAMP_MIRROR: &str = "ZeissExcitationLampSwitcher";
-pub const DEVICE_NAME_HALOGEN: &str = "ZeissHalogenLamp";
+pub const DEVICE_NAME_HALOGEN_LAMP: &str = "ZeissHalogenLamp";
 
 pub type SharedZeissTransport = Arc<Mutex<Box<dyn Transport>>>;
 
@@ -198,7 +199,8 @@ impl ZeissHub {
         }
 
         if !stand_unreachable {
-            devices.push(DEVICE_NAME_HALOGEN.to_string());
+            devices.push(DEVICE_NAME_HALOGEN_LAMP.to_string());
+
             if let Ok(answer) = self.query_body("HPCk1,0", "PH") {
                 if answer != "0" {
                     devices.push(DEVICE_NAME_SHUTTER.to_string());
@@ -263,7 +265,7 @@ impl Device for ZeissHub {
         DEVICE_NAME_HUB
     }
     fn description(&self) -> &str {
-        "Zeiss CAN-bus hub"
+        "Zeiss microscope CAN bus adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -446,5 +448,6 @@ mod tests {
         assert!(devices.contains(&DEVICE_NAME_SHUTTER.to_string()));
         assert!(devices.contains(&DEVICE_NAME_FOCUS.to_string()));
         assert!(devices.contains(&DEVICE_NAME_XY.to_string()));
+        assert!(devices.contains(&DEVICE_NAME_HALOGEN_LAMP.to_string()));
     }
 }

@@ -11,14 +11,15 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::{Cell, RefCell};
 
 pub struct LudlShutter {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
     device: u8,
     shutter: u8,
-    is_open: bool,
+    is_open: Cell<bool>,
 }
 
 impl LudlShutter {
@@ -27,6 +28,10 @@ impl LudlShutter {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
+        props
+            .define_property("State", PropertyValue::Integer(0), false)
+            .unwrap();
+        props.set_allowed_values("State", &["0", "1"]).unwrap();
         props
             .define_property(
                 "LudlDeviceNumberShutter",
@@ -47,26 +52,26 @@ impl LudlShutter {
             initialized: false,
             device,
             shutter,
-            is_open: false,
+            is_open: Cell::new(false),
         }
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
             let r = t.send_recv(&c)?;
@@ -85,6 +90,36 @@ impl LudlShutter {
 
     fn status_mask(&self) -> u32 {
         2 << self.shutter
+    }
+
+    fn query_open(&self) -> MmResult<bool> {
+        self.call_transport(|t| t.purge())?;
+        let r = self.cmd(&format!("RDSTAT S{} ", self.device))?;
+        let body = Self::check_a(&r)?;
+        let mask: u32 = body
+            .trim()
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        let open = (mask & self.status_mask()) != 0;
+        self.is_open.set(open);
+        Ok(open)
+    }
+
+    fn poll_module_busy(&self) -> bool {
+        self.call_transport(|t| {
+            if t.purge().is_err() || t.send("STATUS S\r").is_err() {
+                return Ok(false);
+            }
+            Ok(match t.receive_line() {
+                Ok(resp) => match resp.trim().as_bytes().first().copied() {
+                    Some(b'N') => false,
+                    Some(b'B') => true,
+                    _ => true,
+                },
+                Err(_) => true,
+            })
+        })
+        .unwrap_or(false)
     }
 }
 
@@ -106,10 +141,9 @@ impl Device for LudlShutter {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        let r = self.cmd(&format!("RDSTAT S{} ", self.device))?;
-        let body = Self::check_a(&r)?;
-        let mask: u32 = body.trim().parse().unwrap_or(0);
-        self.is_open = (mask & self.status_mask()) != 0;
+        let open = self.query_open()?;
+        self.props
+            .set("State", PropertyValue::Integer(if open { 1 } else { 0 }))?;
         self.initialized = true;
         Ok(())
     }
@@ -120,10 +154,23 @@ impl Device for LudlShutter {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "State" => Ok(PropertyValue::Integer(if self.get_open()? { 1 } else { 0 })),
+            _ => self.props.get(name).cloned(),
+        }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "State" => {
+                let state = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if state == 0 {
+                    return self.set_open(false);
+                } else if state == 1 {
+                    return self.set_open(true);
+                } else {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+            }
             "LudlDeviceNumberShutter" => {
                 if self.initialized {
                     return Err(MmError::InvalidPropertyValue);
@@ -158,7 +205,7 @@ impl Device for LudlShutter {
         DeviceType::Shutter
     }
     fn busy(&self) -> bool {
-        false
+        self.poll_module_busy()
     }
 }
 
@@ -171,11 +218,17 @@ impl Shutter for LudlShutter {
         };
         let r = self.cmd(&cmd)?;
         Self::check_a(&r)?;
-        self.is_open = open;
+        self.is_open.set(open);
+        self.props
+            .set("State", PropertyValue::Integer(if open { 1 } else { 0 }))?;
         Ok(())
     }
     fn get_open(&self) -> MmResult<bool> {
-        Ok(self.is_open)
+        if self.initialized && self.transport.is_some() {
+            self.query_open()
+        } else {
+            Ok(self.is_open.get())
+        }
     }
     fn fire(&mut self, _dt: f64) -> MmResult<()> {
         Err(MmError::UnsupportedCommand)
@@ -189,7 +242,9 @@ mod tests {
 
     #[test]
     fn initialize_closed() {
-        let t = MockTransport::new().expect("RDSTAT S1 \r", ":A 0");
+        let t = MockTransport::new()
+            .expect("RDSTAT S1 \r", ":A 0")
+            .expect("RDSTAT S1 \r", ":A 0");
         let mut s = LudlShutter::new(1, 1).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!(!s.get_open().unwrap());
@@ -197,15 +252,24 @@ mod tests {
 
     #[test]
     fn initialize_open() {
-        let t = MockTransport::new().expect("RDSTAT S1 \r", ":A 4");
+        let t = MockTransport::new()
+            .expect("RDSTAT S1 \r", ":A 4")
+            .expect("RDSTAT S1 \r", ":A 4")
+            .expect("RDSTAT S1 \r", ":A 4");
         let mut s = LudlShutter::new(1, 1).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!(s.get_open().unwrap());
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(1));
     }
 
     #[test]
     fn open_close() {
-        let t = MockTransport::new().any(":A 0").any(":A").any(":A");
+        let t = MockTransport::new()
+            .expect("RDSTAT S1 \r", ":A 0")
+            .expect("OPEN S1 1\r", ":A")
+            .expect("RDSTAT S1 \r", ":A 4")
+            .expect("CLOSE S1 1\r", ":A")
+            .expect("RDSTAT S1 \r", ":A 0");
         let mut s = LudlShutter::new(1, 1).with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
@@ -223,6 +287,7 @@ mod tests {
     fn upstream_property_names_shutdown_and_fire() {
         let t = MockTransport::new().expect("RDSTAT S1 \r", ":A 0");
         let mut s = LudlShutter::new(1, 1).with_transport(Box::new(t));
+        assert!(s.has_property("State"));
         assert!(s.has_property("LudlDeviceNumberShutter"));
         assert!(s.has_property("LudlShutterNumber"));
         assert!(!s.has_property("DeviceAddress"));
@@ -231,5 +296,19 @@ mod tests {
         s.initialize().unwrap();
         s.shutdown().unwrap();
         assert_eq!(s.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn busy_polls_module_status_like_upstream() {
+        let t = MockTransport::new()
+            .expect("RDSTAT S1 \r", ":A 0")
+            .expect("STATUS S\r", "B")
+            .expect("STATUS S\r", "N")
+            .expect("STATUS S\r", "?");
+        let mut s = LudlShutter::new(1, 1).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
+        assert!(!s.busy());
+        assert!(s.busy());
     }
 }

@@ -1,3 +1,4 @@
+pub mod dichroic;
 /// Yokogawa CSU-X1 spinning disk confocal adapter.
 ///
 /// NOTE: The Yokogawa CSU-W1 is already implemented as mm-adapter-csuw1.
@@ -26,11 +27,9 @@
 ///   CsuXFilterWheel (StateDevice) — filter wheel (two wheels available, wheel 1 or 2)
 ///   CsuXDichroic    (StateDevice) — dichroic mirror
 ///   CsuXShutter     (Shutter)     — main shutter
-
 pub mod filter_wheel;
-pub mod dichroic;
 pub mod shutter;
 
-pub use filter_wheel::CsuXFilterWheel;
 pub use dichroic::CsuXDichroic;
+pub use filter_wheel::CsuXFilterWheel;
 pub use shutter::CsuXShutter;

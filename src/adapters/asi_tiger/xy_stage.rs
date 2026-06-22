@@ -111,6 +111,8 @@ impl AsiTigerXYStage {
                 "ASI Tiger error: {}",
                 resp
             )))
+        } else if !resp.starts_with(":A") {
+            Err(MmError::SerialInvalidResponse)
         } else {
             Ok(resp)
         }
@@ -213,9 +215,14 @@ impl Device for AsiTigerXYStage {
         DeviceType::XYStage
     }
     fn busy(&self) -> bool {
-        self.cmd_ok("RS X Y")
-            .map(|resp| resp.contains('B'))
-            .unwrap_or(false)
+        match self.cmd_ok("RS X?") {
+            Ok(resp) if resp.contains('B') => true,
+            Ok(_) => self
+                .cmd_ok("RS Y?")
+                .map(|resp| resp.contains('B'))
+                .unwrap_or(false),
+            Err(_) => false,
+        }
     }
 }
 
@@ -423,5 +430,34 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(AsiTigerXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn rejects_non_ack_response() {
+        let t = MockTransport::new().expect("0 V\r", "garbled");
+        let mut s = AsiTigerXYStage::new().with_transport(Box::new(t));
+        assert!(matches!(
+            s.initialize(),
+            Err(MmError::SerialInvalidResponse)
+        ));
+    }
+
+    #[test]
+    fn busy_uses_per_axis_status_queries() {
+        let idle = MockTransport::new()
+            .expect("RS X?\r", ":A N")
+            .expect("RS Y?\r", ":A N");
+        let s = AsiTigerXYStage::new().with_transport(Box::new(idle));
+        assert!(!s.busy());
+
+        let x_busy = MockTransport::new().expect("RS X?\r", ":A B");
+        let s = AsiTigerXYStage::new().with_transport(Box::new(x_busy));
+        assert!(s.busy());
+
+        let y_busy = MockTransport::new()
+            .expect("RS X?\r", ":A N")
+            .expect("RS Y?\r", ":A B");
+        let s = AsiTigerXYStage::new().with_transport(Box::new(y_busy));
+        assert!(s.busy());
     }
 }

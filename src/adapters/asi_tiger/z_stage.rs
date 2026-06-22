@@ -173,7 +173,7 @@ impl Device for AsiTigerZStage {
         DeviceType::Stage
     }
     fn busy(&self) -> bool {
-        self.cmd_ok("RS Z")
+        self.cmd_ok("RS Z?")
             .map(|resp| resp.contains('B'))
             .unwrap_or(false)
     }
@@ -303,5 +303,16 @@ mod tests {
         s.home().unwrap();
         s.stop().unwrap();
         assert_eq!(s.get_limits().unwrap(), (-250.0, 1500.0));
+    }
+
+    #[test]
+    fn busy_uses_axis_status_query() {
+        let idle = MockTransport::new().expect("RS Z?\r", ":A N");
+        let s = AsiTigerZStage::new().with_transport(Box::new(idle));
+        assert!(!s.busy());
+
+        let busy = MockTransport::new().expect("RS Z?\r", ":A B");
+        let s = AsiTigerZStage::new().with_transport(Box::new(busy));
+        assert!(s.busy());
     }
 }

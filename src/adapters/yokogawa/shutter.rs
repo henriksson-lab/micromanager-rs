@@ -68,16 +68,23 @@ impl CsuXShutter {
     }
 
     fn query_open(&self) -> MmResult<bool> {
-        let resp = self.cmd("SH, ?")?;
-        if resp.trim_start().starts_with('N') {
-            return Err(MmError::LocallyDefined(format!(
-                "CSU-X shutter NAK: {}",
-                resp
-            )));
-        }
-        let open = resp.contains("OPEN");
+        let _resp = self.cmd("SH, ?")?;
+        // Upstream CSUXHub::GetShutterPosition reads the answer but then
+        // unconditionally assigns the open state.
+        let open = true;
         self.open.set(open);
         Ok(open)
+    }
+
+    fn check_ack(resp: &str) -> MmResult<()> {
+        match resp.trim_end().chars().last() {
+            Some('A') => Ok(()),
+            Some('N') => Err(MmError::LocallyDefined(format!(
+                "CSU-X shutter NAK: {}",
+                resp
+            ))),
+            _ => Err(MmError::SerialInvalidResponse),
+        }
     }
 }
 
@@ -167,12 +174,7 @@ impl Shutter for CsuXShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         let cmd = if open { "SHO" } else { "SHC" };
         let resp = self.cmd(cmd)?;
-        if resp.trim_start().starts_with('N') {
-            return Err(MmError::LocallyDefined(format!(
-                "CSU-X shutter NAK: {}",
-                resp
-            )));
-        }
+        Self::check_ack(&resp)?;
         self.open.set(open);
         self.changed_time.set(Instant::now());
         self.props.set(
@@ -201,13 +203,13 @@ mod tests {
     use crate::transport::MockTransport;
 
     #[test]
-    fn initialize_closed() {
+    fn initialize_query_matches_upstream_open_fallthrough() {
         let t = MockTransport::new()
             .expect("SH, ?\r", "CLOSED\rA")
             .expect("SH, ?\r", "CLOSED\rA");
         let mut s = CsuXShutter::new().with_transport(Box::new(t));
         s.initialize().unwrap();
-        assert!(!s.get_open().unwrap());
+        assert!(s.get_open().unwrap());
     }
 
     #[test]
@@ -223,7 +225,7 @@ mod tests {
         s.set_open(true).unwrap();
         assert!(s.get_open().unwrap());
         s.set_open(false).unwrap();
-        assert!(!s.get_open().unwrap());
+        assert!(s.get_open().unwrap());
     }
 
     #[test]
@@ -288,5 +290,16 @@ mod tests {
             s.set_property("Port", PropertyValue::String("COM2".into())),
             Err(MmError::InvalidPropertyValue)
         );
+    }
+
+    #[test]
+    fn set_open_requires_ack_like_upstream_hub() {
+        let t = MockTransport::new()
+            .expect("SH, ?\r", "CLOSED\rA")
+            .expect("SHO\r", "OK");
+        let mut s = CsuXShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.set_open(true), Err(MmError::SerialInvalidResponse));
+        assert!(s.open.get());
     }
 }

@@ -28,7 +28,6 @@ pub struct XLightV3StateDevice {
     num_positions: u64,
     labels: Vec<String>,
     gate_open: bool,
-    busy: bool,
 }
 
 impl XLightV3StateDevice {
@@ -77,7 +76,6 @@ impl XLightV3StateDevice {
             num_positions,
             labels,
             gate_open: true,
-            busy: false,
         }
     }
 
@@ -101,12 +99,10 @@ impl XLightV3StateDevice {
         let mut last_timeout = None;
         for _ in 0..MAX_COMMAND_ATTEMPTS {
             self.call_transport(|t| t.purge())?;
-            self.busy = true;
             let attempt = self.call_transport(|t| {
                 t.send(&full)?;
                 Ok(t.receive_line()?.trim().to_string())
             });
-            self.busy = false;
             match attempt {
                 Ok(response) => return Ok(response),
                 Err(MmError::SerialTimeout) => last_timeout = Some(MmError::SerialTimeout),
@@ -182,26 +178,35 @@ impl Device for XLightV3StateDevice {
         let num_cmd = format!("r{}N", self.prefix);
         let num_resp = self.cmd(&num_cmd)?;
         let expected_prefix = format!("r{}N", self.prefix);
-        if let Some(n) = Self::parse_after_prefix(&num_resp, &expected_prefix) {
-            if n > 0 {
-                self.num_positions = n as u64;
-                self.rebuild_labels();
-            }
+        let n = Self::parse_after_prefix(&num_resp, &expected_prefix)
+            .ok_or(MmError::SerialInvalidResponse)?;
+        if n < 0 {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        if n > 0 {
+            self.num_positions = n as u64;
+            self.rebuild_labels();
         }
 
         // Query current position
         let pos_cmd = format!("r{}", self.prefix);
         let pos_resp = self.cmd(&pos_cmd)?;
         let expected_prefix2 = format!("r{}", self.prefix);
-        if let Some(wire_pos) = Self::parse_after_prefix(&pos_resp, &expected_prefix2) {
-            self.position = if self.one_based {
-                (wire_pos as u64).saturating_sub(1)
-            } else {
-                wire_pos as u64
-            };
-            if let Some(entry) = self.props.entry_mut("State") {
-                entry.value = PropertyValue::Integer(self.position as i64);
+        let wire_pos = Self::parse_after_prefix(&pos_resp, &expected_prefix2)
+            .ok_or(MmError::SerialInvalidResponse)?;
+        if wire_pos < 0 {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        self.position = if self.one_based {
+            if wire_pos == 0 {
+                return Err(MmError::SerialInvalidResponse);
             }
+            wire_pos as u64 - 1
+        } else {
+            wire_pos as u64
+        };
+        if let Some(entry) = self.props.entry_mut("State") {
+            entry.value = PropertyValue::Integer(self.position as i64);
         }
 
         self.initialized = true;
@@ -256,7 +261,7 @@ impl Device for XLightV3StateDevice {
         DeviceType::State
     }
     fn busy(&self) -> bool {
-        self.busy
+        false
     }
 }
 
@@ -855,7 +860,9 @@ mod tests {
             .expect("B5\r", "B5"); // MM pos 4 → wire 5
         let mut d = XLightV3EmissionWheel::new().with_transport(Box::new(t));
         d.initialize().unwrap();
+        assert!(!d.busy());
         d.set_position(4).unwrap();
+        assert!(!d.busy());
         assert_eq!(d.get_position().unwrap(), 4);
     }
 
@@ -908,6 +915,31 @@ mod tests {
         d.initialize().unwrap();
         assert!(d.set_position(4).is_err());
         assert_eq!(d.get_position().unwrap(), 0);
+    }
+
+    #[test]
+    fn initialize_rejects_wrong_query_echo() {
+        let t = MockTransport::new().expect("rBN\r", "rCN8");
+        let mut d = XLightV3EmissionWheel::new().with_transport(Box::new(t));
+        assert_eq!(d.initialize(), Err(MmError::SerialInvalidResponse));
+    }
+
+    #[test]
+    fn initialize_rejects_negative_position_response() {
+        let t = MockTransport::new()
+            .expect("rBN\r", "rBN8")
+            .expect("rB\r", "rB-1");
+        let mut d = XLightV3EmissionWheel::new().with_transport(Box::new(t));
+        assert_eq!(d.initialize(), Err(MmError::SerialInvalidResponse));
+    }
+
+    #[test]
+    fn initialize_rejects_zero_position_response_for_one_based_wheel() {
+        let t = MockTransport::new()
+            .expect("rBN\r", "rBN8")
+            .expect("rB\r", "rB0");
+        let mut d = XLightV3EmissionWheel::new().with_transport(Box::new(t));
+        assert_eq!(d.initialize(), Err(MmError::SerialInvalidResponse));
     }
 
     #[test]

@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 pub struct PriorShutter {
     props: PropertyMap,
     transport: RefCell<Option<Box<dyn Transport>>>,
+    name: String,
     initialized: bool,
     id: u8,
     is_open: bool,
@@ -26,23 +27,18 @@ pub struct PriorShutter {
 
 impl PriorShutter {
     pub fn new(id: u8) -> Self {
+        Self::with_name(format!("Shutter-{}", id), id)
+    }
+
+    pub fn with_name(name: impl Into<String>, id: u8) -> Self {
         let mut props = PropertyMap::new();
         props
             .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
-        props
-            .define_property("ShutterId", PropertyValue::Integer(id as i64), false)
-            .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props.set_allowed_values("State", &["0", "1"]).unwrap();
-        props
-            .define_property("Delay", PropertyValue::Float(0.0), false)
-            .unwrap();
         Self {
             props,
             transport: RefCell::new(None),
+            name: name.into(),
             initialized: false,
             id,
             is_open: false,
@@ -85,6 +81,17 @@ impl PriorShutter {
     fn delay_duration(&self) -> Duration {
         Duration::from_secs_f64(self.delay_ms.max(0.0) / 1000.0)
     }
+
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)?;
+            self.props.set_allowed_values("State", &["0", "1"])?;
+            self.props
+                .define_property("Delay", PropertyValue::Float(self.delay_ms), false)?;
+        }
+        Ok(())
+    }
 }
 
 impl Default for PriorShutter {
@@ -95,10 +102,10 @@ impl Default for PriorShutter {
 
 impl Device for PriorShutter {
     fn name(&self) -> &str {
-        "PriorShutter"
+        &self.name
     }
     fn description(&self) -> &str {
-        "Prior Scientific ProScan shutter"
+        "Prior shutter adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -107,6 +114,7 @@ impl Device for PriorShutter {
         }
         self.clear_port()?;
         self.cmd("COMP 0")?;
+        self.ensure_runtime_properties()?;
         // Query initial state
         let r = self.cmd(&format!("8,{}", self.id))?;
         self.is_open = r.trim() == "0";
@@ -124,19 +132,21 @@ impl Device for PriorShutter {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(if self.get_open()? { 1 } else { 0 })),
-            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
+            "State" if self.props.has_property("State") => {
+                Ok(PropertyValue::Integer(if self.get_open()? { 1 } else { 0 }))
+            }
+            "Delay" if self.props.has_property("Delay") => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
-            "State" => {
+            "State" if self.props.has_property("State") => {
                 let open = val.as_i64().ok_or(MmError::InvalidPropertyValue)? != 0;
                 self.set_open(open)
             }
-            "Delay" => {
+            "Delay" if self.props.has_property("Delay") => {
                 self.delay_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 self.props.set(name, PropertyValue::Float(self.delay_ms))
             }
@@ -181,7 +191,16 @@ impl Shutter for PriorShutter {
     fn get_open(&self) -> MmResult<bool> {
         self.clear_port()?;
         let r = self.cmd(&format!("8,{}", self.id))?;
-        Ok(r.trim() == "0")
+        if r.starts_with('E') && r.len() > 2 {
+            return Err(MmError::LocallyDefined(format!(
+                "Prior shutter error: {}",
+                r
+            )));
+        }
+        if r.is_empty() {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        Ok(r.starts_with('0'))
     }
     fn fire(&mut self, _dt: f64) -> MmResult<()> {
         Err(MmError::UnsupportedCommand)
@@ -239,9 +258,9 @@ mod tests {
             .expect("8,1\r", "1")
             .expect("8,1,0\r", "R");
         let mut s = PriorShutter::new(1).with_transport(Box::new(t));
+        s.initialize().unwrap();
         s.set_property("Delay", PropertyValue::Float(1000.0))
             .unwrap();
-        s.initialize().unwrap();
         s.set_open(true).unwrap();
         assert!(s.busy());
     }
@@ -250,6 +269,54 @@ mod tests {
     fn fire_unsupported() {
         let mut s = PriorShutter::new(1);
         assert_eq!(s.fire(1.0).unwrap_err(), MmError::UnsupportedCommand);
+    }
+
+    #[test]
+    fn upstream_identity_and_property_surface() {
+        let mut s = PriorShutter::new(2);
+        assert_eq!(s.name(), "Shutter-2");
+        assert_eq!(s.description(), "Prior shutter adapter");
+        assert!(s.has_property("Port"));
+        assert!(!s.has_property("State"));
+        assert!(!s.has_property("Delay"));
+        assert!(!s.has_property("ShutterId"));
+        assert!(s.get_property("State").is_err());
+        assert!(s.set_property("Delay", PropertyValue::Float(1.0)).is_err());
+    }
+
+    #[test]
+    fn initialize_creates_runtime_properties_like_upstream() {
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .expect("8,1\r", "1");
+        let mut s = PriorShutter::new(1).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.has_property("State"));
+        assert!(s.has_property("Delay"));
+        let entry = s.props.entry("State").unwrap();
+        assert_eq!(entry.allowed_values, vec!["0", "1"]);
+    }
+
+    #[test]
+    fn get_open_rejects_empty_query_response_like_upstream() {
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .expect("8,1\r", "1")
+            .expect("8,1\r", "");
+        let mut s = PriorShutter::new(1).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.get_open(), Err(MmError::SerialInvalidResponse));
+    }
+
+    #[test]
+    fn get_open_rejects_controller_error_query_response_like_upstream() {
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .expect("8,1\r", "1")
+            .expect("8,1\r", "E,5");
+        let mut s = PriorShutter::new(1).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(matches!(s.get_open(), Err(MmError::LocallyDefined(_))));
     }
 
     #[test]

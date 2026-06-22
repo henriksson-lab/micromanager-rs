@@ -86,10 +86,10 @@ impl Default for OfShutter {
 
 impl Device for OfShutter {
     fn name(&self) -> &str {
-        "OFShutter"
+        "LED illumination"
     }
     fn description(&self) -> &str {
-        "OpenFlexure LED shutter"
+        "LED Illumination"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -97,7 +97,6 @@ impl Device for OfShutter {
             return Err(MmError::CommHubMissing);
         }
         self.initialized = true;
-        self.sync_state()?;
         Ok(())
     }
 
@@ -174,6 +173,14 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn identity_matches_upstream_led_illumination() {
+        let s = OfShutter::new();
+
+        assert_eq!(s.name(), "LED illumination");
+        assert_eq!(s.description(), "LED Illumination");
+    }
+
+    #[test]
     fn open_close_uses_led_cc() {
         let commander: Commander = Arc::new(|cmd| match cmd {
             "led_cc?" => Ok("CC LED:0.00".to_string()),
@@ -203,9 +210,8 @@ mod tests {
     }
 
     #[test]
-    fn initialize_syncs_existing_led_state() {
+    fn initialize_keeps_default_led_cache_without_query() {
         let commander: Commander = Arc::new(|cmd| match cmd {
-            "led_cc?" => Ok("CC LED:0.35".to_string()),
             other => Err(MmError::LocallyDefined(format!(
                 "unexpected command {other}"
             ))),
@@ -214,11 +220,11 @@ mod tests {
 
         s.initialize().unwrap();
 
-        assert!(s.get_open().unwrap());
-        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(1));
+        assert!(!s.get_open().unwrap());
+        assert_eq!(s.get_property("State").unwrap(), PropertyValue::Integer(0));
         assert_eq!(
             s.get_property("LED Brightness").unwrap(),
-            PropertyValue::Float(0.35)
+            PropertyValue::Float(1.0)
         );
     }
 

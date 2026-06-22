@@ -81,16 +81,21 @@ impl SquidPlusFilterWheel {
     }
 
     fn send_and_wait(&mut self, pkt: &[u8]) -> MmResult<()> {
+        let expected_id = pkt.first().copied().ok_or(MmError::SerialInvalidResponse)?;
         let t = self.transport.as_mut().ok_or(MmError::NotConnected)?;
         t.send_bytes(pkt)?;
         let resp = t.receive_bytes(protocol::MSG_LENGTH)?;
         match protocol::parse_response(&resp) {
+            Some((id, _)) if id != expected_id => Err(MmError::SerialInvalidResponse),
             Some((_id, status)) if status == protocol::STATUS_COMPLETED => Ok(()),
             Some((_id, status)) if status == protocol::STATUS_IN_PROGRESS => {
                 // Poll until completed
                 loop {
                     let resp = t.receive_bytes(protocol::MSG_LENGTH)?;
                     match protocol::parse_response(&resp) {
+                        Some((id, _)) if id != expected_id => {
+                            return Err(MmError::SerialInvalidResponse);
+                        }
                         Some((_id, s)) if s == protocol::STATUS_COMPLETED => return Ok(()),
                         Some(_) => continue,
                         None => return Err(MmError::SerialInvalidResponse),
@@ -354,6 +359,15 @@ mod tests {
         assert_eq!(SquidPlusFilterWheel::delta_to_usteps(1), 1600);
         assert_eq!(SquidPlusFilterWheel::delta_to_usteps(-1), -1600);
         assert_eq!(SquidPlusFilterWheel::delta_to_usteps(4), 6400);
+    }
+
+    #[test]
+    fn rejects_mismatched_ack_id() {
+        let t = MockTransport::new().expect_binary(&ok_response(2));
+        let mut dev = SquidPlusFilterWheel::new().with_transport(Box::new(t));
+
+        assert_eq!(dev.initialize(), Err(MmError::SerialInvalidResponse));
+        assert!(!dev.initialized);
     }
 
     #[test]

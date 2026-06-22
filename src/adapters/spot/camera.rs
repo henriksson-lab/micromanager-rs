@@ -238,7 +238,7 @@ impl Device for SpotCamera {
         "SpotCamera"
     }
     fn description(&self) -> &str {
-        "Diagnostic Instruments Spot camera (SpotCam SDK)"
+        "Spot Cameras"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -510,17 +510,26 @@ impl Camera for SpotCamera {
         self.img_height
     }
     fn get_image_bytes_per_pixel(&self) -> u32 {
-        if self.bit_depth > 8 {
-            2
-        } else {
-            1
+        match self.bit_depth {
+            0..=8 => 1,
+            9..=16 => 2,
+            17..=24 => 4,
+            _ => self.bit_depth.div_ceil(8),
         }
     }
     fn get_bit_depth(&self) -> u32 {
-        self.bit_depth
+        if self.bit_depth > 16 {
+            self.bit_depth / 3
+        } else {
+            self.bit_depth
+        }
     }
     fn get_number_of_components(&self) -> u32 {
-        1
+        if self.bit_depth >= 24 {
+            4
+        } else {
+            1
+        }
     }
     fn get_number_of_channels(&self) -> u32 {
         1
@@ -529,14 +538,13 @@ impl Camera for SpotCamera {
         self.exposure_ms
     }
 
-    fn set_exposure(&mut self, exp_ms: f64) {
+    fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()> {
         self.exposure_ms = exp_ms;
-        self.props
-            .set("Exposure", PropertyValue::Float(exp_ms))
-            .ok();
+        self.props.set("Exposure", PropertyValue::Float(exp_ms))?;
         if !self.ctx.is_null() {
             unsafe { ffi::spot_set_exposure_ms(self.ctx, exp_ms) };
         }
+        Ok(())
     }
 
     fn get_binning(&self) -> i32 {
@@ -727,8 +735,20 @@ mod tests {
         let mut d = SpotCamera::new();
         d.bit_depth = 16;
         assert_eq!(d.get_image_bytes_per_pixel(), 2);
+        assert_eq!(d.get_number_of_components(), 1);
+        assert_eq!(d.get_bit_depth(), 16);
         d.bit_depth = 8;
         assert_eq!(d.get_image_bytes_per_pixel(), 1);
+        assert_eq!(d.get_number_of_components(), 1);
+        assert_eq!(d.get_bit_depth(), 8);
+        d.bit_depth = 24;
+        assert_eq!(d.get_image_bytes_per_pixel(), 4);
+        assert_eq!(d.get_number_of_components(), 4);
+        assert_eq!(d.get_bit_depth(), 8);
+        d.bit_depth = 48;
+        assert_eq!(d.get_image_bytes_per_pixel(), 6);
+        assert_eq!(d.get_number_of_components(), 4);
+        assert_eq!(d.get_bit_depth(), 16);
     }
 
     #[test]
@@ -828,7 +848,9 @@ mod tests {
 
         d.set_property("BitDepth", PropertyValue::Integer(24))
             .unwrap();
-        assert_eq!(d.get_bit_depth(), 24);
+        assert_eq!(d.get_bit_depth(), 8);
+        assert_eq!(d.get_image_bytes_per_pixel(), 4);
+        assert_eq!(d.get_number_of_components(), 4);
         assert!(d
             .set_property("BitDepth", PropertyValue::Integer(32))
             .is_err());

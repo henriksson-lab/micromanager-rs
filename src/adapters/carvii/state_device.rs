@@ -116,6 +116,10 @@ impl CarviiStateDevice {
             t.purge()?;
             Ok(t.send_recv(&full)?.trim().to_string())
         })?;
+        let bytes = resp.as_bytes();
+        if bytes.first() != Some(&b'r') || bytes.get(1) != Some(&(self.cmd_char as u8)) {
+            return Err(MmError::SerialInvalidResponse);
+        }
         let digit = resp
             .as_bytes()
             .get(2)
@@ -126,11 +130,16 @@ impl CarviiStateDevice {
         }
         let wire = (digit - b'0') as u64;
         let pos = if uses_one_based_wire(self.cmd_char) {
-            wire.saturating_sub(1)
+            if wire == 0 || wire > self.num_positions {
+                return Err(MmError::SerialInvalidResponse);
+            }
+            wire - 1
         } else {
+            if wire >= self.num_positions {
+                return Err(MmError::SerialInvalidResponse);
+            }
             wire
         };
-        let pos = pos.min(self.num_positions.saturating_sub(1));
         self.position.set(pos);
         Ok(pos)
     }
@@ -477,5 +486,32 @@ mod tests {
             d.get_property("Label").unwrap(),
             PropertyValue::String("Out".into())
         );
+    }
+
+    #[test]
+    fn live_state_rejects_wrong_echo() {
+        let t = crate::transport::MockTransport::new().expect("rA\r", "rB3");
+        let mut d = CarviiStateDevice::new('A', 8).with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(d.get_position(), Err(MmError::SerialInvalidResponse));
+        assert_eq!(d.position.get(), 0);
+    }
+
+    #[test]
+    fn live_state_rejects_invalid_one_based_wire_position() {
+        let t = crate::transport::MockTransport::new().expect("rA\r", "rA0");
+        let mut d = CarviiStateDevice::new('A', 8).with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(d.get_position(), Err(MmError::SerialInvalidResponse));
+        assert_eq!(d.position.get(), 0);
+    }
+
+    #[test]
+    fn live_state_rejects_out_of_range_zero_based_wire_position() {
+        let t = crate::transport::MockTransport::new().expect("rD\r", "rD2");
+        let mut d = CarviiStateDevice::new('D', 2).with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert_eq!(d.get_position(), Err(MmError::SerialInvalidResponse));
+        assert_eq!(d.position.get(), 1);
     }
 }

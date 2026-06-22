@@ -14,8 +14,10 @@
 ///   [0x41, 0x72, 0x00, 0x00, 0xB4, 0x27] (hard-coded in C++ source)
 ///   Response: 6 bytes; bytes [1..2] encode current value
 ///
-/// Initialisation calls the upstream `Send("Start")` path, but that send helper
-/// is commented out in the C++ source and performs no serial write.
+/// Initialisation creates `Current-mA` and calls the upstream `Send("Start")`
+/// path, but that send helper is commented out in the C++ source and performs
+/// no serial write.  The upstream `initialized_` flag is never set by the ETL
+/// initialize path, so initialized Port writes are still accepted.
 ///
 /// Current range: -293 mA to +293 mA.
 use crate::error::{MmError, MmResult};
@@ -86,7 +88,14 @@ impl EtlDevice {
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
         props
-            .define_property("Current-mA", PropertyValue::Float(0.0), false)
+            .define_property("Name", PropertyValue::String("ETL".into()), true)
+            .unwrap();
+        props
+            .define_property(
+                "Description",
+                PropertyValue::String("Optotune Electric Tunable Lens".into()),
+                true,
+            )
             .unwrap();
         props
             .define_property("MaxI_mA", PropertyValue::Float(293.0), false)
@@ -109,6 +118,22 @@ impl EtlDevice {
         self
     }
 
+    fn define_initialized_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("Current-mA") {
+            self.props.define_property(
+                "Current-mA",
+                PropertyValue::Float(self.current_ma),
+                false,
+            )?;
+            self.props.set_property_limits(
+                "Current-mA",
+                self.min_current_ma,
+                self.max_current_ma,
+            )?;
+        }
+        Ok(())
+    }
+
     fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
@@ -121,10 +146,14 @@ impl EtlDevice {
 
     /// Set the lens current in mA.
     pub fn set_current(&mut self, current_ma: f64) -> MmResult<()> {
-        let clamped = current_ma.max(self.min_current_ma).min(self.max_current_ma);
-        let cmd = build_set_current_cmd(clamped);
+        if current_ma < self.min_current_ma || current_ma > self.max_current_ma {
+            return Err(MmError::InvalidPropertyValue);
+        }
+        let cmd = build_set_current_cmd(current_ma);
+        self.call_transport(|t| t.purge())?;
         self.call_transport(|t| t.send_bytes(&cmd))?;
-        self.current_ma = clamped;
+        self.call_transport(|t| t.purge())?;
+        self.current_ma = current_ma;
         Ok(())
     }
 
@@ -132,10 +161,11 @@ impl EtlDevice {
     /// Sends the hard-coded get-current command and parses the 6-byte response.
     pub fn get_current(&mut self) -> MmResult<f64> {
         let get_cmd: [u8; 6] = [0x41, 0x72, 0x00, 0x00, 0xB4, 0x27];
+        self.call_transport(|t| t.purge())?;
         self.call_transport(|t| t.send_bytes(&get_cmd))?;
         let resp = self.call_transport(|t| t.receive_bytes(6))?;
-        if resp.len() < 3 {
-            return Ok(self.current_ma);
+        if resp.len() != 6 {
+            return Err(MmError::SerialInvalidResponse);
         }
         // Decode as per C++ empirical formula:
         //   i1 = signed(resp[1]), i2 = unsigned(resp[2])
@@ -143,6 +173,7 @@ impl EtlDevice {
         let i1 = resp[1] as i8 as i32;
         let i2 = resp[2] as i32;
         let current = (i1 * 255 + i2) as f64 * 293.0 / 4096.0;
+        self.call_transport(|t| t.purge())?;
         self.current_ma = current;
         Ok(current)
     }
@@ -167,10 +198,7 @@ impl Device for EtlDevice {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
-        if self.transport.is_none() {
-            return Err(MmError::NotConnected);
-        }
-        self.initialized = true;
+        self.define_initialized_properties()?;
         Ok(())
     }
 
@@ -182,6 +210,9 @@ impl Device for EtlDevice {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if !self.props.has_property(name) {
+            return self.props.get(name).cloned();
+        }
         match name {
             "Current-mA" => Ok(PropertyValue::Float(self.current_ma)),
             "MaxI_mA" => Ok(PropertyValue::Float(self.max_current_ma)),
@@ -190,6 +221,9 @@ impl Device for EtlDevice {
         }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if !self.props.has_property(name) {
+            return self.props.set(name, val);
+        }
         match name {
             "Current-mA" => {
                 let current = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
@@ -242,8 +276,20 @@ mod tests {
 
     #[test]
     fn initialize_succeeds() {
+        let d = EtlDevice::new();
+        assert_eq!(d.get_property("Name").unwrap().as_str(), "ETL");
+        assert_eq!(
+            d.get_property("Description").unwrap().as_str(),
+            "Optotune Electric Tunable Lens"
+        );
+        assert!(!d.has_property("Current-mA"));
+        assert_eq!(
+            d.get_property("Current-mA"),
+            Err(MmError::UnknownLabel("Current-mA".into()))
+        );
         let d = make_initialized();
-        assert!(d.initialized);
+        assert!(!d.initialized);
+        assert!(d.has_property("Current-mA"));
         assert_eq!(d.current(), 0.0);
     }
 
@@ -301,14 +347,33 @@ mod tests {
     }
 
     #[test]
-    fn current_clamped_to_range() {
+    fn current_out_of_range_is_rejected_without_cache_update() {
         let mut d = make_initialized();
         d.transport = Some(Box::new(MockTransport::new()));
-        d.set_current(999.0).unwrap();
-        assert_eq!(d.current(), 293.0);
+        d.current_ma = 12.0;
+        assert_eq!(d.set_current(999.0), Err(MmError::InvalidPropertyValue));
+        assert_eq!(d.current(), 12.0);
         d.transport = Some(Box::new(MockTransport::new()));
-        d.set_current(-999.0).unwrap();
-        assert_eq!(d.current(), -293.0);
+        assert_eq!(d.set_current(-999.0), Err(MmError::InvalidPropertyValue));
+        assert_eq!(d.current(), 12.0);
+    }
+
+    #[test]
+    fn initialize_does_not_require_transport_like_upstream() {
+        let mut d = EtlDevice::new();
+        d.initialize().unwrap();
+        assert!(d.has_property("Current-mA"));
+    }
+
+    #[test]
+    fn initialized_port_is_still_writable_like_upstream() {
+        let mut d = make_initialized();
+        d.set_property("Port", PropertyValue::String("COM2".into()))
+            .unwrap();
+        assert_eq!(
+            d.get_property("Port").unwrap(),
+            PropertyValue::String("COM2".into())
+        );
     }
 
     #[test]
@@ -324,7 +389,23 @@ mod tests {
     }
 
     #[test]
-    fn no_transport_error() {
-        assert!(EtlDevice::new().initialize().is_err());
+    fn get_current_rejects_short_response_instead_of_reusing_cache() {
+        let mut d = make_initialized();
+        d.current_ma = 12.0;
+        d.transport = Some(Box::new(
+            MockTransport::new().expect_binary(&[0x41, 0x00, 0x00]),
+        ));
+        assert_eq!(d.get_current(), Err(MmError::SerialInvalidResponse));
+        assert_eq!(d.current(), 12.0);
+    }
+
+    #[test]
+    fn current_set_without_transport_errors() {
+        let mut d = EtlDevice::new();
+        d.initialize().unwrap();
+        assert_eq!(
+            d.set_property("Current-mA", PropertyValue::Float(1.0)),
+            Err(MmError::NotConnected)
+        );
     }
 }

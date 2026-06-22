@@ -1,7 +1,6 @@
-/// Raw `extern "C"` bindings to the TWAIN shim (`src/shim.c`).
-
 #![allow(dead_code)]
 
+/// Raw `extern "C"` bindings to the TWAIN shim (`src/shim.c`).
 use std::ffi::c_char;
 use std::os::raw::c_int;
 

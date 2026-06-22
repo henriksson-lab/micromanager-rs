@@ -31,20 +31,6 @@ impl TriggerScopeTTL {
         props
             .define_property("Channel", PropertyValue::Integer(channel as i64), true)
             .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props
-            .define_property("Label", PropertyValue::String(String::new()), false)
-            .unwrap();
-        if channel == 0 {
-            props
-                .define_property("Sequence", PropertyValue::String("On".into()), false)
-                .unwrap();
-            props
-                .set_allowed_values("Sequence", &["On", "Off"])
-                .unwrap();
-        }
         Self {
             props,
             transport: None,
@@ -109,6 +95,28 @@ impl TriggerScopeTTL {
         Ok(())
     }
 
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        if self.channel == 0 && !self.props.has_property("Sequence") {
+            self.props
+                .define_property("Sequence", PropertyValue::String("On".into()), false)?;
+            self.props.set_allowed_values("Sequence", &["On", "Off"])?;
+        }
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)?;
+            self.props.set_property_limits(
+                "State",
+                0.0,
+                if self.channel == 0 { 16.0 } else { 1.0 },
+            )?;
+        }
+        if !self.props.has_property("Label") {
+            self.props
+                .define_property("Label", PropertyValue::String(String::new()), false)?;
+        }
+        Ok(())
+    }
+
     pub fn clear_sequence(&mut self) -> MmResult<()> {
         self.sequence.clear();
         Ok(())
@@ -148,9 +156,13 @@ impl Device for TriggerScopeTTL {
     }
 
     fn initialize(&mut self) -> MmResult<()> {
+        if self.initialized {
+            return Ok(());
+        }
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
+        self.ensure_runtime_properties()?;
         self.initialized = true;
         Ok(())
     }
@@ -162,11 +174,13 @@ impl Device for TriggerScopeTTL {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(self.position as i64)),
-            "Label" => self
+            "State" if self.props.has_property("State") => {
+                Ok(PropertyValue::Integer(self.position as i64))
+            }
+            "Label" if self.props.has_property("Label") => self
                 .get_position_label(self.position)
                 .map(PropertyValue::String),
-            "Sequence" => Ok(PropertyValue::String(
+            "Sequence" if self.props.has_property("Sequence") => Ok(PropertyValue::String(
                 if self.sequence_on { "On" } else { "Off" }.into(),
             )),
             _ => self.props.get(name).cloned(),
@@ -175,11 +189,11 @@ impl Device for TriggerScopeTTL {
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "State" => {
+            "State" if self.props.has_property("State") => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 self.set_position(v as u64)
             }
-            "Sequence" => {
+            "Sequence" if self.props.has_property("Sequence") => {
                 let s = val.to_string();
                 match s.as_str() {
                     "On" => self.sequence_on = true,
@@ -302,7 +316,11 @@ mod tests {
     fn ttl_initialize_low() {
         let t = MockTransport::new();
         let mut ttl = TriggerScopeTTL::new(1).with_transport(Box::new(t));
+        assert!(!ttl.has_property("State"));
+        assert!(!ttl.has_property("Label"));
         ttl.initialize().unwrap();
+        assert!(ttl.has_property("State"));
+        assert!(ttl.has_property("Label"));
         assert_eq!(ttl.get_position().unwrap(), 0);
     }
 

@@ -1,4 +1,4 @@
-pub mod wheel;
 pub mod shutter;
-pub use wheel::LambdaWheel;
+pub mod wheel;
 pub use shutter::LambdaShutter;
+pub use wheel::LambdaWheel;

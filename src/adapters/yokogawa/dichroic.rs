@@ -32,13 +32,6 @@ impl CsuXDichroic {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props.set_allowed_values("State", &["0", "1", "2"]).unwrap();
-        props
-            .define_property("Label", PropertyValue::String("Dichroic-1".into()), false)
-            .unwrap();
         Self {
             props,
             transport: None,
@@ -48,6 +41,22 @@ impl CsuXDichroic {
             labels,
             gate_open: true,
         }
+    }
+
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)?;
+            self.props.set_allowed_values("State", &["0", "1", "2"])?;
+        }
+        if !self.props.has_property("Label") {
+            self.props.define_property(
+                "Label",
+                PropertyValue::String("Undefined".into()),
+                false,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -71,7 +80,7 @@ impl CsuXDichroic {
     }
 
     fn parse_position_response(&self, resp: &str) -> MmResult<u64> {
-        let wire_pos = resp
+        let wire_pos: u64 = resp
             .split(|c: char| c.is_whitespace() || c == '\r' || c == '\n')
             .filter(|s| !s.is_empty())
             .next()
@@ -142,6 +151,7 @@ impl Device for CsuXDichroic {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
+        self.ensure_runtime_properties()?;
         self.query_position()?;
         self.initialized = true;
         Ok(())
@@ -154,8 +164,10 @@ impl Device for CsuXDichroic {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(self.get_position()? as i64)),
-            "Label" => Ok(PropertyValue::String(
+            "State" if self.props.has_property("State") => {
+                Ok(PropertyValue::Integer(self.get_position()? as i64))
+            }
+            "Label" if self.props.has_property("Label") => Ok(PropertyValue::String(
                 self.labels
                     .get(self.get_position()? as usize)
                     .cloned()
@@ -167,7 +179,7 @@ impl Device for CsuXDichroic {
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "State" => {
+            "State" if self.props.has_property("State") => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if pos < 0 {
                     return Err(MmError::InvalidPropertyValue);
@@ -175,7 +187,7 @@ impl Device for CsuXDichroic {
                 let pos = pos as u64;
                 self.set_position(pos)
             }
-            "Label" => {
+            "Label" if self.props.has_property("Label") => {
                 let label = val.as_str().to_string();
                 self.set_position_by_label(&label)
             }
@@ -209,17 +221,21 @@ impl StateDevice for CsuXDichroic {
             self.set_position_wire_with_retry(pos + 1)?;
         }
         self.position.set(pos);
-        self.props
-            .set("State", PropertyValue::Integer(pos as i64))?;
-        self.props.set(
-            "Label",
-            PropertyValue::String(
-                self.labels
-                    .get(self.position.get() as usize)
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-        )?;
+        if self.props.has_property("State") {
+            self.props
+                .set("State", PropertyValue::Integer(pos as i64))?;
+        }
+        if self.props.has_property("Label") {
+            self.props.set(
+                "Label",
+                PropertyValue::String(
+                    self.labels
+                        .get(self.position.get() as usize)
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+            )?;
+        }
         Ok(())
     }
 
@@ -255,7 +271,7 @@ impl StateDevice for CsuXDichroic {
             return Err(MmError::UnknownPosition);
         }
         self.labels[pos as usize] = label.to_string();
-        if pos == self.position.get() {
+        if pos == self.position.get() && self.props.has_property("Label") {
             self.props
                 .set("Label", PropertyValue::String(label.to_string()))?;
         }
@@ -309,12 +325,21 @@ mod tests {
     #[test]
     fn labels_and_position_count_match_csux() {
         let d = CsuXDichroic::new();
-        assert!(d.has_property("State"));
-        assert!(d.has_property("Label"));
         assert_eq!(d.get_number_of_positions(), 3);
         assert_eq!(d.get_position_label(0).unwrap(), "Dichroic-1");
         assert_eq!(d.get_position_label(2).unwrap(), "Dichroic-3");
         assert!(d.get_position_label(3).is_err());
+    }
+
+    #[test]
+    fn state_and_label_are_initialize_properties_like_upstream() {
+        let t = MockTransport::new().expect("DM_POS, ?\r", "1\rA");
+        let mut d = CsuXDichroic::new().with_transport(Box::new(t));
+        assert!(!d.has_property("State"));
+        assert!(!d.has_property("Label"));
+        d.initialize().unwrap();
+        assert!(d.has_property("State"));
+        assert!(d.has_property("Label"));
     }
 
     #[test]

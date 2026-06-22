@@ -99,29 +99,22 @@ impl Device for ChrolisShutter {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        // Query current shutter state
-        self.call_transport(|t| {
+        let open = self.call_transport(|t| {
             t.send_bytes(&[0x11])?;
             let resp = t.receive_bytes(2)?;
             if resp.first().copied() == Some(0x11) {
-                Ok(())
+                Ok(resp.get(1).copied().unwrap_or(0) != 0)
             } else {
                 Err(MmError::SerialInvalidResponse)
             }
         })?;
-        // Close shutter at init
-        self.set_shutter_state(false)?;
-        self.is_open = false;
+        self.is_open = open;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.set_shutter_state(false);
-            self.is_open = false;
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
@@ -232,6 +225,9 @@ impl ChrolisLed {
 
     /// Set all LED enable states via bitmask.
     pub fn set_enable_states(&mut self, mask: u8) -> MmResult<()> {
+        if mask >= (1 << NUM_LEDS) {
+            return Err(MmError::InvalidInputParam);
+        }
         self.call_transport(|t| {
             t.send_bytes(&[0x20, mask])?;
             let ack = t.receive_bytes(1)?;
@@ -252,14 +248,21 @@ impl ChrolisLed {
         if led >= NUM_LEDS {
             return Err(MmError::InvalidInputParam);
         }
-        self.enabled[led] = enable;
-        let mask = self.encode_enables();
+        let mut mask = self.encode_enables();
+        if enable {
+            mask |= 1 << led;
+        } else {
+            mask &= !(1 << led);
+        }
         self.set_enable_states(mask)
     }
 
     /// Set a single LED's brightness (0–1000).
     pub fn set_brightness(&mut self, led: usize, value: u16) -> MmResult<()> {
         if led >= NUM_LEDS {
+            return Err(MmError::InvalidInputParam);
+        }
+        if value > 1000 {
             return Err(MmError::InvalidInputParam);
         }
         let hi = (value >> 8) as u8;
@@ -301,22 +304,22 @@ impl Device for ChrolisLed {
             t.send_bytes(&[0x21])?;
             let resp = t.receive_bytes(2)?;
             if resp.first().copied() == Some(0x21) {
-                Ok(())
+                Ok(resp.get(1).copied().unwrap_or(0))
             } else {
                 Err(MmError::SerialInvalidResponse)
             }
+        })
+        .map(|mask| {
+            for i in 0..NUM_LEDS {
+                self.enabled[i] = (mask & (1 << i)) != 0;
+            }
         })?;
-        // Disable all LEDs at init
-        self.set_enable_states(0x00)?;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
-        if self.initialized {
-            let _ = self.set_enable_states(0x00);
-            self.initialized = false;
-        }
+        self.initialized = false;
         Ok(())
     }
 
@@ -349,10 +352,7 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_shutter() -> ChrolisShutter {
-        // init: query state [0x11] → [0x11, 0], then close [0x10, 0x00] → [0x10]
-        let t = MockTransport::new()
-            .expect_binary(&[0x11, 0x00]) // get state response
-            .expect_binary(&[0x10]);       // close ack
+        let t = MockTransport::new().expect_binary(&[0x11, 0x00]);
         let mut s = ChrolisShutter::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s
@@ -363,6 +363,14 @@ mod tests {
         let s = make_shutter();
         assert!(s.initialized);
         assert!(!s.get_open().unwrap());
+    }
+
+    #[test]
+    fn shutter_initialize_preserves_open_state() {
+        let t = MockTransport::new().expect_binary(&[0x11, 0x01]);
+        let mut s = ChrolisShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.get_open().unwrap());
     }
 
     #[test]
@@ -391,10 +399,8 @@ mod tests {
     }
 
     fn make_led() -> ChrolisLed {
-        // init: get enables [0x21] → [0x21, 0xFF], then disable all [0x20, 0x00] → [0x20]
-        let t = MockTransport::new()
-            .expect_binary(&[0x21, 0xFF])
-            .expect_binary(&[0x20]);
+        // init: get enables [0x21] → [0x21, 0x3F]
+        let t = MockTransport::new().expect_binary(&[0x21, 0x3F]);
         let mut s = ChrolisLed::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s
@@ -404,17 +410,17 @@ mod tests {
     fn led_initialize() {
         let s = make_led();
         assert!(s.initialized);
-        assert_eq!(s.encode_enables(), 0x00);
+        assert_eq!(s.encode_enables(), 0x3F);
     }
 
     #[test]
     fn led_enable_single() {
         let mut s = make_led();
-        // enable LED 0: mask = 0x01 → ack 0x20
+        // keep LED 0 enabled while preserving other initialized states
         s.transport = Some(Box::new(MockTransport::new().expect_binary(&[0x20])));
         s.set_led_enable(0, true).unwrap();
         assert!(s.enabled[0]);
-        assert_eq!(s.encode_enables(), 0x01);
+        assert_eq!(s.encode_enables(), 0x3F);
     }
 
     #[test]
@@ -442,5 +448,29 @@ mod tests {
         let mut s = make_led();
         s.transport = Some(Box::new(MockTransport::new()));
         assert!(s.set_led_enable(NUM_LEDS, true).is_err());
+    }
+
+    #[test]
+    fn led_enable_single_keeps_cached_state_on_failed_write() {
+        let mut s = make_led();
+        s.transport = Some(Box::new(MockTransport::new().expect_binary(&[0xFF])));
+        assert!(s.set_led_enable(0, false).is_err());
+        assert_eq!(s.encode_enables(), 0x3F);
+    }
+
+    #[test]
+    fn led_rejects_invalid_state_mask() {
+        let mut s = make_led();
+        s.transport = Some(Box::new(MockTransport::new()));
+        assert!(s.set_enable_states(1 << NUM_LEDS).is_err());
+        assert_eq!(s.encode_enables(), 0x3F);
+    }
+
+    #[test]
+    fn led_rejects_brightness_above_upstream_limit() {
+        let mut s = make_led();
+        s.transport = Some(Box::new(MockTransport::new()));
+        assert!(s.set_brightness(1, 1001).is_err());
+        assert_eq!(s.brightness[1], 0);
     }
 }

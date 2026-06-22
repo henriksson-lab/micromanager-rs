@@ -94,16 +94,25 @@ impl LeicaDMRTurret {
         let pos_1based: u64 = val_str
             .parse()
             .map_err(|_| MmError::SerialInvalidResponse)?;
-        Ok(pos_1based.saturating_sub(1))
+        if pos_1based == 0 || pos_1based > self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
+        Ok(pos_1based - 1)
     }
 }
 
 impl Device for LeicaDMRTurret {
     fn name(&self) -> &str {
-        "LeicaDMRTurret"
+        match self.device_id {
+            20 => "Objective Nosepiece",
+            _ => "Reflected Light Module",
+        }
     }
     fn description(&self) -> &str {
-        "Leica DMR filter turret or objective nosepiece"
+        match self.device_id {
+            20 => "LeicaDMR Objective Nosepiece",
+            _ => "LeicaDMR RLModule",
+        }
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -252,11 +261,29 @@ mod tests {
     }
 
     #[test]
+    fn dmr_turret_identity_matches_upstream_devices() {
+        let rl = LeicaDMRTurret::new(67, 4);
+        assert_eq!(rl.name(), "Reflected Light Module");
+        assert_eq!(rl.description(), "LeicaDMR RLModule");
+
+        let objective = LeicaDMRTurret::new(20, 6);
+        assert_eq!(objective.name(), "Objective Nosepiece");
+        assert_eq!(objective.description(), "LeicaDMR Objective Nosepiece");
+    }
+
+    #[test]
     fn out_of_range_rejected() {
         let t = MockTransport::new().expect("67010\r", "670101");
         let mut turret = LeicaDMRTurret::new(67, 4).with_transport(Box::new(t));
         turret.initialize().unwrap();
         assert!(turret.set_position(4).is_err());
+    }
+
+    #[test]
+    fn zero_wire_position_is_rejected_on_initialize() {
+        let t = MockTransport::new().expect("67010\r", "670100");
+        let mut turret = LeicaDMRTurret::new(67, 4).with_transport(Box::new(t));
+        assert_eq!(turret.initialize(), Err(MmError::UnknownPosition));
     }
 
     #[test]

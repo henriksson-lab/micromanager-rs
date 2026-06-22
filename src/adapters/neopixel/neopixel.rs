@@ -21,6 +21,11 @@ pub struct NeoPixelShutter {
     transport: Option<Box<dyn Transport>>,
     initialized: bool,
     is_open: bool,
+    version: i64,
+    color: String,
+    active_state: String,
+    num_rows: u8,
+    num_columns: u8,
 }
 
 impl NeoPixelShutter {
@@ -29,11 +34,19 @@ impl NeoPixelShutter {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
+        props
+            .define_property("Version", PropertyValue::Integer(0), true)
+            .unwrap();
         Self {
             props,
             transport: None,
             initialized: false,
             is_open: false,
+            version: 0,
+            color: "Blue".into(),
+            active_state: "None".into(),
+            num_rows: 1,
+            num_columns: 1,
         }
     }
 
@@ -50,6 +63,54 @@ impl NeoPixelShutter {
             Some(t) => f(t.as_mut()),
             None => Err(MmError::NotConnected),
         }
+    }
+
+    fn receive_one_byte(&mut self, command: u8) -> MmResult<u8> {
+        let bytes = self.call_transport(|t| {
+            t.send_bytes(&[command])?;
+            t.receive_bytes(1)
+        })?;
+        bytes.first().copied().ok_or(MmError::SerialInvalidResponse)
+    }
+
+    fn send_ack_command(&mut self, command: &[u8]) -> MmResult<()> {
+        let expected = command[0];
+        self.call_transport(|t| {
+            t.send_bytes(command)?;
+            let ack = t.receive_bytes(1)?;
+            if ack.first().copied() == Some(expected) {
+                Ok(())
+            } else {
+                Err(MmError::SerialInvalidResponse)
+            }
+        })
+    }
+
+    fn define_initialized_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("NeoPixelColor") {
+            self.props.define_property(
+                "NeoPixelColor",
+                PropertyValue::String(self.color.clone()),
+                false,
+            )?;
+            self.props
+                .set_allowed_values("NeoPixelColor", &["Red", "Green", "Blue"])?;
+        }
+        if !self.props.has_property("AllPixelsActive") {
+            self.props.define_property(
+                "AllPixelsActive",
+                PropertyValue::String(self.active_state.clone()),
+                false,
+            )?;
+            self.props
+                .set_allowed_values("AllPixelsActive", &["All", "None", "Some"])?;
+        }
+        if !self.props.has_property("OnOff") {
+            self.props
+                .define_property("OnOff", PropertyValue::String("Off".into()), false)?;
+            self.props.set_allowed_values("OnOff", &["On", "Off"])?;
+        }
+        Ok(())
     }
 }
 
@@ -79,16 +140,24 @@ impl Device for NeoPixelShutter {
         if name.trim() != "MM-NeoPixel" {
             return Err(MmError::NotConnected);
         }
-        // Close shutter on init; device echoes back 0x02
-        self.call_transport(|t| {
-            t.send_bytes(&[0x02])?;
-            let ack = t.receive_bytes(1)?;
-            if ack.first().copied() == Some(0x02) {
-                Ok(())
-            } else {
-                Err(MmError::SerialInvalidResponse)
-            }
+        let version = self.call_transport(|t| {
+            t.send_bytes(&[0x1F])?;
+            t.receive_line()
         })?;
+        let version = version
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        if version != 1 {
+            return Err(MmError::NotConnected);
+        }
+        self.version = version;
+        self.props
+            .entry_mut("Version")
+            .map(|e| e.value = PropertyValue::Integer(version));
+        self.num_rows = self.receive_one_byte(0x20)?;
+        self.num_columns = self.receive_one_byte(0x21)?;
+        self.define_initialized_properties()?;
         self.is_open = false;
         self.initialized = true;
         Ok(())
@@ -102,10 +171,46 @@ impl Device for NeoPixelShutter {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "OnOff" => Ok(PropertyValue::String(
+                if self.is_open { "On" } else { "Off" }.into(),
+            )),
+            "NeoPixelColor" => Ok(PropertyValue::String(self.color.clone())),
+            "AllPixelsActive" => Ok(PropertyValue::String(self.active_state.clone())),
+            _ => self.props.get(name).cloned(),
+        }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "OnOff" => match val.as_str() {
+                "On" => self.set_open(true),
+                "Off" => self.set_open(false),
+                _ => Err(MmError::InvalidPropertyValue),
+            },
+            "NeoPixelColor" => {
+                let color = val.as_str();
+                let mut command = [0x07, 0, 0, 0];
+                match color {
+                    "Red" => command[1] = 255,
+                    "Green" => command[2] = 255,
+                    "Blue" => command[3] = 255,
+                    _ => return Err(MmError::InvalidPropertyValue),
+                }
+                self.color = color.to_string();
+                self.send_ack_command(&command)
+            }
+            "AllPixelsActive" => {
+                let state = val.as_str();
+                let command = match state {
+                    "All" => 0x03,
+                    "None" => 0x04,
+                    "Some" => return Ok(()),
+                    _ => return Err(MmError::InvalidPropertyValue),
+                };
+                self.send_ack_command(&[command])
+            }
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -127,15 +232,7 @@ impl Device for NeoPixelShutter {
 impl Shutter for NeoPixelShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         let cmd = if open { 0x01u8 } else { 0x02u8 };
-        self.call_transport(|t| {
-            t.send_bytes(&[cmd])?;
-            let ack = t.receive_bytes(1)?;
-            if ack.first().copied() == Some(cmd) {
-                Ok(())
-            } else {
-                Err(MmError::SerialInvalidResponse)
-            }
-        })?;
+        self.send_ack_command(&[cmd])?;
         self.is_open = open;
         Ok(())
     }
@@ -155,21 +252,40 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_initialized_shutter() -> NeoPixelShutter {
-        // init sequence: send 0x1E → receive_line "MM-NeoPixel"
-        //                send 0x02 → receive_bytes [0x02]
+        // init sequence: send 0x1E -> name, send 0x1F -> firmware API version.
         let t = MockTransport::new()
-            .any("MM-NeoPixel") // receive_line response for firmware name
-            .expect_binary(&[0x02]); // receive_bytes ack for close
+            .any("MM-NeoPixel")
+            .any("1")
+            .expect_binary(&[2])
+            .expect_binary(&[3]);
         let mut s = NeoPixelShutter::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s
     }
 
     #[test]
-    fn initialize_and_close() {
+    fn initialize_does_not_send_close() {
         let s = make_initialized_shutter();
         assert!(s.initialized);
         assert!(!s.get_open().unwrap());
+        assert_eq!(
+            s.get_property("Version").unwrap(),
+            PropertyValue::Integer(1)
+        );
+        assert_eq!(s.num_rows, 2);
+        assert_eq!(s.num_columns, 3);
+        assert_eq!(
+            s.get_property("NeoPixelColor").unwrap(),
+            PropertyValue::String("Blue".into())
+        );
+        assert_eq!(
+            s.get_property("AllPixelsActive").unwrap(),
+            PropertyValue::String("None".into())
+        );
+        assert_eq!(
+            s.get_property("OnOff").unwrap(),
+            PropertyValue::String("Off".into())
+        );
     }
 
     #[test]
@@ -204,9 +320,68 @@ mod tests {
 
     #[test]
     fn wrong_firmware_name_error() {
-        let t = MockTransport::new().any("WRONG-DEVICE");
+        let t = MockTransport::new().any("WRONG-DEVICE").any("1");
         let mut s = NeoPixelShutter::new().with_transport(Box::new(t));
         assert!(s.initialize().is_err());
+    }
+
+    #[test]
+    fn wrong_firmware_version_error() {
+        let t = MockTransport::new().any("MM-NeoPixel").any("2");
+        let mut s = NeoPixelShutter::new().with_transport(Box::new(t));
+        assert!(s.initialize().is_err());
+        assert!(!s.initialized);
+    }
+
+    #[test]
+    fn missing_dimensions_error() {
+        let t = MockTransport::new().any("MM-NeoPixel").any("1");
+        let mut s = NeoPixelShutter::new().with_transport(Box::new(t));
+        assert_eq!(s.initialize(), Err(MmError::SerialTimeout));
+        assert!(!s.initialized);
+    }
+
+    #[test]
+    fn color_property_sends_upstream_rgb_command() {
+        let mut s = make_initialized_shutter();
+        s.transport = Some(Box::new(MockTransport::new().expect_binary(&[0x07])));
+        s.set_property("NeoPixelColor", PropertyValue::String("Red".into()))
+            .unwrap();
+        assert_eq!(
+            s.get_property("NeoPixelColor").unwrap(),
+            PropertyValue::String("Red".into())
+        );
+    }
+
+    #[test]
+    fn onoff_property_routes_to_shutter_command() {
+        let mut s = make_initialized_shutter();
+        s.transport = Some(Box::new(MockTransport::new().expect_binary(&[0x01])));
+        s.set_property("OnOff", PropertyValue::String("On".into()))
+            .unwrap();
+        assert!(s.get_open().unwrap());
+        assert_eq!(
+            s.get_property("OnOff").unwrap(),
+            PropertyValue::String("On".into())
+        );
+    }
+
+    #[test]
+    fn all_pixels_active_sends_all_and_none_commands() {
+        let mut s = make_initialized_shutter();
+        s.transport = Some(Box::new(
+            MockTransport::new()
+                .expect_binary(&[0x03])
+                .expect_binary(&[0x04]),
+        ));
+        s.set_property("AllPixelsActive", PropertyValue::String("All".into()))
+            .unwrap();
+        s.set_property("AllPixelsActive", PropertyValue::String("None".into()))
+            .unwrap();
+        assert_eq!(
+            s.get_property("AllPixelsActive").unwrap(),
+            PropertyValue::String("None".into())
+        );
     }
 
     #[test]

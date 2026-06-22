@@ -40,7 +40,7 @@ pub trait Camera: Device {
     fn get_number_of_channels(&self) -> u32;
 
     fn get_exposure(&self) -> f64;
-    fn set_exposure(&mut self, exp_ms: f64);
+    fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()>;
 
     fn get_binning(&self) -> i32;
     fn set_binning(&mut self, bin: i32) -> MmResult<()>;
@@ -131,7 +131,13 @@ pub trait AutoFocus: Device {
 
 /// Image processor mirroring `MM::ImageProcessor`.
 pub trait ImageProcessor: Device {
-    fn process(&mut self, buffer: &mut [u8], width: u32, height: u32, byte_depth: u32) -> MmResult<()>;
+    fn process(
+        &mut self,
+        buffer: &mut [u8],
+        width: u32,
+        height: u32,
+        byte_depth: u32,
+    ) -> MmResult<()>;
 }
 
 // ─── SignalIO (DAC/ADC) ───────────────────────────────────────────────────────
@@ -283,43 +289,83 @@ impl AnyDevice {
     }
 
     pub fn as_camera(&self) -> Option<&dyn Camera> {
-        if let AnyDevice::Camera(d) = self { Some(d.as_ref()) } else { None }
+        if let AnyDevice::Camera(d) = self {
+            Some(d.as_ref())
+        } else {
+            None
+        }
     }
 
     pub fn as_camera_mut(&mut self) -> Option<&mut dyn Camera> {
-        if let AnyDevice::Camera(d) = self { Some(d.as_mut()) } else { None }
+        if let AnyDevice::Camera(d) = self {
+            Some(d.as_mut())
+        } else {
+            None
+        }
     }
 
     pub fn as_stage(&self) -> Option<&dyn Stage> {
-        if let AnyDevice::Stage(d) = self { Some(d.as_ref()) } else { None }
+        if let AnyDevice::Stage(d) = self {
+            Some(d.as_ref())
+        } else {
+            None
+        }
     }
 
     pub fn as_stage_mut(&mut self) -> Option<&mut dyn Stage> {
-        if let AnyDevice::Stage(d) = self { Some(d.as_mut()) } else { None }
+        if let AnyDevice::Stage(d) = self {
+            Some(d.as_mut())
+        } else {
+            None
+        }
     }
 
     pub fn as_xystage(&self) -> Option<&dyn XYStage> {
-        if let AnyDevice::XYStage(d) = self { Some(d.as_ref()) } else { None }
+        if let AnyDevice::XYStage(d) = self {
+            Some(d.as_ref())
+        } else {
+            None
+        }
     }
 
     pub fn as_xystage_mut(&mut self) -> Option<&mut dyn XYStage> {
-        if let AnyDevice::XYStage(d) = self { Some(d.as_mut()) } else { None }
+        if let AnyDevice::XYStage(d) = self {
+            Some(d.as_mut())
+        } else {
+            None
+        }
     }
 
     pub fn as_shutter(&self) -> Option<&dyn Shutter> {
-        if let AnyDevice::Shutter(d) = self { Some(d.as_ref()) } else { None }
+        if let AnyDevice::Shutter(d) = self {
+            Some(d.as_ref())
+        } else {
+            None
+        }
     }
 
     pub fn as_shutter_mut(&mut self) -> Option<&mut dyn Shutter> {
-        if let AnyDevice::Shutter(d) = self { Some(d.as_mut()) } else { None }
+        if let AnyDevice::Shutter(d) = self {
+            Some(d.as_mut())
+        } else {
+            None
+        }
     }
 
     pub fn as_state_device(&self) -> Option<&dyn StateDevice> {
-        if let AnyDevice::StateDevice(d) = self { Some(d.as_ref()) } else { None }
+        if let AnyDevice::StateDevice(d) = self {
+            Some(d.as_ref())
+        } else {
+            None
+        }
     }
 
     pub fn as_state_device_mut(&mut self) -> Option<&mut dyn StateDevice> {
-        if let AnyDevice::StateDevice(d) = self { Some(d.as_mut()) } else { None }
+        if let AnyDevice::StateDevice(d) = self {
+            Some(d.as_mut())
+        } else {
+            None
+        }
     }
 }
 

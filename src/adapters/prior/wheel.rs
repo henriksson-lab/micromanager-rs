@@ -15,10 +15,13 @@ use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 const DEFAULT_NUM_POSITIONS: u64 = 10;
+const PROP_CLOSED_POSITION: &str = "ClosedPosition";
+const PROP_DELAY: &str = "Delay_ms";
 
 pub struct PriorWheel {
     props: PropertyMap,
     transport: RefCell<Option<Box<dyn Transport>>>,
+    name: String,
     initialized: bool,
     id: u8,
     position: u64, // 0-indexed internally
@@ -35,38 +38,10 @@ impl PriorWheel {
         props
             .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
-        props
-            .define_property("WheelId", PropertyValue::Integer(id as i64), false)
-            .unwrap();
-        props
-            .define_property(
-                "NumPositions",
-                PropertyValue::Integer(DEFAULT_NUM_POSITIONS as i64),
-                false,
-            )
-            .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props
-            .define_property("Label", PropertyValue::String("Filter-1".into()), false)
-            .unwrap();
-        props
-            .define_property("Speed", PropertyValue::Integer(3), false)
-            .unwrap();
-        props
-            .define_property("Delay", PropertyValue::Float(0.0), false)
-            .unwrap();
-        props
-            .define_property(
-                "Closed_Position",
-                PropertyValue::String(String::new()),
-                false,
-            )
-            .unwrap();
         Self {
             props,
             transport: RefCell::new(None),
+            name: format!("Wheel-{}", id),
             initialized: false,
             id,
             position: 0,
@@ -126,18 +101,37 @@ impl PriorWheel {
 
     fn closed_position(&self) -> u64 {
         self.props
-            .get("Closed_Position")
+            .get(PROP_CLOSED_POSITION)
             .ok()
             .and_then(|v| v.as_str().parse::<u64>().ok())
             .unwrap_or(0)
     }
 
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property(PROP_CLOSED_POSITION) {
+            self.props.define_property(
+                PROP_CLOSED_POSITION,
+                PropertyValue::String(String::new()),
+                false,
+            )?;
+            self.props
+                .define_property("State", PropertyValue::Integer(0), false)?;
+            self.props
+                .define_property("Speed", PropertyValue::Integer(self.speed), false)?;
+            self.props.define_property(
+                "Label",
+                PropertyValue::String("Undefined".into()),
+                false,
+            )?;
+            self.props
+                .define_property(PROP_DELAY, PropertyValue::Float(self.delay_ms), false)?;
+        }
+        Ok(())
+    }
+
     fn set_physical_position(&mut self, pos: u64) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!(
-                "Position {} out of range",
-                pos
-            )));
+            return Err(MmError::UnknownPosition);
         }
         self.clear_port()?;
         let r = self.cmd(&format!("7,{},{}", self.id, pos + 1))?;
@@ -155,10 +149,10 @@ impl Default for PriorWheel {
 
 impl Device for PriorWheel {
     fn name(&self) -> &str {
-        "PriorWheel"
+        &self.name
     }
     fn description(&self) -> &str {
-        "Prior Scientific ProScan filter wheel"
+        "Prior filter wheel adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -167,6 +161,7 @@ impl Device for PriorWheel {
         }
         self.clear_port()?;
         self.cmd("COMP 0")?;
+        self.ensure_runtime_properties()?;
         let home = self.cmd(&format!("7,{},h", self.id))?;
         self.mark_changed();
         if home.starts_with('E') && home.len() > 2 {
@@ -187,35 +182,37 @@ impl Device for PriorWheel {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(self.position as i64)),
-            "Label" => Ok(PropertyValue::String(format!(
+            "State" if self.props.has_property("State") => {
+                Ok(PropertyValue::Integer(self.position as i64))
+            }
+            "Label" if self.props.has_property("Label") => Ok(PropertyValue::String(format!(
                 "Filter-{}",
                 self.position + 1
             ))),
-            "Speed" => Ok(PropertyValue::Integer(self.speed)),
-            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
+            "Speed" if self.props.has_property("Speed") => Ok(PropertyValue::Integer(self.speed)),
+            PROP_DELAY if self.props.has_property(PROP_DELAY) => {
+                Ok(PropertyValue::Float(self.delay_ms))
+            }
             _ => self.props.get(name).cloned(),
         }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "Port" if self.initialized => return Err(MmError::InvalidPropertyValue),
-            "State" => {
+            "State" if self.props.has_property("State") => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if pos < 0 {
                     return Err(MmError::UnknownPosition);
                 }
                 return self.set_position(pos as u64);
             }
-            "Label" => return self.set_position_by_label(val.as_str()),
-            "NumPositions" => {
-                let n = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u64;
-                self.num_positions = n;
+            "Label" if self.props.has_property("Label") => {
+                return self.set_position_by_label(val.as_str());
             }
-            "Speed" => {
+            "Speed" if self.props.has_property("Speed") => {
                 self.speed = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
             }
-            "Delay" => {
+            PROP_DELAY if self.props.has_property(PROP_DELAY) => {
                 self.delay_ms = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
             }
             _ => {}
@@ -244,10 +241,7 @@ impl Device for PriorWheel {
 impl StateDevice for PriorWheel {
     fn set_position(&mut self, pos: u64) -> MmResult<()> {
         if pos >= self.num_positions {
-            return Err(MmError::LocallyDefined(format!(
-                "Position {} out of range",
-                pos
-            )));
+            return Err(MmError::UnknownPosition);
         }
         if self.gate_open {
             self.set_physical_position(pos)?;
@@ -275,7 +269,7 @@ impl StateDevice for PriorWheel {
         let pos: u64 = label
             .strip_prefix("Filter-")
             .and_then(|s| s.parse::<u64>().ok())
-            .map(|p| p.saturating_sub(1))
+            .and_then(|p| p.checked_sub(1))
             .ok_or_else(|| MmError::UnknownLabel(label.to_string()))?;
         self.set_position(pos)
     }
@@ -338,7 +332,16 @@ mod tests {
             .expect("7,1,2\r", "R");
         let mut w = PriorWheel::new(1).with_transport(Box::new(t));
         w.initialize().unwrap();
-        assert!(w.set_position(10).is_err()); // default 10 positions (0-9)
+        assert_eq!(w.set_position(10), Err(MmError::UnknownPosition)); // default 10 positions (0-9)
+    }
+
+    #[test]
+    fn filter_zero_label_is_unknown() {
+        let mut w = PriorWheel::new(1);
+        assert_eq!(
+            w.set_position_by_label("Filter-0"),
+            Err(MmError::UnknownLabel("Filter-0".into()))
+        );
     }
 
     #[test]
@@ -346,11 +349,13 @@ mod tests {
         let t = MockTransport::new()
             .expect("COMP 0\r", "0")
             .any("R")
-            .expect("7,1,2\r", "R");
+            .expect("7,1,2\r", "R")
+            .expect("7,1,3\r", "R");
         let mut w = PriorWheel::new(1).with_transport(Box::new(t));
-        w.set_property("Delay", PropertyValue::Float(1000.0))
-            .unwrap();
         w.initialize().unwrap();
+        w.set_property(PROP_DELAY, PropertyValue::Float(1000.0))
+            .unwrap();
+        w.set_position(2).unwrap();
         assert!(w.busy());
     }
 
@@ -365,9 +370,9 @@ mod tests {
             .expect("7,1,6\r", "R")
             .expect("7,1\r", "6");
         let mut w = PriorWheel::new(1).with_transport(Box::new(t));
-        w.set_property("Closed_Position", PropertyValue::String("3".into()))
-            .unwrap();
         w.initialize().unwrap();
+        w.set_property(PROP_CLOSED_POSITION, PropertyValue::String("3".into()))
+            .unwrap();
         w.set_gate_open(false).unwrap();
         w.set_position(5).unwrap();
         assert_eq!(w.get_property("State").unwrap(), PropertyValue::Integer(5));
@@ -378,5 +383,38 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(PriorWheel::new(1).initialize().is_err());
+    }
+
+    #[test]
+    fn upstream_identity_and_property_surface() {
+        let w = PriorWheel::new(2);
+        assert_eq!(w.name(), "Wheel-2");
+        assert_eq!(w.description(), "Prior filter wheel adapter");
+        assert!(!w.has_property("State"));
+        assert!(!w.has_property("Label"));
+        assert!(!w.has_property("Speed"));
+        assert!(!w.has_property(PROP_DELAY));
+        assert!(!w.has_property(PROP_CLOSED_POSITION));
+        assert!(!w.has_property("NumPositions"));
+        assert!(!w.has_property("WheelId"));
+        assert_eq!(w.get_number_of_positions(), 10);
+    }
+
+    #[test]
+    fn initialize_creates_runtime_properties_like_upstream() {
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .any("R")
+            .expect("7,1,2\r", "R");
+        let mut w = PriorWheel::new(1).with_transport(Box::new(t));
+        assert!(!w.has_property("State"));
+        w.initialize().unwrap();
+        assert!(w.has_property(PROP_CLOSED_POSITION));
+        assert!(w.has_property("State"));
+        assert!(w.has_property("Speed"));
+        assert!(w.has_property("Label"));
+        assert!(w.has_property(PROP_DELAY));
+        assert!(!w.has_property("Closed_Position"));
+        assert!(!w.has_property("Delay"));
     }
 }

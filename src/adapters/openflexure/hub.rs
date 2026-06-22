@@ -225,7 +225,7 @@ impl Hub for SangaBoardHub {
         Ok(vec![
             "OFXYStage".into(),
             "OFZStage".into(),
-            "OFShutter".into(),
+            "LED illumination".into(),
         ])
     }
 }
@@ -321,6 +321,16 @@ mod tests {
         assert_eq!(
             hub.get_property("SerialResponse").unwrap(),
             PropertyValue::String("done".into())
+        );
+    }
+
+    #[test]
+    fn installed_shutter_name_matches_upstream() {
+        let mut hub = SangaBoardHub::new();
+
+        assert_eq!(
+            hub.detect_installed_devices().unwrap(),
+            vec!["OFXYStage", "OFZStage", "LED illumination"]
         );
     }
 }

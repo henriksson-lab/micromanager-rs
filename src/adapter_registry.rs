@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use crate::traits::{AdapterModule, AnyDevice};
 use crate::error::{MmError, MmResult};
+use crate::traits::{AdapterModule, AnyDevice};
+use std::collections::HashMap;
 
 /// Registry of all known adapter modules.
 /// Adapters are registered explicitly via `register()`.
@@ -17,7 +17,8 @@ impl AdapterRegistry {
 
     /// Register an adapter module under its declared module name.
     pub fn register(&mut self, module: Box<dyn AdapterModule>) {
-        self.modules.insert(module.module_name().to_string(), module);
+        self.modules
+            .insert(module.module_name().to_string(), module);
     }
 
     /// Instantiate a device by module name and device name.

@@ -21,6 +21,5 @@
 /// | `Manual` | `l.<i1>.<i2>...` (LED indices) |
 ///
 /// `set_open(true)` fires the current pattern; `set_open(false)` clears all LEDs (`x`).
-
 pub mod led_array;
 pub use led_array::IlluminateLedArray;

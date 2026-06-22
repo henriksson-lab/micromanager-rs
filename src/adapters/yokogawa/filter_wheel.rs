@@ -19,7 +19,6 @@ pub struct CsuXFilterWheel {
     wheel_nr: u32,       // 1 or 2
     position: Cell<u64>, // 0-based (MM)
     speed: i64,
-    delay_ms: f64,
     changed_time: Cell<Instant>,
     move_busy_ms: Cell<u64>,
     num_positions: u64,
@@ -47,22 +46,6 @@ impl CsuXFilterWheel {
         props
             .set_allowed_values("WheelNumber", &["1", "2"])
             .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(1), false)
-            .unwrap();
-        props
-            .define_property("Label", PropertyValue::String("Filter-1".into()), false)
-            .unwrap();
-        props
-            .define_property("Speed", PropertyValue::Integer(2), false)
-            .unwrap();
-        props
-            .set_allowed_values("Speed", &["0", "1", "2", "3"])
-            .unwrap();
-        props
-            .define_property("Delay", PropertyValue::Float(0.0), false)
-            .unwrap();
-        props.set_property_limits("Delay", 0.0, f64::MAX).unwrap();
         Self {
             props,
             transport: None,
@@ -70,13 +53,33 @@ impl CsuXFilterWheel {
             wheel_nr,
             position: Cell::new(0),
             speed: 2,
-            delay_ms: 0.0,
             changed_time: Cell::new(Instant::now()),
             move_busy_ms: Cell::new(0),
             num_positions,
             labels,
             gate_open: true,
         }
+    }
+
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("State") {
+            self.props
+                .define_property("State", PropertyValue::Integer(1), false)?;
+        }
+        if !self.props.has_property("Label") {
+            self.props.define_property(
+                "Label",
+                PropertyValue::String("Undefined".into()),
+                false,
+            )?;
+        }
+        if !self.props.has_property("Speed") {
+            self.props
+                .define_property("Speed", PropertyValue::Integer(2), false)?;
+            self.props
+                .set_allowed_values("Speed", &["0", "1", "2", "3"])?;
+        }
+        Ok(())
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -103,22 +106,24 @@ impl CsuXFilterWheel {
         })
     }
 
-    fn parse_position_response(resp: &str) -> u64 {
-        resp.split(|c: char| c.is_whitespace() || c == '\r' || c == '\n')
+    fn parse_position_response(resp: &str, num_positions: u64) -> MmResult<u64> {
+        let pos_1based = resp
+            .split(|c: char| c.is_whitespace() || c == '\r' || c == '\n' || c == 'A')
             .filter(|s| !s.is_empty())
             .next()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(1u64)
-            .saturating_sub(1)
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .ok_or(MmError::SerialInvalidResponse)?;
+        if pos_1based == 0 || pos_1based > num_positions {
+            return Err(MmError::UnknownPosition);
+        }
+        Ok(pos_1based - 1)
     }
 
     fn query_position(&self) -> MmResult<u64> {
         let query = format!("FW_POS, {}, ?", self.wheel_nr);
         let resp = self.cmd(&query)?;
-        if resp.trim_start().starts_with('N') {
-            return Err(MmError::LocallyDefined(format!("CSU-X NAK: {}", resp)));
-        }
-        let pos = Self::parse_position_response(&resp);
+        Self::check_ack(&resp)?;
+        let pos = Self::parse_position_response(&resp, self.num_positions)?;
         self.position.set(pos);
         Ok(pos)
     }
@@ -126,32 +131,37 @@ impl CsuXFilterWheel {
     fn query_speed(&self) -> MmResult<i64> {
         let query = format!("FW_SPEED, {}, ?", self.wheel_nr);
         let resp = self.cmd(&query)?;
-        if resp.trim_start().starts_with('N') {
-            return Err(MmError::LocallyDefined(format!("CSU-X NAK: {}", resp)));
-        }
+        Self::check_ack(&resp)?;
         resp.split(|c: char| c.is_whitespace() || c == '\r' || c == '\n' || c == 'A')
             .find(|s| !s.is_empty())
             .and_then(|s| s.parse::<i64>().ok())
             .ok_or(MmError::SerialInvalidResponse)
     }
 
+    fn check_ack(resp: &str) -> MmResult<()> {
+        match resp.trim_end().chars().last() {
+            Some('A') => Ok(()),
+            Some('N') => Err(MmError::LocallyDefined(format!("CSU-X NAK: {}", resp))),
+            _ => Err(MmError::SerialInvalidResponse),
+        }
+    }
+
     fn set_position_command(&self, pos: u64) -> MmResult<()> {
         let cmd = format!("FW_POS, {}, {}", self.wheel_nr, pos + 1);
-        let mut last_err = None;
+        let mut last_err = MmError::SerialInvalidResponse;
         for attempt in 0..10 {
             let resp = self.cmd(&cmd)?;
-            if !resp.trim_start().starts_with('N') {
-                return Ok(());
-            }
-            last_err = Some(resp);
-            if attempt < 9 {
-                std::thread::sleep(Duration::from_millis(50));
+            match Self::check_ack(&resp) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_err = err;
+                    if attempt < 9 {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
             }
         }
-        Err(MmError::LocallyDefined(format!(
-            "CSU-X NAK: {}",
-            last_err.unwrap_or_default()
-        )))
+        Err(last_err)
     }
 }
 
@@ -173,6 +183,7 @@ impl Device for CsuXFilterWheel {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
+        self.ensure_runtime_properties()?;
         self.query_position()?;
         self.initialized = true;
         Ok(())
@@ -185,22 +196,23 @@ impl Device for CsuXFilterWheel {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(self.get_position()? as i64)),
-            "Label" => Ok(PropertyValue::String(
+            "State" if self.props.has_property("State") => {
+                Ok(PropertyValue::Integer(self.get_position()? as i64))
+            }
+            "Label" if self.props.has_property("Label") => Ok(PropertyValue::String(
                 self.labels
                     .get(self.get_position()? as usize)
                     .cloned()
                     .unwrap_or_default(),
             )),
             "WheelNumber" => Ok(PropertyValue::Integer(self.wheel_nr as i64)),
-            "Speed" => {
+            "Speed" if self.props.has_property("Speed") => {
                 if self.initialized && self.transport.is_some() {
                     Ok(PropertyValue::Integer(self.query_speed()?))
                 } else {
                     Ok(PropertyValue::Integer(self.speed))
                 }
             }
-            "Delay" => Ok(PropertyValue::Float(self.delay_ms)),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -208,7 +220,7 @@ impl Device for CsuXFilterWheel {
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
             "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
-            "State" => {
+            "State" if self.props.has_property("State") => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if pos < 0 {
                     return Err(MmError::InvalidPropertyValue);
@@ -216,7 +228,7 @@ impl Device for CsuXFilterWheel {
                 let pos = pos as u64;
                 self.set_position(pos)
             }
-            "Label" => {
+            "Label" if self.props.has_property("Label") => {
                 let label = val.as_str().to_string();
                 self.set_position_by_label(&label)
             }
@@ -231,27 +243,17 @@ impl Device for CsuXFilterWheel {
                 self.wheel_nr = wheel_nr as u32;
                 self.props.set(name, PropertyValue::Integer(wheel_nr))
             }
-            "Speed" => {
+            "Speed" if self.props.has_property("Speed") => {
                 let speed = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 if !(0..=3).contains(&speed) {
                     return Err(MmError::InvalidPropertyValue);
                 }
                 if self.initialized {
                     let resp = self.cmd(&format!("FW_SPEED, {}, {}", self.wheel_nr, speed))?;
-                    if resp.trim_start().starts_with('N') {
-                        return Err(MmError::LocallyDefined(format!("CSU-X NAK: {}", resp)));
-                    }
+                    Self::check_ack(&resp)?;
                 }
                 self.speed = speed;
                 self.props.set(name, PropertyValue::Integer(speed))
-            }
-            "Delay" => {
-                let delay = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
-                if delay < 0.0 {
-                    return Err(MmError::InvalidPropertyValue);
-                }
-                self.delay_ms = delay;
-                self.props.set(name, PropertyValue::Float(delay))
             }
             _ => self.props.set(name, val),
         }
@@ -395,14 +397,45 @@ mod tests {
     }
 
     #[test]
+    fn invalid_query_position_is_rejected_without_cache_update() {
+        let t = MockTransport::new()
+            .expect("FW_POS, 1, ?\r", "2\rA")
+            .expect("FW_POS, 1, ?\r", "0\rA");
+        let mut fw = CsuXFilterWheel::new(1).with_transport(Box::new(t));
+        fw.initialize().unwrap();
+        assert_eq!(fw.query_position(), Err(MmError::UnknownPosition));
+        assert_eq!(fw.position.get(), 1);
+    }
+
+    #[test]
+    fn query_position_requires_ack_like_upstream_hub() {
+        let t = MockTransport::new().expect("FW_POS, 1, ?\r", "2");
+        let mut fw = CsuXFilterWheel::new(1).with_transport(Box::new(t));
+        assert_eq!(fw.initialize(), Err(MmError::SerialInvalidResponse));
+        assert_eq!(fw.position.get(), 0);
+    }
+
+    #[test]
     fn default_labels_are_one_based() {
         let fw = CsuXFilterWheel::new(1);
         assert!(fw.has_property("WheelNumber"));
+        assert_eq!(fw.get_position_label(0).unwrap(), "Filter-1");
+        assert_eq!(fw.get_position_label(5).unwrap(), "Filter-6");
+    }
+
+    #[test]
+    fn runtime_properties_are_created_on_initialize_like_upstream() {
+        let t = MockTransport::new().expect("FW_POS, 1, ?\r", "1\rA");
+        let mut fw = CsuXFilterWheel::new(1).with_transport(Box::new(t));
+        assert!(!fw.has_property("State"));
+        assert!(!fw.has_property("Label"));
+        assert!(!fw.has_property("Speed"));
+        assert!(!fw.has_property("Delay"));
+        fw.initialize().unwrap();
         assert!(fw.has_property("State"));
         assert!(fw.has_property("Label"));
         assert!(fw.has_property("Speed"));
-        assert_eq!(fw.get_position_label(0).unwrap(), "Filter-1");
-        assert_eq!(fw.get_position_label(5).unwrap(), "Filter-6");
+        assert!(!fw.has_property("Delay"));
     }
 
     #[test]
@@ -434,7 +467,6 @@ mod tests {
             .expect("FW_POS, 1, 4\r", "A");
         let mut fw = CsuXFilterWheel::new(1).with_transport(Box::new(t));
         fw.initialize().unwrap();
-        fw.set_property("Delay", PropertyValue::Float(0.0)).unwrap();
         fw.set_position(3).unwrap();
         assert!(fw.busy());
         std::thread::sleep(std::time::Duration::from_millis(110));
@@ -451,6 +483,32 @@ mod tests {
         fw.initialize().unwrap();
         fw.set_position(1).unwrap();
         assert_eq!(fw.position.get(), 1);
+    }
+
+    #[test]
+    fn position_set_rejects_malformed_ack_like_upstream_hub() {
+        let mut t = MockTransport::new().expect("FW_POS, 1, ?\r", "1\rA");
+        for _ in 0..10 {
+            t = t.expect("FW_POS, 1, 2\r", "OK");
+        }
+        let mut fw = CsuXFilterWheel::new(1).with_transport(Box::new(t));
+        fw.initialize().unwrap();
+        assert_eq!(fw.set_position(1), Err(MmError::SerialInvalidResponse));
+        assert_eq!(fw.position.get(), 0);
+    }
+
+    #[test]
+    fn speed_requires_ack_like_upstream_hub() {
+        let t = MockTransport::new()
+            .expect("FW_POS, 1, ?\r", "1\rA")
+            .expect("FW_SPEED, 1, 3\r", "3");
+        let mut fw = CsuXFilterWheel::new(1).with_transport(Box::new(t));
+        fw.initialize().unwrap();
+        assert_eq!(
+            fw.set_property("Speed", PropertyValue::Integer(3)),
+            Err(MmError::SerialInvalidResponse)
+        );
+        assert_eq!(fw.speed, 2);
     }
 
     #[test]

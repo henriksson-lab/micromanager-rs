@@ -61,6 +61,8 @@ pub struct ConfigFile {
     pub config_groups: HashMap<String, ConfigGroup>,
     /// Parent hub assignments: (peripheral_label, hub_label)
     pub parents: Vec<(String, String)>,
+    /// State device labels: (device_label, position, label)
+    pub labels: Vec<(String, u64, String)>,
 }
 
 impl ConfigFile {
@@ -69,6 +71,7 @@ impl ConfigFile {
         let mut properties = Vec::new();
         let mut config_groups: HashMap<String, ConfigGroup> = HashMap::new();
         let mut parents = Vec::new();
+        let mut labels = Vec::new();
 
         for (lineno, raw) in text.lines().enumerate() {
             let line = raw.trim();
@@ -84,6 +87,7 @@ impl ConfigFile {
 
             match parts[0] {
                 "Device" => {
+                    let parts: Vec<&str> = line.splitn(4, ',').collect();
                     if parts.len() < 4 {
                         return Err(MmError::LocallyDefined(format!(
                             "line {}: Device requires 3 arguments",
@@ -97,6 +101,7 @@ impl ConfigFile {
                     ));
                 }
                 "Property" => {
+                    let parts: Vec<&str> = line.splitn(4, ',').collect();
                     if parts.len() < 4 {
                         return Err(MmError::LocallyDefined(format!(
                             "line {}: Property requires 3 arguments",
@@ -110,6 +115,7 @@ impl ConfigFile {
                     ));
                 }
                 "ConfigGroup" => {
+                    let parts: Vec<&str> = line.splitn(6, ',').collect();
                     if parts.len() < 6 {
                         return Err(MmError::LocallyDefined(format!(
                             "line {}: ConfigGroup requires 5 arguments",
@@ -127,6 +133,7 @@ impl ConfigFile {
                     );
                 }
                 "Parent" => {
+                    let parts: Vec<&str> = line.splitn(3, ',').collect();
                     if parts.len() < 3 {
                         return Err(MmError::LocallyDefined(format!(
                             "line {}: Parent requires 2 arguments",
@@ -134,6 +141,26 @@ impl ConfigFile {
                         )));
                     }
                     parents.push((parts[1].trim().to_string(), parts[2].trim().to_string()));
+                }
+                "Label" => {
+                    let parts: Vec<&str> = line.splitn(4, ',').collect();
+                    if parts.len() < 4 {
+                        return Err(MmError::LocallyDefined(format!(
+                            "line {}: Label requires 3 arguments",
+                            lineno + 1
+                        )));
+                    }
+                    let position = parts[2].trim().parse::<u64>().map_err(|_| {
+                        MmError::LocallyDefined(format!(
+                            "line {}: Label position must be an unsigned integer",
+                            lineno + 1
+                        ))
+                    })?;
+                    labels.push((
+                        parts[1].trim().to_string(),
+                        position,
+                        parts[3].trim().to_string(),
+                    ));
                 }
                 _ => {
                     // Unknown command — silently skip for forward compatibility
@@ -146,6 +173,7 @@ impl ConfigFile {
             properties,
             config_groups,
             parents,
+            labels,
         })
     }
 
@@ -162,7 +190,54 @@ impl ConfigFile {
         for (parent_label, hub_label) in &self.parents {
             out.push_str(&format!("Parent,{},{}\n", parent_label, hub_label));
         }
-        for (group_name, group) in &self.config_groups {
+        for (device_label, position, label) in &self.labels {
+            out.push_str(&format!("Label,{},{},{}\n", device_label, position, label));
+        }
+        let mut group_names: Vec<&str> = self.config_groups.keys().map(String::as_str).collect();
+        group_names.sort();
+        for group_name in group_names {
+            let group = &self.config_groups[group_name];
+            for preset in group.preset_names() {
+                if let Some(settings) = group.get_preset(preset) {
+                    for s in settings {
+                        out.push_str(&format!(
+                            "ConfigGroup,{},{},{},{},{}\n",
+                            group_name, preset, s.device_label, s.property_name, s.value
+                        ));
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    /// Serialize in the order expected by MMCore system configuration files.
+    pub fn to_core_text(&self) -> String {
+        let mut out = String::new();
+
+        out.push_str("Property,Core,Initialize,0\n");
+        for (label, module, device) in &self.devices {
+            out.push_str(&format!("Device,{},{},{}\n", label, module, device));
+        }
+        for (parent_label, hub_label) in &self.parents {
+            out.push_str(&format!("Parent,{},{}\n", parent_label, hub_label));
+        }
+        for (device_label, position, label) in &self.labels {
+            out.push_str(&format!("Label,{},{},{}\n", device_label, position, label));
+        }
+        for (label, prop, value) in &self.properties {
+            if label == "Core" && prop == "Initialize" {
+                continue;
+            }
+            out.push_str(&format!("Property,{},{},{}\n", label, prop, value));
+        }
+        out.push_str("Property,Core,Initialize,1\n");
+
+        let mut group_names: Vec<&str> = self.config_groups.keys().map(String::as_str).collect();
+        group_names.sort();
+        for group_name in group_names {
+            let group = &self.config_groups[group_name];
             for preset in group.preset_names() {
                 if let Some(settings) = group.get_preset(preset) {
                     for s in settings {
@@ -196,5 +271,30 @@ mod tests {
         let cfg2 = ConfigFile::parse(&serialized).unwrap();
         assert_eq!(cfg2.devices, cfg.devices);
         assert_eq!(cfg2.properties, cfg.properties);
+        assert_eq!(cfg2.labels, cfg.labels);
+    }
+
+    #[test]
+    fn parse_preserves_commas_in_trailing_values() {
+        let text = "Property,Camera,Description,alpha,beta\n\
+                    ConfigGroup,Channel,DAPI,Wheel,Label,DAPI,wide\n\
+                    Label,Wheel,2,Filter, DAPI\n";
+        let cfg = ConfigFile::parse(text).unwrap();
+
+        assert_eq!(
+            cfg.properties,
+            vec![(
+                "Camera".to_string(),
+                "Description".to_string(),
+                "alpha,beta".to_string()
+            )]
+        );
+        let channel = cfg.config_groups.get("Channel").unwrap();
+        let setting = &channel.get_preset("DAPI").unwrap()[0];
+        assert_eq!(setting.value, "DAPI,wide");
+        assert_eq!(
+            cfg.labels,
+            vec![("Wheel".to_string(), 2, "Filter, DAPI".to_string())]
+        );
     }
 }

@@ -127,18 +127,6 @@ impl ZaberXYStage {
             )
             .unwrap();
         props
-            .define_property(PROP_SPEED_X, PropertyValue::Float(0.0), false)
-            .unwrap();
-        props
-            .define_property(PROP_SPEED_Y, PropertyValue::Float(0.0), false)
-            .unwrap();
-        props
-            .define_property(PROP_ACCEL_X, PropertyValue::Float(0.0), false)
-            .unwrap();
-        props
-            .define_property(PROP_ACCEL_Y, PropertyValue::Float(0.0), false)
-            .unwrap();
-        props
             .define_property(PROP_MIRROR_X, PropertyValue::Integer(0), false)
             .unwrap();
         props
@@ -187,7 +175,7 @@ impl ZaberXYStage {
         let full = format!("/{} {} {}\n", device_addr, axis, command);
         self.call_transport(|t| {
             let resp = t.send_recv(&full)?.trim().to_string();
-            Self::reject_error(&resp)?;
+            Self::validate_response(&resp, device_addr, axis)?;
             Ok(resp)
         })
     }
@@ -208,13 +196,26 @@ impl ZaberXYStage {
         resp.split_whitespace().nth(2)
     }
 
-    fn reject_error(resp: &str) -> MmResult<()> {
+    fn validate_response(resp: &str, expected_device: u32, expected_axis: u32) -> MmResult<()> {
+        if !resp.starts_with('@') || resp.split_whitespace().count() < 4 {
+            return Err(MmError::SerialInvalidResponse);
+        }
         let mut fields = resp.split_whitespace();
-        let _device = fields.next();
-        let _axis = fields.next();
+        let device = fields.next();
+        let axis = fields.next();
         let _status = fields.next();
         let flags = fields.next();
         let data = fields.next();
+        let parsed_device = device
+            .and_then(|s| s.strip_prefix('@'))
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or(MmError::SerialInvalidResponse)?;
+        let parsed_axis = axis
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or(MmError::SerialInvalidResponse)?;
+        if parsed_device != expected_device || parsed_axis != expected_axis {
+            return Err(MmError::SerialInvalidResponse);
+        }
         if flags == Some("RJ") {
             return match data {
                 Some("BADCOMMAND") => Err(MmError::UnsupportedCommand),
@@ -297,7 +298,7 @@ impl ZaberXYStage {
 
     pub fn move_velocity_mm_s(&mut self, vx: f64, vy: f64) -> MmResult<()> {
         let sx = Self::speed_mm_s_to_data(self.step_size_x_um, vx);
-        let sy = Self::speed_mm_s_to_data(self.step_size_y_um, vy);
+        let sy = Self::speed_mm_s_to_data(self.step_size_x_um, vy);
         self.move_axis(
             self.device_addr_x,
             self.axis_x,
@@ -314,6 +315,18 @@ impl ZaberXYStage {
         )?;
         Ok(())
     }
+
+    fn create_runtime_properties(&mut self) -> MmResult<()> {
+        self.props
+            .define_property(PROP_SPEED_X, PropertyValue::Float(0.0), false)?;
+        self.props
+            .define_property(PROP_SPEED_Y, PropertyValue::Float(0.0), false)?;
+        self.props
+            .define_property(PROP_ACCEL_X, PropertyValue::Float(0.0), false)?;
+        self.props
+            .define_property(PROP_ACCEL_Y, PropertyValue::Float(0.0), false)?;
+        Ok(())
+    }
 }
 
 impl Default for ZaberXYStage {
@@ -324,13 +337,16 @@ impl Default for ZaberXYStage {
 
 impl Device for ZaberXYStage {
     fn name(&self) -> &str {
-        "ZaberXYStage"
+        "XYStage"
     }
     fn description(&self) -> &str {
-        "Zaber XY stage"
+        "Zaber XY stage driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
+        if self.initialized {
+            return Ok(());
+        }
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
@@ -351,6 +367,7 @@ impl Device for ZaberXYStage {
         let y_steps = self.get_pos_steps(self.device_addr_y, ay)?;
         self.x_um = x_steps as f64 * self.step_size_x_um;
         self.y_um = y_steps as f64 * self.step_size_y_um;
+        self.create_runtime_properties()?;
         self.initialized = true;
         Ok(())
     }
@@ -825,6 +842,29 @@ mod tests {
     }
 
     #[test]
+    fn malformed_move_response_does_not_update_cached_position() {
+        let t = make_init_transport().expect("/1 2 move abs 640\n", "garbled");
+        let mut s = ZaberXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_xy_position_um(100.0, 200.0).unwrap_err(),
+            MmError::SerialInvalidResponse
+        );
+        assert_eq!((s.x_um, s.y_um), (0.0, 0.0));
+    }
+
+    #[test]
+    fn mismatched_response_address_is_rejected() {
+        let t = make_init_transport().expect("/1 2 get pos\n", "@01 01 IDLE -- 0");
+        let mut s = ZaberXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.get_xy_position_um().unwrap_err(),
+            MmError::SerialInvalidResponse
+        );
+    }
+
+    #[test]
     fn limits_unsupported_without_measured_range() {
         let s = ZaberXYStage::new();
         assert!(matches!(
@@ -859,6 +899,22 @@ mod tests {
     }
 
     #[test]
+    fn speed_and_accel_are_initialize_properties() {
+        let t = make_init_transport();
+        let mut s = ZaberXYStage::new().with_transport(Box::new(t));
+        assert!(!s.has_property(PROP_SPEED_X));
+        assert!(!s.has_property(PROP_SPEED_Y));
+        assert!(!s.has_property(PROP_ACCEL_X));
+        assert!(!s.has_property(PROP_ACCEL_Y));
+        s.initialize().unwrap();
+        assert!(s.has_property(PROP_SPEED_X));
+        assert!(s.has_property(PROP_SPEED_Y));
+        assert!(s.has_property(PROP_ACCEL_X));
+        assert!(s.has_property(PROP_ACCEL_Y));
+        s.initialize().unwrap();
+    }
+
+    #[test]
     fn home_enables_live_limits() {
         let t = make_init_transport()
             .expect("/1 0 tools findrange\n", "@01 00 IDLE -- OK")
@@ -879,7 +935,10 @@ mod tests {
         let t = make_init_transport()
             .expect("/1 2 move vel 10486\n", "@01 02 IDLE -- OK")
             .expect("/1 1 move vel -10486\n", "@01 01 IDLE -- OK");
-        let mut s = ZaberXYStage::new().with_transport(Box::new(t));
+        let mut s = ZaberXYStage::new();
+        s.set_property(PROP_LINEAR_MOTION_Y, PropertyValue::Float(4.0))
+            .unwrap();
+        let mut s = s.with_transport(Box::new(t));
         s.initialize().unwrap();
         s.move_velocity_mm_s(1.0, -1.0).unwrap();
     }
@@ -887,5 +946,12 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(ZaberXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn upstream_name_and_description() {
+        let s = ZaberXYStage::new();
+        assert_eq!(s.name(), "XYStage");
+        assert_eq!(s.description(), "Zaber XY stage driver adapter");
     }
 }

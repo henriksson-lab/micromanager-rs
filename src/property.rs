@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use crate::error::{MmError, MmResult};
 use crate::types::{PropertyType, PropertyValue};
+use std::collections::HashMap;
 
 /// A single property definition with its current value and constraints
 #[derive(Debug, Clone)]
@@ -57,7 +57,8 @@ impl PropertyMap {
             return Err(MmError::DuplicateProperty);
         }
         self.order.push(name.clone());
-        self.props.insert(name, PropertyEntry::new(value.into(), read_only));
+        self.props
+            .insert(name, PropertyEntry::new(value.into(), read_only));
         Ok(())
     }
 
@@ -80,14 +81,20 @@ impl PropertyMap {
 
     /// Restrict a property to a set of allowed string values.
     pub fn set_allowed_values(&mut self, name: &str, values: &[&str]) -> MmResult<()> {
-        let entry = self.props.get_mut(name).ok_or_else(|| MmError::UnknownLabel(name.to_string()))?;
+        let entry = self
+            .props
+            .get_mut(name)
+            .ok_or_else(|| MmError::UnknownLabel(name.to_string()))?;
         entry.allowed_values = values.iter().map(|s| s.to_string()).collect();
         Ok(())
     }
 
     /// Set numeric limits for a property.
     pub fn set_property_limits(&mut self, name: &str, lower: f64, upper: f64) -> MmResult<()> {
-        let entry = self.props.get_mut(name).ok_or_else(|| MmError::UnknownLabel(name.to_string()))?;
+        let entry = self
+            .props
+            .get_mut(name)
+            .ok_or_else(|| MmError::UnknownLabel(name.to_string()))?;
         entry.has_limits = true;
         entry.lower_limit = lower;
         entry.upper_limit = upper;
@@ -158,7 +165,8 @@ mod tests {
     #[test]
     fn define_and_get() {
         let mut map = PropertyMap::new();
-        map.define_property("Exposure", PropertyValue::Float(10.0), false).unwrap();
+        map.define_property("Exposure", PropertyValue::Float(10.0), false)
+            .unwrap();
         let v = map.get("Exposure").unwrap();
         assert_eq!(*v, PropertyValue::Float(10.0));
     }
@@ -166,7 +174,8 @@ mod tests {
     #[test]
     fn set_and_get() {
         let mut map = PropertyMap::new();
-        map.define_property("Binning", PropertyValue::Integer(1), false).unwrap();
+        map.define_property("Binning", PropertyValue::Integer(1), false)
+            .unwrap();
         map.set("Binning", PropertyValue::Integer(2)).unwrap();
         assert_eq!(*map.get("Binning").unwrap(), PropertyValue::Integer(2));
     }
@@ -174,7 +183,8 @@ mod tests {
     #[test]
     fn read_only_rejected() {
         let mut map = PropertyMap::new();
-        map.define_property("Width", PropertyValue::Integer(512), true).unwrap();
+        map.define_property("Width", PropertyValue::Integer(512), true)
+            .unwrap();
         assert!(map.set("Width", PropertyValue::Integer(256)).is_ok());
         assert_eq!(*map.get("Width").unwrap(), PropertyValue::Integer(512));
     }
@@ -182,26 +192,43 @@ mod tests {
     #[test]
     fn allowed_values_enforced() {
         let mut map = PropertyMap::new();
-        map.define_property("PixelType", PropertyValue::String("GRAY8".into()), false).unwrap();
-        map.set_allowed_values("PixelType", &["GRAY8", "GRAY16"]).unwrap();
-        assert!(map.set("PixelType", PropertyValue::String("GRAY16".into())).is_ok());
-        assert!(map.set("PixelType", PropertyValue::String("RGB32".into())).is_err());
+        map.define_property("PixelType", PropertyValue::String("GRAY8".into()), false)
+            .unwrap();
+        map.set_allowed_values("PixelType", &["GRAY8", "GRAY16"])
+            .unwrap();
+        assert!(map
+            .set("PixelType", PropertyValue::String("GRAY16".into()))
+            .is_ok());
+        assert!(map
+            .set("PixelType", PropertyValue::String("RGB32".into()))
+            .is_err());
     }
 
     #[test]
     fn duplicate_property_rejected() {
         let mut map = PropertyMap::new();
-        map.define_property("Gain", PropertyValue::Float(1.0), false).unwrap();
-        assert!(map.define_property("Gain", PropertyValue::Float(2.0), false).is_err());
+        map.define_property("Gain", PropertyValue::Float(1.0), false)
+            .unwrap();
+        assert!(map
+            .define_property("Gain", PropertyValue::Float(2.0), false)
+            .is_err());
     }
 
     #[test]
     fn property_limits_enforced() {
         let mut map = PropertyMap::new();
-        map.define_property("Power", PropertyValue::Float(10.0), false).unwrap();
+        map.define_property("Power", PropertyValue::Float(10.0), false)
+            .unwrap();
         map.set_property_limits("Power", 0.0, 100.0).unwrap();
         assert!(map.set("Power", PropertyValue::Float(100.0)).is_ok());
-        assert_eq!(map.set("Power", PropertyValue::Float(101.0)).unwrap_err(), MmError::InvalidPropertyValue);
-        assert_eq!(map.set("Power", PropertyValue::String("bad".into())).unwrap_err(), MmError::InvalidPropertyValue);
+        assert_eq!(
+            map.set("Power", PropertyValue::Float(101.0)).unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+        assert_eq!(
+            map.set("Power", PropertyValue::String("bad".into()))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
     }
 }

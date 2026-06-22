@@ -40,19 +40,23 @@ impl PsjNV40_3Stage {
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
         props
-            .define_property("Channel", PropertyValue::Integer(channel as i64), false)
+            .define_property(
+                "Channel",
+                PropertyValue::String(format!("PIEZO {}", channel + 1)),
+                false,
+            )
             .unwrap();
         props
-            .define_property("MinVoltage", PropertyValue::Float(0.0), false)
+            .define_property("Limit Voltage min [V]", PropertyValue::Float(0.0), false)
             .unwrap();
         props
-            .define_property("MaxVoltage", PropertyValue::Float(100.0), false)
+            .define_property("Limit Voltage max [V]", PropertyValue::Float(100.0), false)
             .unwrap();
         props
-            .define_property("MinPosition_um", PropertyValue::Float(0.0), false)
+            .define_property("Limit um min [microns]", PropertyValue::Float(0.0), false)
             .unwrap();
         props
-            .define_property("MaxPosition_um", PropertyValue::Float(100.0), false)
+            .define_property("Limit um max [microns]", PropertyValue::Float(100.0), false)
             .unwrap();
         Self {
             props,
@@ -122,10 +126,10 @@ impl Default for PsjNV40_3Stage {
 
 impl Device for PsjNV40_3Stage {
     fn name(&self) -> &str {
-        "PSJ-NV40-3-Stage"
+        "PSJ_Stage"
     }
     fn description(&self) -> &str {
-        "Piezosystem Jena NV40/3 piezo Z stage (single channel)"
+        "Piezosystem stage driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -172,6 +176,22 @@ impl Device for PsjNV40_3Stage {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
+        if name == "Channel" {
+            let PropertyValue::String(channel) = &val else {
+                return Err(MmError::InvalidPropertyValue);
+            };
+            self.channel = match channel.as_str() {
+                "PIEZO 1" => 0,
+                "PIEZO 2" => 1,
+                "PIEZO 3" => 2,
+                _ => {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+            };
+        }
         self.props.set(name, val)
     }
 
@@ -293,5 +313,52 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(PsjNV40_3Stage::new(0).initialize().is_err());
+    }
+
+    #[test]
+    fn upstream_identity_and_property_names() {
+        let stage = PsjNV40_3Stage::new(1);
+        assert_eq!(stage.name(), "PSJ_Stage");
+        assert_eq!(stage.description(), "Piezosystem stage driver adapter");
+        assert_eq!(
+            stage.get_property("Channel").unwrap(),
+            PropertyValue::String("PIEZO 2".into())
+        );
+        assert!(stage.has_property("Limit Voltage min [V]"));
+        assert!(stage.has_property("Limit Voltage max [V]"));
+        assert!(stage.has_property("Limit um min [microns]"));
+        assert!(stage.has_property("Limit um max [microns]"));
+    }
+
+    #[test]
+    fn channel_property_updates_serial_channel() {
+        let t = MockTransport::new()
+            .expect("", "NV40/3 V1.0>")
+            .expect("cloop,2", "cloop,2,0")
+            .expect("rk,2", "rk,2,75.0");
+        let mut stage = PsjNV40_3Stage::new(0).with_transport(Box::new(t));
+        stage
+            .set_property("Channel", PropertyValue::String("PIEZO 3".into()))
+            .unwrap();
+        stage.initialize().unwrap();
+        assert!((stage.get_position_um().unwrap() - 75.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn invalid_channel_property_is_rejected() {
+        let mut stage = PsjNV40_3Stage::new(0);
+        assert!(stage
+            .set_property("Channel", PropertyValue::String("PIEZO 4".into()))
+            .is_err());
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected() {
+        let mut stage = PsjNV40_3Stage::new(0).with_transport(Box::new(make_transport_ch0()));
+        stage.initialize().unwrap();
+        let err = stage
+            .set_property("Port", PropertyValue::String("COM2".into()))
+            .unwrap_err();
+        assert!(matches!(err, MmError::CanNotSetProperty));
     }
 }

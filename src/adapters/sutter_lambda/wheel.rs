@@ -43,6 +43,9 @@ impl LambdaWheel {
             .collect();
         let mut props = PropertyMap::new();
         props
+            .define_property("Port", PropertyValue::String("Undefined".into()), false)
+            .unwrap();
+        props
             .define_property("State", PropertyValue::Integer(0), false)
             .unwrap();
         props
@@ -52,6 +55,13 @@ impl LambdaWheel {
             .define_property("Speed", PropertyValue::Integer(3), false)
             .unwrap();
         props.set_property_limits("Speed", 0.0, 7.0).unwrap();
+        props
+            .define_property(
+                "Closed_Position",
+                PropertyValue::String(String::new()),
+                false,
+            )
+            .unwrap();
         let wheel_name = match wheel {
             WheelId::A => "A",
             WheelId::B => "B",
@@ -93,35 +103,58 @@ impl LambdaWheel {
     fn send_move(&mut self, pos: u8) -> MmResult<()> {
         let speed = self.speed;
         let wheel = self.wheel;
+        let payload = (speed << 4) | pos;
         self.call_transport(|t| {
             match wheel {
                 WheelId::A => {
-                    let cmd = (speed << 4) | pos;
+                    let cmd = payload;
                     t.send_bytes(&[cmd])?;
                     let resp = t.receive_bytes(2)?;
-                    if resp.last() != Some(&0x0D) {
+                    if resp.len() != 2 || resp[1] != 0x0D || (resp[0] != cmd && resp[0] != pos) {
                         return Err(MmError::SerialInvalidResponse);
                     }
                 }
                 WheelId::B => {
-                    let cmd = 0x80 | (speed << 4) | pos;
+                    let cmd = 0x80 | payload;
                     t.send_bytes(&[cmd])?;
                     let resp = t.receive_bytes(2)?;
-                    if resp.last() != Some(&0x0D) {
+                    if resp.len() != 2 || resp[1] != 0x0D || (resp[0] != cmd && resp[0] != pos) {
                         return Err(MmError::SerialInvalidResponse);
                     }
                 }
                 WheelId::C => {
-                    let payload = (speed << 4) | pos;
                     t.send_bytes(&[0xFC, payload])?;
                     let resp = t.receive_bytes(3)?;
-                    if resp.last() != Some(&0x0D) {
+                    if resp.len() != 3
+                        || resp[2] != 0x0D
+                        || resp[0] != 0xFC
+                        || (resp[1] != payload && resp[1] != pos)
+                    {
                         return Err(MmError::SerialInvalidResponse);
                     }
                 }
             }
             Ok(())
         })
+    }
+
+    fn closed_position(&self) -> u8 {
+        self.props
+            .get("Closed_Position")
+            .ok()
+            .and_then(|v| v.as_str().parse::<u8>().ok())
+            .filter(|&pos| pos < self.num_positions)
+            .unwrap_or(0)
+    }
+
+    fn set_physical_position(&mut self, pos: u8) -> MmResult<()> {
+        if pos >= self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
+        if self.initialized {
+            self.send_move(pos)?;
+        }
+        Ok(())
     }
 }
 
@@ -134,7 +167,7 @@ impl Device for LambdaWheel {
         }
     }
     fn description(&self) -> &str {
-        "Sutter Lambda filter wheel"
+        "Sutter Lambda filter wheel adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -166,6 +199,7 @@ impl Device for LambdaWheel {
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
+            "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "State" => {
                 let pos = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
                 self.set_position(pos as u64)
@@ -181,6 +215,18 @@ impl Device for LambdaWheel {
                 }
                 self.speed = s;
                 self.props.set(name, PropertyValue::Integer(s as i64))
+            }
+            "Closed_Position" => {
+                let closed = val.as_str();
+                if !closed.is_empty() {
+                    let pos = closed
+                        .parse::<u8>()
+                        .map_err(|_| MmError::InvalidPropertyValue)?;
+                    if pos >= self.num_positions {
+                        return Err(MmError::UnknownPosition);
+                    }
+                }
+                self.props.set(name, val)
             }
             _ => self.props.set(name, val),
         }
@@ -208,8 +254,13 @@ impl StateDevice for LambdaWheel {
         if pos >= self.num_positions as u64 {
             return Err(MmError::UnknownPosition);
         }
-        if self.initialized {
-            self.send_move(pos as u8)?;
+        let physical_pos = if self.gate_open {
+            pos as u8
+        } else {
+            self.closed_position()
+        };
+        if self.gate_open || self.initialized {
+            self.set_physical_position(physical_pos)?;
         }
         self.position = pos as u8;
         Ok(())
@@ -248,6 +299,15 @@ impl StateDevice for LambdaWheel {
     }
 
     fn set_gate_open(&mut self, open: bool) -> MmResult<()> {
+        if self.gate_open == open {
+            return Ok(());
+        }
+        let physical_pos = if open {
+            self.position
+        } else {
+            self.closed_position()
+        };
+        self.set_physical_position(physical_pos)?;
         self.gate_open = open;
         Ok(())
     }
@@ -305,6 +365,15 @@ mod tests {
     }
 
     #[test]
+    fn wheel_c_accepts_stripped_position_echo() {
+        let t = MockTransport::new().expect_binary(&[0xFC, 0x02, 0x0D]);
+        let mut wheel = LambdaWheel::new(WheelId::C).with_transport(Box::new(t));
+        wheel.initialize().unwrap();
+        wheel.set_position(2).unwrap();
+        assert_eq!(wheel.get_position().unwrap(), 2);
+    }
+
+    #[test]
     fn out_of_range_rejected() {
         let mut wheel = make_wheel_a();
         wheel.initialize().unwrap();
@@ -319,5 +388,68 @@ mod tests {
         wheel.set_position_label(4, "DAPI").unwrap();
         wheel.set_position_by_label("DAPI").unwrap();
         assert_eq!(wheel.get_position().unwrap(), 4);
+    }
+
+    #[test]
+    fn rejects_wrong_echo_without_mutating_position() {
+        let t = MockTransport::new().expect_binary(&[0x35, 0x0D]);
+        let mut wheel = LambdaWheel::new(WheelId::A).with_transport(Box::new(t));
+        wheel.initialize().unwrap();
+        assert_eq!(wheel.set_position(4), Err(MmError::SerialInvalidResponse));
+        assert_eq!(wheel.get_position().unwrap(), 0);
+    }
+
+    #[test]
+    fn initialized_port_change_is_rejected_and_preserved() {
+        let t = MockTransport::new();
+        let mut wheel = LambdaWheel::new(WheelId::A).with_transport(Box::new(t));
+        wheel
+            .set_property("Port", PropertyValue::String("COM1".into()))
+            .unwrap();
+        wheel.initialize().unwrap();
+        assert_eq!(
+            wheel.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            wheel.get_property("Port").unwrap(),
+            PropertyValue::String("COM1".into())
+        );
+    }
+
+    #[test]
+    fn closed_gate_moves_to_closed_position_but_keeps_requested_state() {
+        let t = MockTransport::new()
+            .expect_binary(&[0x32, 0x0D])
+            .expect_binary(&[0x32, 0x0D]);
+        let mut wheel = LambdaWheel::new(WheelId::A).with_transport(Box::new(t));
+        wheel
+            .set_property("Closed_Position", PropertyValue::String("2".into()))
+            .unwrap();
+        wheel.initialize().unwrap();
+
+        wheel.set_gate_open(false).unwrap();
+        wheel.set_position(5).unwrap();
+
+        assert_eq!(wheel.get_position().unwrap(), 5);
+        assert!(!wheel.get_gate_open().unwrap());
+    }
+
+    #[test]
+    fn reopening_gate_moves_to_cached_state() {
+        let t = MockTransport::new()
+            .expect_binary(&[0x32, 0x0D])
+            .expect_binary(&[0x35, 0x0D]);
+        let mut wheel = LambdaWheel::new(WheelId::A).with_transport(Box::new(t));
+        wheel
+            .set_property("Closed_Position", PropertyValue::String("2".into()))
+            .unwrap();
+        wheel.initialize().unwrap();
+
+        wheel.set_gate_open(false).unwrap();
+        wheel.position = 5;
+        wheel.set_gate_open(true).unwrap();
+
+        assert!(wheel.get_gate_open().unwrap());
     }
 }

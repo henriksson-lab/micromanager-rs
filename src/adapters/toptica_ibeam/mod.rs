@@ -28,7 +28,7 @@ pub const DEVICE_NAME_IBEAM: &str = "iBeamSmartCW";
 
 static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
     name: DEVICE_NAME_IBEAM,
-    description: "Toptica iBeam smart laser in CW mode",
+    description: "Toptica iBeam smart laser in CW mode.",
     device_type: DeviceType::Generic,
 }];
 

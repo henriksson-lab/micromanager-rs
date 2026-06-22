@@ -22,29 +22,236 @@ struct VideoModeEntry {
 }
 
 static VIDEO_MODES: &[VideoModeEntry] = &[
-    VideoModeEntry { id: DC1394_VIDEO_MODE_160x120_YUV444,    name: "160x120_YUV444",    width: 160,  height: 120,  color_coding: DC1394_COLOR_CODING_YUV444, bytes_per_pixel: 3, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_320x240_YUV422,    name: "320x240_YUV422",    width: 320,  height: 240,  color_coding: DC1394_COLOR_CODING_YUV422, bytes_per_pixel: 2, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_640x480_YUV411,    name: "640x480_YUV411",    width: 640,  height: 480,  color_coding: DC1394_COLOR_CODING_YUV411, bytes_per_pixel: 2, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_640x480_YUV422,    name: "640x480_YUV422",    width: 640,  height: 480,  color_coding: DC1394_COLOR_CODING_YUV422, bytes_per_pixel: 2, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_640x480_RGB8,      name: "640x480_RGB8",      width: 640,  height: 480,  color_coding: DC1394_COLOR_CODING_RGB8,   bytes_per_pixel: 3, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_640x480_MONO8,     name: "640x480_MONO8",     width: 640,  height: 480,  color_coding: DC1394_COLOR_CODING_MONO8,  bytes_per_pixel: 1, bit_depth: 8,  num_components: 1 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_640x480_MONO16,    name: "640x480_MONO16",    width: 640,  height: 480,  color_coding: DC1394_COLOR_CODING_MONO16, bytes_per_pixel: 2, bit_depth: 16, num_components: 1 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_800x600_YUV422,    name: "800x600_YUV422",    width: 800,  height: 600,  color_coding: DC1394_COLOR_CODING_YUV422, bytes_per_pixel: 2, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_800x600_RGB8,      name: "800x600_RGB8",      width: 800,  height: 600,  color_coding: DC1394_COLOR_CODING_RGB8,   bytes_per_pixel: 3, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_800x600_MONO8,     name: "800x600_MONO8",     width: 800,  height: 600,  color_coding: DC1394_COLOR_CODING_MONO8,  bytes_per_pixel: 1, bit_depth: 8,  num_components: 1 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_800x600_MONO16,    name: "800x600_MONO16",    width: 800,  height: 600,  color_coding: DC1394_COLOR_CODING_MONO16, bytes_per_pixel: 2, bit_depth: 16, num_components: 1 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1024x768_YUV422,   name: "1024x768_YUV422",   width: 1024, height: 768,  color_coding: DC1394_COLOR_CODING_YUV422, bytes_per_pixel: 2, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1024x768_RGB8,     name: "1024x768_RGB8",     width: 1024, height: 768,  color_coding: DC1394_COLOR_CODING_RGB8,   bytes_per_pixel: 3, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1024x768_MONO8,    name: "1024x768_MONO8",    width: 1024, height: 768,  color_coding: DC1394_COLOR_CODING_MONO8,  bytes_per_pixel: 1, bit_depth: 8,  num_components: 1 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1024x768_MONO16,   name: "1024x768_MONO16",   width: 1024, height: 768,  color_coding: DC1394_COLOR_CODING_MONO16, bytes_per_pixel: 2, bit_depth: 16, num_components: 1 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1280x960_YUV422,   name: "1280x960_YUV422",   width: 1280, height: 960,  color_coding: DC1394_COLOR_CODING_YUV422, bytes_per_pixel: 2, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1280x960_RGB8,     name: "1280x960_RGB8",     width: 1280, height: 960,  color_coding: DC1394_COLOR_CODING_RGB8,   bytes_per_pixel: 3, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1280x960_MONO8,    name: "1280x960_MONO8",    width: 1280, height: 960,  color_coding: DC1394_COLOR_CODING_MONO8,  bytes_per_pixel: 1, bit_depth: 8,  num_components: 1 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1280x960_MONO16,   name: "1280x960_MONO16",   width: 1280, height: 960,  color_coding: DC1394_COLOR_CODING_MONO16, bytes_per_pixel: 2, bit_depth: 16, num_components: 1 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1600x1200_YUV422,  name: "1600x1200_YUV422",  width: 1600, height: 1200, color_coding: DC1394_COLOR_CODING_YUV422, bytes_per_pixel: 2, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1600x1200_RGB8,    name: "1600x1200_RGB8",    width: 1600, height: 1200, color_coding: DC1394_COLOR_CODING_RGB8,   bytes_per_pixel: 3, bit_depth: 8,  num_components: 3 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1600x1200_MONO8,   name: "1600x1200_MONO8",   width: 1600, height: 1200, color_coding: DC1394_COLOR_CODING_MONO8,  bytes_per_pixel: 1, bit_depth: 8,  num_components: 1 },
-    VideoModeEntry { id: DC1394_VIDEO_MODE_1600x1200_MONO16,  name: "1600x1200_MONO16",  width: 1600, height: 1200, color_coding: DC1394_COLOR_CODING_MONO16, bytes_per_pixel: 2, bit_depth: 16, num_components: 1 },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_160x120_YUV444,
+        name: "160x120_YUV444",
+        width: 160,
+        height: 120,
+        color_coding: DC1394_COLOR_CODING_YUV444,
+        bytes_per_pixel: 3,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_320x240_YUV422,
+        name: "320x240_YUV422",
+        width: 320,
+        height: 240,
+        color_coding: DC1394_COLOR_CODING_YUV422,
+        bytes_per_pixel: 2,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_640x480_YUV411,
+        name: "640x480_YUV411",
+        width: 640,
+        height: 480,
+        color_coding: DC1394_COLOR_CODING_YUV411,
+        bytes_per_pixel: 2,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_640x480_YUV422,
+        name: "640x480_YUV422",
+        width: 640,
+        height: 480,
+        color_coding: DC1394_COLOR_CODING_YUV422,
+        bytes_per_pixel: 2,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_640x480_RGB8,
+        name: "640x480_RGB8",
+        width: 640,
+        height: 480,
+        color_coding: DC1394_COLOR_CODING_RGB8,
+        bytes_per_pixel: 3,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_640x480_MONO8,
+        name: "640x480_MONO8",
+        width: 640,
+        height: 480,
+        color_coding: DC1394_COLOR_CODING_MONO8,
+        bytes_per_pixel: 1,
+        bit_depth: 8,
+        num_components: 1,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_640x480_MONO16,
+        name: "640x480_MONO16",
+        width: 640,
+        height: 480,
+        color_coding: DC1394_COLOR_CODING_MONO16,
+        bytes_per_pixel: 2,
+        bit_depth: 16,
+        num_components: 1,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_800x600_YUV422,
+        name: "800x600_YUV422",
+        width: 800,
+        height: 600,
+        color_coding: DC1394_COLOR_CODING_YUV422,
+        bytes_per_pixel: 2,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_800x600_RGB8,
+        name: "800x600_RGB8",
+        width: 800,
+        height: 600,
+        color_coding: DC1394_COLOR_CODING_RGB8,
+        bytes_per_pixel: 3,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_800x600_MONO8,
+        name: "800x600_MONO8",
+        width: 800,
+        height: 600,
+        color_coding: DC1394_COLOR_CODING_MONO8,
+        bytes_per_pixel: 1,
+        bit_depth: 8,
+        num_components: 1,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_800x600_MONO16,
+        name: "800x600_MONO16",
+        width: 800,
+        height: 600,
+        color_coding: DC1394_COLOR_CODING_MONO16,
+        bytes_per_pixel: 2,
+        bit_depth: 16,
+        num_components: 1,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1024x768_YUV422,
+        name: "1024x768_YUV422",
+        width: 1024,
+        height: 768,
+        color_coding: DC1394_COLOR_CODING_YUV422,
+        bytes_per_pixel: 2,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1024x768_RGB8,
+        name: "1024x768_RGB8",
+        width: 1024,
+        height: 768,
+        color_coding: DC1394_COLOR_CODING_RGB8,
+        bytes_per_pixel: 3,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1024x768_MONO8,
+        name: "1024x768_MONO8",
+        width: 1024,
+        height: 768,
+        color_coding: DC1394_COLOR_CODING_MONO8,
+        bytes_per_pixel: 1,
+        bit_depth: 8,
+        num_components: 1,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1024x768_MONO16,
+        name: "1024x768_MONO16",
+        width: 1024,
+        height: 768,
+        color_coding: DC1394_COLOR_CODING_MONO16,
+        bytes_per_pixel: 2,
+        bit_depth: 16,
+        num_components: 1,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1280x960_YUV422,
+        name: "1280x960_YUV422",
+        width: 1280,
+        height: 960,
+        color_coding: DC1394_COLOR_CODING_YUV422,
+        bytes_per_pixel: 2,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1280x960_RGB8,
+        name: "1280x960_RGB8",
+        width: 1280,
+        height: 960,
+        color_coding: DC1394_COLOR_CODING_RGB8,
+        bytes_per_pixel: 3,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1280x960_MONO8,
+        name: "1280x960_MONO8",
+        width: 1280,
+        height: 960,
+        color_coding: DC1394_COLOR_CODING_MONO8,
+        bytes_per_pixel: 1,
+        bit_depth: 8,
+        num_components: 1,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1280x960_MONO16,
+        name: "1280x960_MONO16",
+        width: 1280,
+        height: 960,
+        color_coding: DC1394_COLOR_CODING_MONO16,
+        bytes_per_pixel: 2,
+        bit_depth: 16,
+        num_components: 1,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1600x1200_YUV422,
+        name: "1600x1200_YUV422",
+        width: 1600,
+        height: 1200,
+        color_coding: DC1394_COLOR_CODING_YUV422,
+        bytes_per_pixel: 2,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1600x1200_RGB8,
+        name: "1600x1200_RGB8",
+        width: 1600,
+        height: 1200,
+        color_coding: DC1394_COLOR_CODING_RGB8,
+        bytes_per_pixel: 3,
+        bit_depth: 8,
+        num_components: 3,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1600x1200_MONO8,
+        name: "1600x1200_MONO8",
+        width: 1600,
+        height: 1200,
+        color_coding: DC1394_COLOR_CODING_MONO8,
+        bytes_per_pixel: 1,
+        bit_depth: 8,
+        num_components: 1,
+    },
+    VideoModeEntry {
+        id: DC1394_VIDEO_MODE_1600x1200_MONO16,
+        name: "1600x1200_MONO16",
+        width: 1600,
+        height: 1200,
+        color_coding: DC1394_COLOR_CODING_MONO16,
+        bytes_per_pixel: 2,
+        bit_depth: 16,
+        num_components: 1,
+    },
 ];
 
 fn mode_by_name(name: &str) -> Option<&'static VideoModeEntry> {
@@ -80,13 +287,31 @@ pub struct IIDCCamera {
 impl IIDCCamera {
     pub fn new() -> Self {
         let mut props = PropertyMap::new();
-        props.define_property("CameraIndex", PropertyValue::Integer(0), false).unwrap();
-        props.define_property("VideoMode", PropertyValue::String("640x480_MONO8".into()), false).unwrap();
-        props.define_property("Exposure", PropertyValue::Float(10.0), false).unwrap();
-        props.define_property("Gain", PropertyValue::Integer(0), false).unwrap();
-        props.define_property("Width", PropertyValue::Integer(640), true).unwrap();
-        props.define_property("Height", PropertyValue::Integer(480), true).unwrap();
-        props.define_property("PixelFormat", PropertyValue::String("MONO8".into()), true).unwrap();
+        props
+            .define_property("CameraIndex", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property(
+                "VideoMode",
+                PropertyValue::String("640x480_MONO8".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .define_property("Exposure", PropertyValue::Float(10.0), false)
+            .unwrap();
+        props
+            .define_property("Gain", PropertyValue::Integer(0), false)
+            .unwrap();
+        props
+            .define_property("Width", PropertyValue::Integer(640), true)
+            .unwrap();
+        props
+            .define_property("Height", PropertyValue::Integer(480), true)
+            .unwrap();
+        props
+            .define_property("PixelFormat", PropertyValue::String("MONO8".into()), true)
+            .unwrap();
 
         Self {
             props,
@@ -116,7 +341,10 @@ impl IIDCCamera {
     fn apply_video_mode(&mut self) -> MmResult<()> {
         let err = unsafe { dc1394_video_set_mode(self.camera, self.video_mode_id) };
         if err != DC1394_SUCCESS {
-            return Err(MmError::LocallyDefined(format!("dc1394_video_set_mode error {}", err)));
+            return Err(MmError::LocallyDefined(format!(
+                "dc1394_video_set_mode error {}",
+                err
+            )));
         }
 
         if let Some(entry) = mode_by_id(self.video_mode_id) {
@@ -126,36 +354,57 @@ impl IIDCCamera {
             self.bit_depth = entry.bit_depth;
             self.num_components = entry.num_components;
             let fmt = color_coding_name(entry.color_coding);
-            self.props.entry_mut("PixelFormat").map(|e| e.value = PropertyValue::String(fmt.into()));
+            self.props
+                .entry_mut("PixelFormat")
+                .map(|e| e.value = PropertyValue::String(fmt.into()));
         } else {
             // Unknown mode (e.g. Format7): query from hardware
             let mut w = 0u32;
             let mut h = 0u32;
-            unsafe { dc1394_get_image_size_from_video_mode(self.camera, self.video_mode_id, &mut w, &mut h) };
+            unsafe {
+                dc1394_get_image_size_from_video_mode(
+                    self.camera,
+                    self.video_mode_id,
+                    &mut w,
+                    &mut h,
+                )
+            };
             self.width = w;
             self.height = h;
         }
 
-        self.props.entry_mut("Width").map(|e| e.value = PropertyValue::Integer(self.width as i64));
-        self.props.entry_mut("Height").map(|e| e.value = PropertyValue::Integer(self.height as i64));
+        self.props
+            .entry_mut("Width")
+            .map(|e| e.value = PropertyValue::Integer(self.width as i64));
+        self.props
+            .entry_mut("Height")
+            .map(|e| e.value = PropertyValue::Integer(self.height as i64));
         Ok(())
     }
 
     /// Set shutter feature to manual mode and apply current exposure value.
     fn apply_exposure(&mut self) {
-        let raw = self.props.get("Exposure")
+        let raw = self
+            .props
+            .get("Exposure")
             .ok()
             .and_then(|v| v.as_f64())
             .unwrap_or(10.0) as u32;
         unsafe {
-            dc1394_feature_set_mode(self.camera, DC1394_FEATURE_SHUTTER, DC1394_FEATURE_MODE_MANUAL);
+            dc1394_feature_set_mode(
+                self.camera,
+                DC1394_FEATURE_SHUTTER,
+                DC1394_FEATURE_MODE_MANUAL,
+            );
             dc1394_feature_set_value(self.camera, DC1394_FEATURE_SHUTTER, raw);
         }
     }
 
     /// Set gain feature to manual mode and apply current gain value.
     fn apply_gain(&mut self) {
-        let raw = self.props.get("Gain")
+        let raw = self
+            .props
+            .get("Gain")
             .ok()
             .and_then(|v| v.as_i64())
             .unwrap_or(0) as u32;
@@ -171,13 +420,19 @@ impl IIDCCamera {
 
         let err = unsafe { dc1394_capture_setup(camera, 4, DC1394_CAPTURE_FLAGS_DEFAULT) };
         if err != DC1394_SUCCESS {
-            return Err(MmError::LocallyDefined(format!("dc1394_capture_setup error {}", err)));
+            return Err(MmError::LocallyDefined(format!(
+                "dc1394_capture_setup error {}",
+                err
+            )));
         }
 
         let err = unsafe { dc1394_video_set_transmission(camera, DC1394_ON) };
         if err != DC1394_SUCCESS {
             unsafe { dc1394_capture_stop(camera) };
-            return Err(MmError::LocallyDefined(format!("dc1394_video_set_transmission error {}", err)));
+            return Err(MmError::LocallyDefined(format!(
+                "dc1394_video_set_transmission error {}",
+                err
+            )));
         }
 
         let mut frame: *mut dc1394video_frame_t = ptr::null_mut();
@@ -251,7 +506,7 @@ impl Device for IIDCCamera {
     }
 
     fn description(&self) -> &str {
-        "IIDC/IEEE-1394 FireWire camera (libdc1394)"
+        "Camera compatible with IIDC (1394 DCAM)"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -261,7 +516,9 @@ impl Device for IIDCCamera {
 
         let ctx = unsafe { dc1394_new() };
         if ctx.is_null() {
-            return Err(MmError::LocallyDefined("dc1394_new() failed — is libdc1394 installed?".into()));
+            return Err(MmError::LocallyDefined(
+                "dc1394_new() failed — is libdc1394 installed?".into(),
+            ));
         }
         self.ctx = ctx;
 
@@ -271,20 +528,31 @@ impl Device for IIDCCamera {
         if err != DC1394_SUCCESS || list.is_null() {
             unsafe { dc1394_free(ctx) };
             self.ctx = ptr::null_mut();
-            return Err(MmError::LocallyDefined("Failed to enumerate IIDC cameras".into()));
+            return Err(MmError::LocallyDefined(
+                "Failed to enumerate IIDC cameras".into(),
+            ));
         }
 
         let num = unsafe { (*list).num } as usize;
         if num == 0 {
-            unsafe { dc1394_camera_free_list(list); dc1394_free(ctx) };
+            unsafe {
+                dc1394_camera_free_list(list);
+                dc1394_free(ctx)
+            };
             self.ctx = ptr::null_mut();
-            return Err(MmError::LocallyDefined("No IIDC cameras found on the bus".into()));
+            return Err(MmError::LocallyDefined(
+                "No IIDC cameras found on the bus".into(),
+            ));
         }
         if self.camera_index >= num {
-            unsafe { dc1394_camera_free_list(list); dc1394_free(ctx) };
+            unsafe {
+                dc1394_camera_free_list(list);
+                dc1394_free(ctx)
+            };
             self.ctx = ptr::null_mut();
             return Err(MmError::LocallyDefined(format!(
-                "Camera index {} out of range ({} camera(s) found)", self.camera_index, num
+                "Camera index {} out of range ({} camera(s) found)",
+                self.camera_index, num
             )));
         }
 
@@ -310,7 +578,9 @@ impl Device for IIDCCamera {
             let supported: Vec<String> = (0..modes_list.num as usize)
                 .filter_map(|i| {
                     let mid = modes_list.modes[i];
-                    if is_format7(mid) { return None; }
+                    if is_format7(mid) {
+                        return None;
+                    }
                     mode_by_id(mid).map(|e| e.name.to_string())
                 })
                 .collect();
@@ -351,7 +621,9 @@ impl Device for IIDCCamera {
             "Exposure" => {
                 if !self.camera.is_null() {
                     let mut raw = 0u32;
-                    unsafe { dc1394_feature_get_value(self.camera, DC1394_FEATURE_SHUTTER, &mut raw) };
+                    unsafe {
+                        dc1394_feature_get_value(self.camera, DC1394_FEATURE_SHUTTER, &mut raw)
+                    };
                     Ok(PropertyValue::Float(raw as f64))
                 } else {
                     self.props.get("Exposure").cloned()
@@ -448,9 +720,8 @@ impl Camera for IIDCCamera {
             // In sequence mode: dequeue the next available frame.
             let camera = self.camera;
             let mut frame: *mut dc1394video_frame_t = ptr::null_mut();
-            let err = unsafe {
-                dc1394_capture_dequeue(camera, DC1394_CAPTURE_POLICY_WAIT, &mut frame)
-            };
+            let err =
+                unsafe { dc1394_capture_dequeue(camera, DC1394_CAPTURE_POLICY_WAIT, &mut frame) };
             if err == DC1394_SUCCESS && !frame.is_null() {
                 self.copy_frame(frame);
                 unsafe { dc1394_capture_enqueue(camera, frame) };
@@ -463,7 +734,9 @@ impl Camera for IIDCCamera {
 
     fn get_image_buffer(&self) -> MmResult<&[u8]> {
         if self.image_buf.is_empty() {
-            Err(MmError::LocallyDefined("No image captured yet — call snap_image() first".into()))
+            Err(MmError::LocallyDefined(
+                "No image captured yet — call snap_image() first".into(),
+            ))
         } else {
             Ok(&self.image_buf)
         }
@@ -499,15 +772,20 @@ impl Camera for IIDCCamera {
             unsafe { dc1394_feature_get_value(self.camera, DC1394_FEATURE_SHUTTER, &mut raw) };
             raw as f64
         } else {
-            self.props.get("Exposure").ok().and_then(|v| v.as_f64()).unwrap_or(10.0)
+            self.props
+                .get("Exposure")
+                .ok()
+                .and_then(|v| v.as_f64())
+                .unwrap_or(10.0)
         }
     }
 
-    fn set_exposure(&mut self, exp_ms: f64) {
-        self.props.set("Exposure", PropertyValue::Float(exp_ms)).ok();
+    fn set_exposure(&mut self, exp_ms: f64) -> MmResult<()> {
+        self.props.set("Exposure", PropertyValue::Float(exp_ms))?;
         if !self.camera.is_null() {
             self.apply_exposure();
         }
+        Ok(())
     }
 
     fn get_binning(&self) -> i32 {
@@ -535,7 +813,10 @@ impl Camera for IIDCCamera {
         Ok(())
     }
 
-    fn start_sequence_acquisition(&mut self, _count: i64, _interval_ms: f64) -> MmResult<()> {
+    fn start_sequence_acquisition(&mut self, count: i64, _interval_ms: f64) -> MmResult<()> {
+        if count < 0 {
+            return Err(MmError::InvalidInputParam);
+        }
         self.check_initialized()?;
         if self.capturing {
             return Ok(());
@@ -543,13 +824,17 @@ impl Camera for IIDCCamera {
         let camera = self.camera;
         let err = unsafe { dc1394_capture_setup(camera, 16, DC1394_CAPTURE_FLAGS_DEFAULT) };
         if err != DC1394_SUCCESS {
-            return Err(MmError::LocallyDefined(format!("dc1394_capture_setup error {}", err)));
+            return Err(MmError::LocallyDefined(format!(
+                "dc1394_capture_setup error {}",
+                err
+            )));
         }
         let err = unsafe { dc1394_video_set_transmission(camera, DC1394_ON) };
         if err != DC1394_SUCCESS {
             unsafe { dc1394_capture_stop(camera) };
             return Err(MmError::LocallyDefined(format!(
-                "dc1394_video_set_transmission error {}", err
+                "dc1394_video_set_transmission error {}",
+                err
             )));
         }
         self.capturing = true;
@@ -577,16 +862,16 @@ impl Camera for IIDCCamera {
 
 fn color_coding_name(coding: dc1394color_coding_t) -> &'static str {
     match coding {
-        DC1394_COLOR_CODING_MONO8  => "MONO8",
+        DC1394_COLOR_CODING_MONO8 => "MONO8",
         DC1394_COLOR_CODING_MONO16 => "MONO16",
-        DC1394_COLOR_CODING_RGB8   => "RGB8",
-        DC1394_COLOR_CODING_RGB16  => "RGB16",
+        DC1394_COLOR_CODING_RGB8 => "RGB8",
+        DC1394_COLOR_CODING_RGB16 => "RGB16",
         DC1394_COLOR_CODING_YUV411 => "YUV411",
         DC1394_COLOR_CODING_YUV422 => "YUV422",
         DC1394_COLOR_CODING_YUV444 => "YUV444",
-        DC1394_COLOR_CODING_RAW8   => "RAW8",
-        DC1394_COLOR_CODING_RAW16  => "RAW16",
-        _                          => "UNKNOWN",
+        DC1394_COLOR_CODING_RAW8 => "RAW8",
+        DC1394_COLOR_CODING_RAW16 => "RAW16",
+        _ => "UNKNOWN",
     }
 }
 
@@ -600,7 +885,10 @@ mod tests {
     fn default_properties() {
         let d = IIDCCamera::new();
         assert_eq!(d.device_type(), DeviceType::Camera);
-        assert_eq!(d.get_property("CameraIndex").unwrap(), PropertyValue::Integer(0));
+        assert_eq!(
+            d.get_property("CameraIndex").unwrap(),
+            PropertyValue::Integer(0)
+        );
         assert_eq!(d.get_image_width(), 640);
         assert_eq!(d.get_image_height(), 480);
         assert_eq!(d.get_bit_depth(), 8);
@@ -611,14 +899,16 @@ mod tests {
     #[test]
     fn set_camera_index_pre_init() {
         let mut d = IIDCCamera::new();
-        d.set_property("CameraIndex", PropertyValue::Integer(2)).unwrap();
+        d.set_property("CameraIndex", PropertyValue::Integer(2))
+            .unwrap();
         assert_eq!(d.camera_index, 2);
     }
 
     #[test]
     fn set_video_mode_known() {
         let mut d = IIDCCamera::new();
-        d.set_property("VideoMode", PropertyValue::String("1024x768_MONO8".into())).unwrap();
+        d.set_property("VideoMode", PropertyValue::String("1024x768_MONO8".into()))
+            .unwrap();
         assert_eq!(d.video_mode_id, DC1394_VIDEO_MODE_1024x768_MONO8);
         // Dimensions update pre-init only for known modes
         assert_eq!(d.width, 1024);
@@ -628,7 +918,9 @@ mod tests {
     #[test]
     fn set_unknown_video_mode_rejected() {
         let mut d = IIDCCamera::new();
-        assert!(d.set_property("VideoMode", PropertyValue::String("notamode".into())).is_err());
+        assert!(d
+            .set_property("VideoMode", PropertyValue::String("notamode".into()))
+            .is_err());
     }
 
     #[test]
@@ -656,5 +948,15 @@ mod tests {
     fn snap_without_init_errors() {
         let mut d = IIDCCamera::new();
         assert!(d.snap_image().is_err());
+    }
+
+    #[test]
+    fn negative_sequence_count_rejected_before_hardware_access() {
+        let mut d = IIDCCamera::new();
+
+        assert_eq!(
+            d.start_sequence_acquisition(-1, 0.0),
+            Err(MmError::InvalidInputParam)
+        );
     }
 }

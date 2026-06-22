@@ -1,7 +1,6 @@
 /// Conix Research XYZ controller XY stage.
 ///
 /// Protocol (TX `\r`, RX `\r`):
-///   `WHO\r`          → `:A <version>` (used to detect controller type)
 ///   `COMUNITS UM\r`  → `:A`           (set units to microns)
 ///   `W X Y\r`        → `:A <x> <y>`  (positions in µm)
 ///   `M X<x> Y<y>\r`  → `:A`          (move to absolute position in µm)
@@ -37,9 +36,6 @@ impl ConixXYStage {
         let mut props = PropertyMap::new();
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
-            .unwrap();
-        props
-            .define_property("Version", PropertyValue::String(String::new()), true)
             .unwrap();
         Self {
             props,
@@ -93,8 +89,12 @@ impl ConixXYStage {
                 resp
             )));
         }
-        let x: f64 = parts[0].parse().unwrap_or(0.0);
-        let y: f64 = parts[1].parse().unwrap_or(0.0);
+        let x: f64 = parts[0]
+            .parse()
+            .map_err(|_| MmError::LocallyDefined(format!("Cannot parse W X Y: {}", resp)))?;
+        let y: f64 = parts[1]
+            .parse()
+            .map_err(|_| MmError::LocallyDefined(format!("Cannot parse W X Y: {}", resp)))?;
         Ok((x, y))
     }
 }
@@ -117,19 +117,8 @@ impl Device for ConixXYStage {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
-        let ver = self.cmd("WHO")?;
-        let ver_str = check_a(&ver)?.to_string();
-        self.props
-            .entry_mut("Version")
-            .map(|e| e.value = PropertyValue::String(ver_str));
-        // Set units to microns
         let r = self.cmd("COMUNITS UM")?;
         check_a(&r)?;
-        // Query position
-        let pos = self.cmd("W X Y")?;
-        let (x, y) = Self::parse_xy(&pos)?;
-        self.x_um = x;
-        self.y_um = y;
         self.initialized = true;
         Ok(())
     }
@@ -215,10 +204,7 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_transport() -> MockTransport {
-        MockTransport::new()
-            .any(":A ConixXYZ v1.5") // WHO
-            .any(":A") // COMUNITS UM
-            .any(":A 100.5 200.3") // W X Y
+        MockTransport::new().expect("COMUNITS UM\r", ":A")
     }
 
     #[test]
@@ -284,6 +270,14 @@ mod tests {
         let mut s = ConixXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         assert_eq!(s.get_xy_position_um().unwrap(), (7.0, 8.0));
+    }
+
+    #[test]
+    fn malformed_position_reply_errors_instead_of_zeroing_axis() {
+        let t = make_transport().expect("W X Y\r", ":A abc 8");
+        let mut s = ConixXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.get_xy_position_um().is_err());
     }
 
     #[test]

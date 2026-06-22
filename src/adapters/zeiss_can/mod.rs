@@ -1,9 +1,11 @@
+pub mod halogen_lamp;
 pub mod hub;
 pub mod shutter;
 pub mod turret;
 pub mod xy_stage;
 pub mod z_stage;
 
+pub use halogen_lamp::ZeissHalogenLamp;
 pub use hub::ZeissHub;
 pub use shutter::ZeissShutter;
 pub use turret::{TurretId, ZeissTurret};
@@ -15,16 +17,16 @@ use crate::types::DeviceType;
 
 use hub::{
     DEVICE_NAME_BASE_PORT, DEVICE_NAME_CONDENSER, DEVICE_NAME_EXT_FILTER, DEVICE_NAME_FILTER1,
-    DEVICE_NAME_FILTER2, DEVICE_NAME_FOCUS, DEVICE_NAME_HALOGEN, DEVICE_NAME_HUB,
+    DEVICE_NAME_FILTER2, DEVICE_NAME_FOCUS, DEVICE_NAME_HALOGEN_LAMP, DEVICE_NAME_HUB,
     DEVICE_NAME_LAMP_MIRROR, DEVICE_NAME_OBJECTIVES, DEVICE_NAME_OPTOVAR, DEVICE_NAME_REFLECTOR,
     DEVICE_NAME_SHUTTER, DEVICE_NAME_SHUTTER_MF, DEVICE_NAME_SIDE_PORT, DEVICE_NAME_TUBELENS,
-    DEVICE_NAME_XY,
+    DEVICE_NAME_XY, DEVICE_NAME_Z_STAGE,
 };
 
 static DEVICE_LIST: &[DeviceInfo] = &[
     DeviceInfo {
         name: DEVICE_NAME_HUB,
-        description: "Zeiss CAN-bus hub",
+        description: "Zeiss Axiovert 200m controlled through serial interface",
         device_type: DeviceType::Hub,
     },
     DeviceInfo {
@@ -39,73 +41,78 @@ static DEVICE_LIST: &[DeviceInfo] = &[
     },
     DeviceInfo {
         name: DEVICE_NAME_FOCUS,
-        description: "Z-drive",
+        description: "Z-Drive",
         device_type: DeviceType::Stage,
     },
     DeviceInfo {
         name: DEVICE_NAME_XY,
-        description: "XY Stage",
+        description: "XY Stage (MCU 28)",
         device_type: DeviceType::XYStage,
     },
     DeviceInfo {
+        name: DEVICE_NAME_Z_STAGE,
+        description: "Z Stage on Axioskop 2",
+        device_type: DeviceType::Stage,
+    },
+    DeviceInfo {
         name: DEVICE_NAME_REFLECTOR,
-        description: "Zeiss Reflector Turret adapter",
+        description: "Reflector Turret (dichroics)",
         device_type: DeviceType::State,
     },
     DeviceInfo {
         name: DEVICE_NAME_OBJECTIVES,
-        description: "Zeiss Objective Turret adapter",
+        description: "Objective Turret",
         device_type: DeviceType::State,
     },
     DeviceInfo {
         name: DEVICE_NAME_OPTOVAR,
-        description: "Zeiss Optovar Turret adapter",
+        description: "Optovar",
         device_type: DeviceType::State,
     },
     DeviceInfo {
         name: DEVICE_NAME_FILTER1,
-        description: "Zeiss FilterWheel1 adapter",
+        description: "FilterWheel 1",
         device_type: DeviceType::State,
     },
     DeviceInfo {
         name: DEVICE_NAME_FILTER2,
-        description: "Zeiss FilterWheel2 adapter",
+        description: "FilterWheel 2",
         device_type: DeviceType::State,
     },
     DeviceInfo {
         name: DEVICE_NAME_CONDENSER,
-        description: "Zeiss Condenser adapter",
+        description: "Condenser Turret",
         device_type: DeviceType::State,
     },
     DeviceInfo {
         name: DEVICE_NAME_TUBELENS,
-        description: "Zeiss Tubelens Turret adapter",
+        description: "Tubelens",
         device_type: DeviceType::State,
     },
     DeviceInfo {
         name: DEVICE_NAME_BASE_PORT,
-        description: "Zeiss BasePort Slider adapter",
+        description: "BasePort Slider",
         device_type: DeviceType::State,
     },
     DeviceInfo {
         name: DEVICE_NAME_SIDE_PORT,
-        description: "Zeiss SidePort Turret adapter",
+        description: "SidePort switcher",
         device_type: DeviceType::State,
     },
     DeviceInfo {
         name: DEVICE_NAME_LAMP_MIRROR,
-        description: "Zeiss Lamp Mirror adapter",
+        description: "Lamp Switcher",
         device_type: DeviceType::State,
+    },
+    DeviceInfo {
+        name: DEVICE_NAME_HALOGEN_LAMP,
+        description: "Halogen Lamp",
+        device_type: DeviceType::Shutter,
     },
     DeviceInfo {
         name: DEVICE_NAME_EXT_FILTER,
-        description: "Zeiss External FilterWheel adapter",
+        description: "External FilterWheel",
         device_type: DeviceType::State,
-    },
-    DeviceInfo {
-        name: DEVICE_NAME_HALOGEN,
-        description: "Zeiss Halogen Lamp",
-        device_type: DeviceType::Shutter,
     },
 ];
 
@@ -124,6 +131,7 @@ impl AdapterModule for ZeissCanAdapter {
             DEVICE_NAME_SHUTTER => Some(AnyDevice::Shutter(Box::new(ZeissShutter::new()))),
             DEVICE_NAME_SHUTTER_MF => Some(AnyDevice::Shutter(Box::new(ZeissShutter::new_mf()))),
             DEVICE_NAME_FOCUS => Some(AnyDevice::Stage(Box::new(ZeissFocusStage::new()))),
+            DEVICE_NAME_Z_STAGE => Some(AnyDevice::Stage(Box::new(ZeissFocusStage::new_z_stage()))),
             DEVICE_NAME_XY => Some(AnyDevice::XYStage(Box::new(ZeissMcu28XYStage::new()))),
             DEVICE_NAME_REFLECTOR => Some(AnyDevice::StateDevice(Box::new(ZeissTurret::new(
                 TurretId::Reflector,
@@ -165,11 +173,47 @@ impl AdapterModule for ZeissCanAdapter {
                 TurretId::LampMirror,
                 2,
             )))),
+            DEVICE_NAME_HALOGEN_LAMP => Some(AnyDevice::Shutter(Box::new(ZeissHalogenLamp::new()))),
             DEVICE_NAME_EXT_FILTER => Some(AnyDevice::StateDevice(Box::new(ZeissTurret::new(
                 TurretId::ExternalFilterWheel,
                 6,
             )))),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_descriptions_match_upstream_registration() {
+        let adapter = ZeissCanAdapter;
+        let descriptions: Vec<(&str, &str)> = adapter
+            .devices()
+            .iter()
+            .map(|info| (info.name, info.description))
+            .collect();
+
+        assert!(descriptions.contains(&(
+            DEVICE_NAME_HUB,
+            "Zeiss Axiovert 200m controlled through serial interface"
+        )));
+        assert!(descriptions.contains(&(DEVICE_NAME_REFLECTOR, "Reflector Turret (dichroics)")));
+        assert!(descriptions.contains(&(DEVICE_NAME_SIDE_PORT, "SidePort switcher")));
+        assert!(descriptions.contains(&(DEVICE_NAME_BASE_PORT, "BasePort Slider")));
+        assert!(descriptions.contains(&(DEVICE_NAME_OBJECTIVES, "Objective Turret")));
+        assert!(descriptions.contains(&(DEVICE_NAME_CONDENSER, "Condenser Turret")));
+        assert!(descriptions.contains(&(DEVICE_NAME_OPTOVAR, "Optovar")));
+        assert!(descriptions.contains(&(DEVICE_NAME_TUBELENS, "Tubelens")));
+        assert!(descriptions.contains(&(DEVICE_NAME_LAMP_MIRROR, "Lamp Switcher")));
+        assert!(descriptions.contains(&(DEVICE_NAME_HALOGEN_LAMP, "Halogen Lamp")));
+        assert!(descriptions.contains(&(DEVICE_NAME_FOCUS, "Z-Drive")));
+        assert!(descriptions.contains(&(DEVICE_NAME_EXT_FILTER, "External FilterWheel")));
+        assert!(descriptions.contains(&(DEVICE_NAME_FILTER1, "FilterWheel 1")));
+        assert!(descriptions.contains(&(DEVICE_NAME_FILTER2, "FilterWheel 2")));
+        assert!(descriptions.contains(&(DEVICE_NAME_XY, "XY Stage (MCU 28)")));
+        assert!(descriptions.contains(&(DEVICE_NAME_Z_STAGE, "Z Stage on Axioskop 2")));
     }
 }

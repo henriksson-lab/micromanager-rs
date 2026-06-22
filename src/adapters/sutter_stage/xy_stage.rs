@@ -12,12 +12,13 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::cell::RefCell;
 
 const STEPS_PER_UM: f64 = 10.0;
 
 pub struct SutterXYStage {
     props: PropertyMap,
-    transport: Option<Box<dyn Transport>>,
+    transport: Option<RefCell<Box<dyn Transport>>>,
     initialized: bool,
     x_um: f64,
     y_um: f64,
@@ -29,9 +30,6 @@ impl SutterXYStage {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
-        props
-            .define_property("Version", PropertyValue::String(String::new()), true)
-            .unwrap();
         Self {
             props,
             transport: None,
@@ -42,21 +40,21 @@ impl SutterXYStage {
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
-        self.transport = Some(t);
+        self.transport = Some(RefCell::new(t));
         self
     }
 
-    fn call_transport<R, F>(&mut self, f: F) -> MmResult<R>
+    fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
     {
-        match self.transport.as_mut() {
-            Some(t) => f(t.as_mut()),
+        match self.transport.as_ref() {
+            Some(t) => f(t.borrow_mut().as_mut()),
             None => Err(MmError::NotConnected),
         }
     }
 
-    fn cmd(&mut self, command: &str) -> MmResult<String> {
+    fn cmd(&self, command: &str) -> MmResult<String> {
         let c = format!("{}\r", command);
         self.call_transport(|t| {
             let r = t.send_recv(&c)?;
@@ -82,9 +80,88 @@ impl SutterXYStage {
                 resp
             )));
         }
-        let x: i64 = parts[0].parse().unwrap_or(0);
-        let y: i64 = parts[1].parse().unwrap_or(0);
+        let x: i64 = parts[0].parse().map_err(|_| {
+            MmError::LocallyDefined(format!("Cannot parse WHERE X value: {}", resp))
+        })?;
+        let y: i64 = parts[1].parse().map_err(|_| {
+            MmError::LocallyDefined(format!("Cannot parse WHERE Y value: {}", resp))
+        })?;
         Ok((x as f64 / STEPS_PER_UM, y as f64 / STEPS_PER_UM))
+    }
+
+    fn axis_busy(&self, axis: char) -> bool {
+        match self.cmd(&format!("STATUS {}", axis)) {
+            Ok(resp) => resp.as_bytes().first() == Some(&b'B'),
+            Err(_) => false,
+        }
+    }
+
+    fn set_high_command_level(&self) -> MmResult<()> {
+        self.call_transport(|t| t.send_bytes(&[255, 65]))
+    }
+
+    fn parse_first_i64(resp: &str, command: &str) -> MmResult<i64> {
+        let body = Self::check_a(resp)?;
+        body.split_whitespace()
+            .next()
+            .ok_or_else(|| MmError::LocallyDefined(format!("Cannot parse {}: {}", command, resp)))?
+            .parse()
+            .map_err(|_| MmError::LocallyDefined(format!("Cannot parse {}: {}", command, resp)))
+    }
+
+    fn step_size_um(&self) -> MmResult<f64> {
+        self.props
+            .get("StepSize")?
+            .as_f64()
+            .ok_or(MmError::InvalidPropertyValue)
+    }
+
+    fn read_scaled_setting(&self, command: &str) -> MmResult<PropertyValue> {
+        let resp = self.cmd(&format!("{} X Y", command))?;
+        let pulses = Self::parse_first_i64(&resp, command)?;
+        Ok(PropertyValue::Float(pulses as f64 * self.step_size_um()?))
+    }
+
+    fn read_acceleration(&self) -> MmResult<PropertyValue> {
+        let resp = self.cmd("ACCEL X Y")?;
+        Ok(PropertyValue::Integer(Self::parse_first_i64(
+            &resp, "ACCEL",
+        )?))
+    }
+
+    fn set_step_size(&mut self, val: PropertyValue) -> MmResult<()> {
+        let step_size = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+        if step_size <= 0.0 {
+            return Err(MmError::InvalidPropertyValue);
+        }
+        self.props.set("StepSize", PropertyValue::Float(step_size))
+    }
+
+    fn set_scaled_setting(
+        &mut self,
+        property: &str,
+        command: &str,
+        val: PropertyValue,
+        min_pulses: i64,
+        max_pulses: i64,
+    ) -> MmResult<()> {
+        let requested = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+        let step_size = self.step_size_um()?;
+        let pulses = (requested / step_size).trunc() as i64;
+        let pulses = pulses.clamp(min_pulses, max_pulses);
+        let resp = self.cmd(&format!("{} X={} Y={}", command, pulses, pulses))?;
+        Self::check_a(&resp)?;
+        self.props
+            .set(property, PropertyValue::Float(pulses as f64 * step_size))
+    }
+
+    fn set_acceleration(&mut self, val: PropertyValue) -> MmResult<()> {
+        let accel = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+        let accel = accel.clamp(1, 255);
+        let resp = self.cmd(&format!("ACCEL X={} Y={}", accel, accel))?;
+        Self::check_a(&resp)?;
+        self.props
+            .set("Acceleration", PropertyValue::Integer(accel))
     }
 }
 
@@ -99,22 +176,30 @@ impl Device for SutterXYStage {
         "XYStage"
     }
     fn description(&self) -> &str {
-        "Sutter Instruments MPC-200 XY stage"
+        "SutterStage XY stage driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
-        let ver = self.cmd("VER")?;
-        let ver_str = Self::check_a(&ver)?.to_string();
-        self.props
-            .entry_mut("Version")
-            .map(|e| e.value = PropertyValue::String(ver_str));
-        let pos = self.cmd("WHERE X Y")?;
-        let (x, y) = Self::parse_xy(&pos)?;
-        self.x_um = x;
-        self.y_um = y;
+        self.set_high_command_level()?;
+        if !self.props.has_property("StepSize") {
+            self.props
+                .define_property("StepSize", PropertyValue::Float(1.0), false)?;
+        }
+        if !self.props.has_property("Speed") {
+            self.props
+                .define_property("Speed", PropertyValue::Float(2500.0), false)?;
+        }
+        if !self.props.has_property("StartSpeed") {
+            self.props
+                .define_property("StartSpeed", PropertyValue::Float(500.0), false)?;
+        }
+        if !self.props.has_property("Acceleration") {
+            self.props
+                .define_property("Acceleration", PropertyValue::Float(100.0), false)?;
+        }
         self.initialized = true;
         Ok(())
     }
@@ -125,10 +210,21 @@ impl Device for SutterXYStage {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
-        self.props.get(name).cloned()
+        match name {
+            "Speed" => self.read_scaled_setting("SPEED"),
+            "StartSpeed" => self.read_scaled_setting("STSPEED"),
+            "Acceleration" => self.read_acceleration(),
+            _ => self.props.get(name).cloned(),
+        }
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "StepSize" => self.set_step_size(val),
+            "Speed" => self.set_scaled_setting("Speed", "SPEED", val, 85, 276480),
+            "StartSpeed" => self.set_scaled_setting("StartSpeed", "STSPEED", val, 1000, 276480),
+            "Acceleration" => self.set_acceleration(val),
+            _ => self.props.set(name, val),
+        }
     }
     fn property_names(&self) -> Vec<String> {
         self.props.property_names().to_vec()
@@ -143,7 +239,7 @@ impl Device for SutterXYStage {
         DeviceType::XYStage
     }
     fn busy(&self) -> bool {
-        false
+        self.axis_busy('X') || self.axis_busy('Y')
     }
 }
 
@@ -158,7 +254,8 @@ impl XYStage for SutterXYStage {
         Ok(())
     }
     fn get_xy_position_um(&self) -> MmResult<(f64, f64)> {
-        Ok((self.x_um, self.y_um))
+        let pos = self.cmd("WHERE X Y")?;
+        Self::parse_xy(&pos)
     }
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
         let xs = (dx * STEPS_PER_UM).round() as i64;
@@ -201,14 +298,22 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .any(":A MPC200 v2.5")
-            .any(":A 500 1000") // 50 µm, 100 µm
     }
 
     #[test]
     fn initialize() {
-        let mut s = SutterXYStage::new().with_transport(Box::new(make_transport()));
+        let t = make_transport().expect("WHERE X Y\r", ":A 500 1000");
+        let mut s = SutterXYStage::new().with_transport(Box::new(t));
+        assert!(!s.has_property("StepSize"));
+        assert!(!s.has_property("Speed"));
+        assert!(!s.has_property("StartSpeed"));
+        assert!(!s.has_property("Acceleration"));
+        assert!(!s.has_property("Version"));
         s.initialize().unwrap();
+        assert!(s.has_property("StepSize"));
+        assert!(s.has_property("Speed"));
+        assert!(s.has_property("StartSpeed"));
+        assert!(s.has_property("Acceleration"));
         let (x, y) = s.get_xy_position_um().unwrap();
         assert!((x - 50.0).abs() < 1e-9);
         assert!((y - 100.0).abs() < 1e-9);
@@ -216,7 +321,9 @@ mod tests {
 
     #[test]
     fn move_absolute() {
-        let t = make_transport().any(":A");
+        let t = make_transport()
+            .any(":A")
+            .expect("WHERE X Y\r", ":A 2000 3000");
         let mut s = SutterXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_xy_position_um(200.0, 300.0).unwrap();
@@ -238,10 +345,80 @@ mod tests {
 
     #[test]
     fn relative_move_uses_movrel() {
-        let t = make_transport().expect("MOVREL X=20 Y=-30\r", ":A");
+        let t = make_transport()
+            .expect("MOVREL X=20 Y=-30\r", ":A")
+            .expect("WHERE X Y\r", ":A 520 970");
         let mut s = SutterXYStage::new().with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_relative_xy_position_um(2.0, -3.0).unwrap();
         assert_eq!(s.get_xy_position_um().unwrap(), (52.0, 97.0));
+    }
+
+    #[test]
+    fn busy_polls_status_for_both_axes() {
+        let t = make_transport()
+            .expect("STATUS X\r", "N")
+            .expect("STATUS Y\r", "B");
+        let mut s = SutterXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.busy());
+    }
+
+    #[test]
+    fn malformed_where_errors_instead_of_zeroing_position() {
+        let t = make_transport().expect("WHERE X Y\r", ":A bad 1000");
+        let mut s = SutterXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.get_xy_position_um().is_err());
+    }
+
+    #[test]
+    fn speed_properties_use_upstream_controller_commands() {
+        let t = make_transport()
+            .expect("SPEED X=2500 Y=2500\r", ":A")
+            .expect("SPEED X Y\r", ":A 1200 1200")
+            .expect("STSPEED X=1000 Y=1000\r", ":A")
+            .expect("STSPEED X Y\r", ":A 1000 1000")
+            .expect("ACCEL X=255 Y=255\r", ":A")
+            .expect("ACCEL X Y\r", ":A 42 42");
+        let mut s = SutterXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        s.set_property("StepSize", PropertyValue::Float(0.2))
+            .unwrap();
+        s.set_property("Speed", PropertyValue::Float(500.0))
+            .unwrap();
+        assert_eq!(
+            s.get_property("Speed").unwrap(),
+            PropertyValue::Float(240.0)
+        );
+        s.set_property("StartSpeed", PropertyValue::Float(10.0))
+            .unwrap();
+        assert_eq!(
+            s.get_property("StartSpeed").unwrap(),
+            PropertyValue::Float(200.0)
+        );
+        s.set_property("Acceleration", PropertyValue::Integer(999))
+            .unwrap();
+        assert_eq!(
+            s.get_property("Acceleration").unwrap(),
+            PropertyValue::Integer(42)
+        );
+    }
+
+    #[test]
+    fn invalid_step_size_is_rejected_without_cache_drift() {
+        let mut s = SutterXYStage::new();
+        s.initialize().err();
+        s.props
+            .define_property("StepSize", PropertyValue::Float(1.0), false)
+            .unwrap();
+        assert_eq!(
+            s.set_property("StepSize", PropertyValue::Float(0.0)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            s.get_property("StepSize").unwrap(),
+            PropertyValue::Float(1.0)
+        );
     }
 }

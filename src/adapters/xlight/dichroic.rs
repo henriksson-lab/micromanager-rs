@@ -146,11 +146,25 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_rejected() {
-        let t = MockTransport::new().expect("rC\r", "rC1");
+    fn out_of_range_state_clamps_to_last_position() {
+        let t = MockTransport::new()
+            .expect("rC\r", "rC1")
+            .expect("C5\r", "C5");
         let mut d = XLightDichroic::new().with_transport(Box::new(t));
         d.initialize().unwrap();
-        assert!(d.set_position(5).is_err());
+        d.set_position(5).unwrap();
+        assert_eq!(d.get_position().unwrap(), 4);
+    }
+
+    #[test]
+    fn negative_state_property_clamps_to_zero() {
+        let t = MockTransport::new()
+            .expect("rC\r", "rC3")
+            .expect("C1\r", "C1");
+        let mut d = XLightDichroic::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        d.set_property("State", PropertyValue::Integer(-1)).unwrap();
+        assert_eq!(d.get_position().unwrap(), 0);
     }
 
     #[test]

@@ -123,12 +123,12 @@ pub struct dc1394camera_list_t {
 #[repr(C)]
 pub struct dc1394video_frame_t {
     pub image: *mut u8,
-    pub size: [u32; 2],              // [width, height]
-    pub position: [u32; 2],          // [x, y]
+    pub size: [u32; 2],     // [width, height]
+    pub position: [u32; 2], // [x, y]
     pub color_filter: u32,
-    pub stride: u32,                 // bytes per row
+    pub stride: u32, // bytes per row
     pub color_coding: dc1394color_coding_t,
-    pub data_depth: u32,             // bits per component
+    pub data_depth: u32, // bits per component
     pub id: u32,
     // implicit 4-byte pad here (C aligns u64 to 8 bytes)
     pub allocated_image_bytes: u64,
@@ -164,11 +164,8 @@ extern "C" {
     ) -> dc1394error_t;
     pub fn dc1394_camera_free_list(list: *mut dc1394camera_list_t);
 
-    pub fn dc1394_camera_new_unit(
-        dc: *mut dc1394_t,
-        guid: u64,
-        unit: c_int,
-    ) -> *mut dc1394camera_t;
+    pub fn dc1394_camera_new_unit(dc: *mut dc1394_t, guid: u64, unit: c_int)
+        -> *mut dc1394camera_t;
     pub fn dc1394_camera_free(camera: *mut dc1394camera_t);
     pub fn dc1394_camera_reset(camera: *mut dc1394camera_t) -> dc1394error_t;
 

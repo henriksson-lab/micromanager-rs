@@ -468,10 +468,7 @@ mod tests {
 
     #[test]
     fn initialized_live_properties_query_controller() {
-        let t = make_transport()
-            .any("L=1")
-            .any("P=12.5")
-            .any("P=12.25");
+        let t = make_transport().any("L=1").any("P=12.5").any("P=12.25");
         let mut dev = Sapphire::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
 

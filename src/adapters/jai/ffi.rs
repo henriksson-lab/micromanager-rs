@@ -1,9 +1,8 @@
+#![allow(dead_code)]
+
 /// Raw `extern "C"` bindings to the JAI shim (`src/shim.cpp`).
 ///
 /// All types are opaque — only pointers to them are used on the Rust side.
-
-#![allow(dead_code)]
-
 use std::ffi::c_char;
 use std::os::raw::{c_int, c_uint};
 
@@ -81,11 +80,7 @@ extern "C" {
     pub fn jai_device_payload_size(d: *mut JaiDevice) -> u64;
     pub fn jai_device_stream_enable(d: *mut JaiDevice) -> c_int;
     pub fn jai_device_stream_disable(d: *mut JaiDevice) -> c_int;
-    pub fn jai_device_get_connection_id(
-        d: *mut JaiDevice,
-        buf: *mut c_char,
-        len: c_int,
-    ) -> c_int;
+    pub fn jai_device_get_connection_id(d: *mut JaiDevice, buf: *mut c_char, len: c_int) -> c_int;
 
     // Stream
     pub fn jai_stream_open(connection_id: *const c_char) -> *mut JaiStream;

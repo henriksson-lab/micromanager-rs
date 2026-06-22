@@ -111,7 +111,7 @@ impl Device for LStepXYStage {
         "XYStage"
     }
     fn description(&self) -> &str {
-        "LStep XY Stage"
+        "L-Step XY stage driver adapter"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -127,7 +127,7 @@ impl Device for LStepXYStage {
             )));
         }
 
-        let _ = self.send_only("!autostatus 0");
+        self.send_only("!autostatus 0")?;
 
         // Check axis count via ?det
         let det = self.cmd("?det")?;
@@ -141,7 +141,7 @@ impl Device for LStepXYStage {
         }
 
         // Switch to µm and read current position
-        let _ = self.send_only("!dim 1 1");
+        self.send_only("!dim 1 1")?;
         let pos = self.cmd("?pos")?;
         let (x, y) = Self::parse_pos(&pos)?;
         self.x_um = x;
@@ -183,8 +183,8 @@ impl Device for LStepXYStage {
 
 impl XYStage for LStepXYStage {
     fn set_xy_position_um(&mut self, x: f64, y: f64) -> MmResult<()> {
-        let _ = self.send_only("!dim 1 1");
-        let _ = self.send_only(&format!("!moa {} {}", x, y));
+        self.send_only("!dim 1 1")?;
+        self.send_only(&format!("!moa {} {}", x, y))?;
         self.check_err()?;
         self.x_um = x;
         self.y_um = y;
@@ -196,8 +196,8 @@ impl XYStage for LStepXYStage {
     }
 
     fn set_relative_xy_position_um(&mut self, dx: f64, dy: f64) -> MmResult<()> {
-        let _ = self.send_only("!dim 1 1");
-        let _ = self.send_only(&format!("!mor {} {}", dx, dy));
+        self.send_only("!dim 1 1")?;
+        self.send_only(&format!("!mor {} {}", dx, dy))?;
         self.check_err()?;
         self.x_um += dx;
         self.y_um += dy;
@@ -205,15 +205,13 @@ impl XYStage for LStepXYStage {
     }
 
     fn home(&mut self) -> MmResult<()> {
-        let _ = self.send_only("!cal x");
-        let _ = self.send_only("!cal y");
-        self.x_um = 0.0;
-        self.y_um = 0.0;
+        self.send_only("!cal x")?;
+        self.send_only("!cal y")?;
         Ok(())
     }
 
     fn stop(&mut self) -> MmResult<()> {
-        let _ = self.send_only("a");
+        self.send_only("a")?;
         Ok(())
     }
 
@@ -226,7 +224,7 @@ impl XYStage for LStepXYStage {
     }
 
     fn set_origin(&mut self) -> MmResult<()> {
-        let _ = self.send_only("!pos 0 0");
+        self.send_only("!pos 0 0")?;
         self.check_err()?;
         self.x_um = 0.0;
         self.y_um = 0.0;
@@ -238,6 +236,51 @@ impl XYStage for LStepXYStage {
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use std::collections::VecDeque;
+
+    struct FailingSendTransport {
+        fail_on: String,
+        last_sent: String,
+        replies: VecDeque<(String, String)>,
+    }
+
+    impl FailingSendTransport {
+        fn new(fail_on: &str, replies: Vec<(&str, &str)>) -> Self {
+            Self {
+                fail_on: fail_on.to_string(),
+                last_sent: String::new(),
+                replies: replies
+                    .into_iter()
+                    .map(|(cmd, resp)| (cmd.to_string(), resp.to_string()))
+                    .collect(),
+            }
+        }
+    }
+
+    impl Transport for FailingSendTransport {
+        fn send(&mut self, cmd: &str) -> MmResult<()> {
+            if cmd == self.fail_on {
+                return Err(MmError::LocallyDefined("send failed".into()));
+            }
+            self.last_sent = cmd.to_string();
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            let (expected, reply) = self.replies.pop_front().ok_or(MmError::SerialTimeout)?;
+            if self.last_sent != expected {
+                return Err(MmError::LocallyDefined(format!(
+                    "expected {}, got {}",
+                    expected, self.last_sent
+                )));
+            }
+            Ok(reply)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            Ok(())
+        }
+    }
 
     fn make_transport() -> MockTransport {
         // Only include commands that are send_recv (cmd()), not send_only().
@@ -253,6 +296,8 @@ mod tests {
     #[test]
     fn initialize() {
         let mut stage = LStepXYStage::new().with_transport(Box::new(make_transport()));
+        assert_eq!(stage.name(), "XYStage");
+        assert_eq!(stage.description(), "L-Step XY stage driver adapter");
         stage.initialize().unwrap();
         assert_eq!(stage.get_xy_position_um().unwrap(), (10.0, 20.0));
     }
@@ -290,5 +335,29 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(LStepXYStage::new().initialize().is_err());
+    }
+
+    #[test]
+    fn home_does_not_invent_zero_position() {
+        let mut stage = LStepXYStage::new().with_transport(Box::new(make_transport()));
+        stage.initialize().unwrap();
+        stage.home().unwrap();
+        assert_eq!(stage.get_xy_position_um().unwrap(), (10.0, 20.0));
+    }
+
+    #[test]
+    fn move_send_failure_preserves_cached_position() {
+        let t = FailingSendTransport::new(
+            "!moa 100 200\r",
+            vec![
+                ("?ver\r", "Vers:LS v3.1"),
+                ("?det\r", "32"),
+                ("?pos\r", "10.000 20.000"),
+            ],
+        );
+        let mut stage = LStepXYStage::new().with_transport(Box::new(t));
+        stage.initialize().unwrap();
+        assert!(stage.set_xy_position_um(100.0, 200.0).is_err());
+        assert_eq!(stage.get_xy_position_um().unwrap(), (10.0, 20.0));
     }
 }

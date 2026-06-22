@@ -24,14 +24,9 @@
 ///   XLightV3SpinningSlider  (prefix D, 0-based)
 ///   XLightV3CameraSlider    (prefix P, 0-based)
 ///   XLightV3SpinningMotor   (prefix N, 0-based, 2 positions)
-
 pub mod state_device;
 
 pub use state_device::{
-    XLightV3EmissionWheel,
-    XLightV3DichroicWheel,
-    XLightV3ExcitationWheel,
-    XLightV3SpinningSlider,
-    XLightV3CameraSlider,
-    XLightV3SpinningMotor,
+    XLightV3CameraSlider, XLightV3DichroicWheel, XLightV3EmissionWheel, XLightV3ExcitationWheel,
+    XLightV3SpinningMotor, XLightV3SpinningSlider,
 };

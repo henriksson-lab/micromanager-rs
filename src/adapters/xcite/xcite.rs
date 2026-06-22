@@ -26,8 +26,7 @@ use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::RefCell;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const INTENSITIES: [&str; 5] = ["0", "12", "25", "50", "100"];
 
@@ -532,23 +531,12 @@ impl Device for XCite120PC {
         DeviceType::Shutter
     }
     fn busy(&self) -> bool {
-        self.last_shutter_time
-            .map(|last| last.elapsed().as_secs_f64() * 1000.0 < self.shutter_dwell_time_ms)
-            .unwrap_or(false)
+        false
     }
 }
 
 impl Shutter for XCite120PC {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
-        if open && self.shutter_dwell_time_ms > 0.0 {
-            if let Some(closed_at) = self.time_shutter_closed {
-                let elapsed = closed_at.elapsed();
-                let dwell = Duration::from_secs_f64(self.shutter_dwell_time_ms / 1000.0);
-                if elapsed < dwell {
-                    thread::sleep(dwell - elapsed);
-                }
-            }
-        }
         let cmd = if open { "mm" } else { "zz" };
         self.cmd_no_response(cmd)?;
         self.shutter_open = open;
@@ -604,6 +592,19 @@ mod tests {
         assert!(dev.get_open().unwrap());
         dev.set_open(false).unwrap();
         assert!(!dev.get_open().unwrap());
+    }
+
+    #[test]
+    fn busy_stays_false_after_blocking_shutter_command() {
+        let t = make_transport().any("OK");
+        let mut dev = XCite120PC::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.set_property("Shutter-Dwell-Time", PropertyValue::Float(5000.0))
+            .unwrap();
+
+        dev.set_open(true).unwrap();
+
+        assert!(!dev.busy());
     }
 
     #[test]

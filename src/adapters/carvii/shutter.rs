@@ -72,7 +72,15 @@ impl CarviiShutter {
 
     fn query_open(&self) -> MmResult<bool> {
         let resp = self.cmd("rS")?;
-        let open = resp.as_bytes().get(2) == Some(&b'1');
+        let bytes = resp.as_bytes();
+        if bytes.first() != Some(&b'r') || bytes.get(1) != Some(&b'S') {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        let open = match bytes.get(2) {
+            Some(b'0') => false,
+            Some(b'1') => true,
+            _ => return Err(MmError::SerialInvalidResponse),
+        };
         self.open.set(open);
         Ok(open)
     }
@@ -228,5 +236,16 @@ mod tests {
             s.get_property("State").unwrap(),
             PropertyValue::String("Open".into())
         );
+    }
+
+    #[test]
+    fn get_open_rejects_malformed_live_state() {
+        let t = MockTransport::new()
+            .expect("rS\r", "rS0")
+            .expect("rS\r", "rX1");
+        let mut s = CarviiShutter::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.get_open(), Err(MmError::SerialInvalidResponse));
+        assert!(!s.open.get());
     }
 }

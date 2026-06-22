@@ -27,6 +27,7 @@ pub struct VortranStradus {
     initialized: bool,
     is_open: Cell<bool>,
     power_setpoint_mw: Cell<f64>,
+    digital_peak_power: Cell<f64>,
 }
 
 impl VortranStradus {
@@ -42,10 +43,33 @@ impl VortranStradus {
             .define_property("PowerSetting", PropertyValue::Float(0.0), false)
             .unwrap();
         props
+            .define_property("DigitalPeakPowerSetting", PropertyValue::Float(0.0), false)
+            .unwrap();
+        props
             .define_property("LaserEmission", PropertyValue::String("OFF".into()), false)
             .unwrap();
         props
             .set_allowed_values("LaserEmission", &["OFF", "ON"])
+            .unwrap();
+        props
+            .define_property(
+                "DigitalModulation",
+                PropertyValue::String("OFF".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("DigitalModulation", &["OFF", "ON"])
+            .unwrap();
+        props
+            .define_property(
+                "AnalogModulation",
+                PropertyValue::String("OFF".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("AnalogModulation", &["OFF", "ON"])
             .unwrap();
         props
             .define_property("LaserID", PropertyValue::String(String::new()), true)
@@ -86,6 +110,13 @@ impl VortranStradus {
             .define_property("Power", PropertyValue::String("0.00".into()), true)
             .unwrap();
         props
+            .define_property(
+                "DigitalPeakPower",
+                PropertyValue::String("0.00".into()),
+                true,
+            )
+            .unwrap();
+        props
             .define_property("SerialCommand", PropertyValue::String(String::new()), false)
             .unwrap();
         props
@@ -98,6 +129,7 @@ impl VortranStradus {
             initialized: false,
             is_open: Cell::new(false),
             power_setpoint_mw: Cell::new(0.0),
+            digital_peak_power: Cell::new(0.0),
         }
     }
 
@@ -117,7 +149,7 @@ impl VortranStradus {
     }
 
     fn cmd(&self, command: &str) -> MmResult<String> {
-        let cmd = command.to_string();
+        let cmd = format!("{command}\r");
         self.call_transport(|t| {
             let r = t.send_recv(&cmd)?;
             Ok(r.trim().to_string())
@@ -152,6 +184,32 @@ impl VortranStradus {
         self.props
             .entry_mut("LaserEmission")
             .map(|e| e.value = PropertyValue::String(if open { "ON" } else { "OFF" }.into()));
+    }
+
+    fn on_off_from_response(resp: &str) -> MmResult<String> {
+        match Self::parse_val(resp) {
+            "0" => Ok("OFF".into()),
+            "1" => Ok("ON".into()),
+            _ => Err(MmError::SerialInvalidResponse),
+        }
+    }
+
+    fn set_on_off_property(
+        &mut self,
+        name: &str,
+        command_key: &str,
+        val: PropertyValue,
+    ) -> MmResult<()> {
+        let value = val.as_str().to_string();
+        let bit = match value.as_str() {
+            "OFF" => "0",
+            "ON" => "1",
+            _ => return Err(MmError::InvalidPropertyValue),
+        };
+        if self.initialized {
+            self.cmd(&format!("{}={}", command_key, bit))?;
+        }
+        self.props.set(name, PropertyValue::String(value))
     }
 }
 
@@ -215,6 +273,24 @@ impl Device for VortranStradus {
         if let Ok(r) = self.cmd("?lps") {
             self.set_power_setpoint(Self::parse_val(&r).parse().unwrap_or(0.0));
         }
+        if let Ok(r) = self.cmd("?pp") {
+            self.digital_peak_power
+                .set(Self::parse_val(&r).parse().unwrap_or(0.0));
+        }
+        if let Ok(r) = self.cmd("?pul") {
+            if let Ok(value) = Self::on_off_from_response(&r) {
+                self.props
+                    .entry_mut("DigitalModulation")
+                    .map(|e| e.value = PropertyValue::String(value));
+            }
+        }
+        if let Ok(r) = self.cmd("?epc") {
+            if let Ok(value) = Self::on_off_from_response(&r) {
+                self.props
+                    .entry_mut("AnalogModulation")
+                    .map(|e| e.value = PropertyValue::String(value));
+            }
+        }
         self.initialized = true;
         Ok(())
     }
@@ -255,7 +331,7 @@ impl Device for VortranStradus {
                 "LaserID" => return Ok(PropertyValue::String(self.query_value("?li")?)),
                 "FirmwareVersion" => return Ok(PropertyValue::String(self.query_value("?fv")?)),
                 "UsageHours" | "Hours" => {
-                    return Ok(PropertyValue::String(self.query_value("?lh")?))
+                    return Ok(PropertyValue::String(self.query_value("?lh")?));
                 }
                 "FaultCode" => {
                     let code = Self::parse_val(&self.cmd("?fc")?)
@@ -264,7 +340,7 @@ impl Device for VortranStradus {
                     return Ok(PropertyValue::Integer(code));
                 }
                 "BaseplateTemp" => {
-                    return Ok(PropertyValue::String(self.query_value("?bt")?));
+                    return Ok(PropertyValue::String(self.query_value("?bpt")?));
                 }
                 "Current" => {
                     return Ok(PropertyValue::String(self.query_value("?lc")?));
@@ -283,22 +359,58 @@ impl Device for VortranStradus {
                 "Power" => {
                     return Ok(PropertyValue::String(self.query_value("?lp")?));
                 }
+                "DigitalPeakPower" => {
+                    return Ok(PropertyValue::String(self.query_value("?pp")?));
+                }
+                "DigitalPeakPowerSetting" => {
+                    let value = Self::parse_val(&self.cmd("?pp")?)
+                        .parse()
+                        .map_err(|_| MmError::SerialInvalidResponse)?;
+                    self.digital_peak_power.set(value);
+                    return Ok(PropertyValue::Float(value));
+                }
+                "DigitalModulation" => {
+                    return Ok(PropertyValue::String(Self::on_off_from_response(
+                        &self.cmd("?pul")?,
+                    )?));
+                }
+                "AnalogModulation" => {
+                    return Ok(PropertyValue::String(Self::on_off_from_response(
+                        &self.cmd("?epc")?,
+                    )?));
+                }
                 _ => {}
             }
         }
         if name == "PowerSetpoint_mW" || name == "PowerSetting" {
             return Ok(PropertyValue::Float(self.power_setpoint_mw.get()));
         }
+        if name == "DigitalPeakPowerSetting" {
+            return Ok(PropertyValue::Float(self.digital_peak_power.get()));
+        }
         self.props.get(name).cloned()
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "Port" && self.initialized {
+            return Err(MmError::CanNotSetProperty);
+        }
         if name == "PowerSetpoint_mW" || name == "PowerSetting" {
             let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
             if self.initialized {
                 self.cmd(&format!("lp={:.4}", mw))?;
             }
             self.set_power_setpoint(mw);
+            return Ok(());
+        }
+        if name == "DigitalPeakPowerSetting" {
+            let mw = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            if self.initialized {
+                self.cmd(&format!("pp={}", mw as i64))?;
+            }
+            self.digital_peak_power.set(mw);
+            self.props
+                .set("DigitalPeakPowerSetting", PropertyValue::Float(mw))?;
             return Ok(());
         }
         if name == "LaserEmission" {
@@ -313,6 +425,12 @@ impl Device for VortranStradus {
             }
             self.set_laser_emission(open);
             return Ok(());
+        }
+        if name == "DigitalModulation" {
+            return self.set_on_off_property("DigitalModulation", "pul", val);
+        }
+        if name == "AnalogModulation" {
+            return self.set_on_off_property("AnalogModulation", "epc", val);
         }
         if name == "SerialCommand" {
             let command = val.as_str().to_string();
@@ -375,18 +493,21 @@ mod tests {
 
     fn make_transport() -> MockTransport {
         MockTransport::new()
-            .expect("?li", "?LI=STRADUS-473-50")
-            .expect("?fv", "?FV=v2.1")
-            .expect("?lh", "?LH=100.5")
-            .expect("?fc", "?FC=0")
-            .expect("?il", "?IL=1")
-            .expect("?le", "?LE=0")
-            .expect("?lps", "?LPS=30.0")
+            .expect("?li\r", "?LI=STRADUS-473-50")
+            .expect("?fv\r", "?FV=v2.1")
+            .expect("?lh\r", "?LH=100.5")
+            .expect("?fc\r", "?FC=0")
+            .expect("?il\r", "?IL=1")
+            .expect("?le\r", "?LE=0")
+            .expect("?lps\r", "?LPS=30.0")
+            .expect("?pp\r", "?PP=60")
+            .expect("?pul\r", "?PUL=0")
+            .expect("?epc\r", "?EPC=0")
     }
 
     #[test]
     fn initialize() {
-        let t = make_transport().expect("?le", "?LE=0");
+        let t = make_transport().expect("?le\r", "?LE=0");
         let mut dev = VortranStradus::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
@@ -396,10 +517,10 @@ mod tests {
     #[test]
     fn open_close() {
         let t = make_transport()
-            .expect("le=1", "?LE=1")
-            .expect("?le", "?LE=1")
-            .expect("le=0", "?LE=0")
-            .expect("?le", "?LE=0");
+            .expect("le=1\r", "?LE=1")
+            .expect("?le\r", "?LE=1")
+            .expect("le=0\r", "?LE=0")
+            .expect("?le\r", "?LE=0");
         let mut dev = VortranStradus::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_open(true).unwrap();
@@ -421,9 +542,9 @@ mod tests {
     #[test]
     fn readonly_properties_are_live_reads() {
         let t = make_transport()
-            .expect("?lps", "?LPS=45.5")
-            .expect("?fc", "?FC=7")
-            .expect("?il", "?IL=0");
+            .expect("?lps\r", "?LPS=45.5")
+            .expect("?fc\r", "?FC=7")
+            .expect("?il\r", "?IL=0");
         let mut dev = VortranStradus::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         assert_eq!(
@@ -442,7 +563,7 @@ mod tests {
 
     #[test]
     fn serial_command_action_stores_response() {
-        let t = make_transport().expect("?fc", "?FC=3");
+        let t = make_transport().expect("?fc\r", "?FC=3");
         let mut dev = VortranStradus::new().with_transport(Box::new(t));
         dev.initialize().unwrap();
         dev.set_property("SerialCommand", PropertyValue::String("?fc".into()))
@@ -459,17 +580,33 @@ mod tests {
     }
 
     #[test]
+    fn initialized_port_change_is_rejected() {
+        let t = make_transport();
+        let mut dev = VortranStradus::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("Port", PropertyValue::String("COM2".into())),
+            Err(MmError::CanNotSetProperty)
+        );
+        assert_eq!(
+            dev.get_property("Port").unwrap(),
+            PropertyValue::String("Undefined".into())
+        );
+    }
+
+    #[test]
     fn upstream_identity_and_property_aliases() {
         let t = make_transport()
-            .expect("?lps", "?LPS=42.0")
-            .expect("lp=55.0000", "?LPS=55.0")
-            .expect("?le", "?LE=1")
-            .expect("le=0", "?LE=0")
-            .expect("?lh", "?LH=101.5")
-            .expect("?lp", "?LP=54.9")
-            .expect("?lc", "?LC=120.1")
-            .expect("?bt", "?BT=31.0")
-            .expect("?fd", "?FD=No Fault");
+            .expect("?lps\r", "?LPS=42.0")
+            .expect("lp=55.0000\r", "?LPS=55.0")
+            .expect("?le\r", "?LE=1")
+            .expect("le=0\r", "?LE=0")
+            .expect("?lh\r", "?LH=101.5")
+            .expect("?lp\r", "?LP=54.9")
+            .expect("?lc\r", "?LC=120.1")
+            .expect("?bpt\r", "?BPT=31.0")
+            .expect("?fd\r", "?FD=No Fault");
         let mut dev = VortranStradus::new().with_transport(Box::new(t));
         assert_eq!(dev.name(), "VLTStradus");
         assert_eq!(dev.description(), "VORTRAN Stradus Laser");
@@ -507,5 +644,42 @@ mod tests {
             dev.get_property("OperatingCondition").unwrap(),
             PropertyValue::String("No Fault".into())
         );
+    }
+
+    #[test]
+    fn upstream_digital_and_analog_modulation_properties() {
+        let t = make_transport()
+            .expect("?pp\r", "?PP=75")
+            .expect("pp=80\r", "?PP=80")
+            .expect("?pp\r", "?PP=80")
+            .expect("?pul\r", "?PUL=1")
+            .expect("pul=0\r", "?PUL=0")
+            .expect("?epc\r", "?EPC=1")
+            .expect("epc=0\r", "?EPC=0");
+        let mut dev = VortranStradus::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.get_property("DigitalPeakPowerSetting").unwrap(),
+            PropertyValue::Float(75.0)
+        );
+        dev.set_property("DigitalPeakPowerSetting", PropertyValue::Float(80.0))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("DigitalPeakPower").unwrap(),
+            PropertyValue::String("80".into())
+        );
+        assert_eq!(
+            dev.get_property("DigitalModulation").unwrap(),
+            PropertyValue::String("ON".into())
+        );
+        dev.set_property("DigitalModulation", PropertyValue::String("OFF".into()))
+            .unwrap();
+        assert_eq!(
+            dev.get_property("AnalogModulation").unwrap(),
+            PropertyValue::String("ON".into())
+        );
+        dev.set_property("AnalogModulation", PropertyValue::String("OFF".into()))
+            .unwrap();
     }
 }

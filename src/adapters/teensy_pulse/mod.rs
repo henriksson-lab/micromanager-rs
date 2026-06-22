@@ -25,19 +25,21 @@ use crate::types::DeviceType;
 
 pub const DEVICE_NAME: &str = "TeensyPulseGenerator";
 
-static DEVICE_LIST: &[DeviceInfo] = &[
-    DeviceInfo {
-        name: DEVICE_NAME,
-        description: "Teensy-based pulse generator",
-        device_type: DeviceType::Generic,
-    },
-];
+static DEVICE_LIST: &[DeviceInfo] = &[DeviceInfo {
+    name: DEVICE_NAME,
+    description: "Teensy-based pulse generator",
+    device_type: DeviceType::Generic,
+}];
 
 pub struct TeensyPulseAdapter;
 
 impl AdapterModule for TeensyPulseAdapter {
-    fn module_name(&self) -> &'static str { "teensy-pulse" }
-    fn devices(&self) -> &'static [DeviceInfo] { DEVICE_LIST }
+    fn module_name(&self) -> &'static str {
+        "teensy-pulse"
+    }
+    fn devices(&self) -> &'static [DeviceInfo] {
+        DEVICE_LIST
+    }
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
             DEVICE_NAME => Some(AnyDevice::Generic(Box::new(TeensyPulseGenerator::new()))),

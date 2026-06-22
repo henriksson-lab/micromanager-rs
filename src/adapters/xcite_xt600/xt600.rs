@@ -165,12 +165,8 @@ impl Xt600Shutter {
 
     fn live_open(&self) -> MmResult<bool> {
         let response = self.cmd("on?")?;
-        let idx = self.led_number as usize;
-        let open = response
-            .as_bytes()
-            .get(idx)
-            .map(|b| *b == b'1' || *b == b'Y' || *b == b'y')
-            .unwrap_or_else(|| response.trim() == "1");
+        let field = self.led_field(&response);
+        let open = matches!(field.as_str(), "1" | "Y" | "y");
         self.is_open.set(open);
         Ok(open)
     }
@@ -323,17 +319,13 @@ impl Device for Xt600Shutter {
                 .entry_mut("UnitStatus")
                 .map(|e| e.value = PropertyValue::String(status));
         }
-        // Turn LED off at init
-        self.set_led_on_off(false)?;
-        self.is_open.set(false);
+        self.live_open()?;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.set_led_on_off(false);
-            self.is_open.set(false);
             self.initialized = false;
         }
         Ok(())
@@ -404,7 +396,7 @@ impl Device for Xt600Shutter {
 impl Shutter for Xt600Shutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         self.set_led_on_off(open)?;
-        self.is_open.set(open);
+        self.live_open()?;
         Ok(())
     }
 
@@ -427,14 +419,17 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_xt600() -> Xt600Shutter {
-        let t = MockTransport::new().any("SN99999").any("0").any("ok");
+        let t = MockTransport::new().any("SN99999").any("0").any("0");
         let mut s = Xt600Shutter::new(Xt600Model::Xt600, 0).with_transport(Box::new(t));
         s.initialize().unwrap();
         s
     }
 
     fn make_xt900() -> Xt600Shutter {
-        let t = MockTransport::new().any("SN99999").any("0").any("ok");
+        let t = MockTransport::new()
+            .any("SN99999")
+            .any("0")
+            .any("0,0,0,0,0,0,0,0,0");
         let mut s = Xt600Shutter::new(Xt600Model::Xt900, 8).with_transport(Box::new(t));
         s.initialize().unwrap();
         s
@@ -469,6 +464,7 @@ mod tests {
         s.transport = Some(RefCell::new(Box::new(
             MockTransport::new()
                 .expect("on=1\r", "ok")
+                .expect("on?\r", "1")
                 .expect("on?\r", "1"),
         )));
         s.set_open(true).unwrap();
@@ -481,6 +477,7 @@ mod tests {
         s.transport = Some(RefCell::new(Box::new(
             MockTransport::new()
                 .expect("of=1\r", "ok")
+                .expect("on?\r", "0")
                 .expect("on?\r", "0"),
         )));
         s.set_open(false).unwrap();
@@ -523,7 +520,7 @@ mod tests {
         let t = MockTransport::new()
             .any("SN99999")
             .any("0")
-            .any("ok")
+            .any("0")
             .expect("sn?\r", "SNXT")
             .expect("us?\r", "READY")
             .expect("on?\r", "1");
@@ -548,7 +545,7 @@ mod tests {
         let t = MockTransport::new()
             .any("SN99999")
             .any("0")
-            .any("ok")
+            .any("0")
             .expect("lw?\r", "385,470,550,635,740,770")
             .expect("ts?\r", "0,1,2,3,4,5");
         let mut s = Xt600Shutter::new(Xt600Model::Xt600, 4).with_transport(Box::new(t));
@@ -564,9 +561,44 @@ mod tests {
     }
 
     #[test]
+    fn open_state_uses_indexed_query_field() {
+        let t = MockTransport::new()
+            .any("SN99999")
+            .any("0")
+            .any("0,0,0,0,0,0")
+            .expect("on?\r", "0,0,0,0,1,0");
+        let mut s = Xt600Shutter::new(Xt600Model::Xt600, 4).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.get_open().unwrap());
+    }
+
+    #[test]
     fn no_transport_error() {
         assert!(Xt600Shutter::new(Xt600Model::Xt600, 0)
             .initialize()
             .is_err());
+    }
+
+    #[test]
+    fn initialize_preserves_live_open_state() {
+        let t = MockTransport::new()
+            .expect("sn?\r", "SN99999")
+            .expect("us?\r", "0")
+            .expect("on?\r", "1");
+        let mut s = Xt600Shutter::new(Xt600Model::Xt600, 0).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.is_open.get());
+    }
+
+    #[test]
+    fn set_open_uses_verified_live_state() {
+        let mut s = make_xt600();
+        s.transport = Some(RefCell::new(Box::new(
+            MockTransport::new()
+                .expect("on=1\r", "ok")
+                .expect("on?\r", "0"),
+        )));
+        s.set_open(true).unwrap();
+        assert!(!s.is_open.get());
     }
 }

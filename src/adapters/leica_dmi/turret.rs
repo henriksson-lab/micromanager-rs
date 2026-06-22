@@ -112,16 +112,25 @@ impl LeicaDMITurret {
         let pos_1based: u64 = val_str
             .parse()
             .map_err(|_| MmError::SerialInvalidResponse)?;
-        Ok(pos_1based.saturating_sub(1))
+        if pos_1based == 0 || pos_1based > self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
+        Ok(pos_1based - 1)
     }
 }
 
 impl Device for LeicaDMITurret {
     fn name(&self) -> &str {
-        "LeicaDMITurret"
+        match self.turret_type {
+            TurretType::ILTurret => "IL-Turret",
+            TurretType::ObjectiveTurret => "ObjectiveTurret",
+        }
     }
     fn description(&self) -> &str {
-        "Leica DMI turret/nosepiece"
+        match self.turret_type {
+            TurretType::ILTurret => "Incident Light Reflector Turret",
+            TurretType::ObjectiveTurret => "Objective Turret",
+        }
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -271,6 +280,17 @@ mod tests {
     }
 
     #[test]
+    fn dmi_turret_identity_matches_upstream_devices() {
+        let il = LeicaDMITurret::new(TurretType::ILTurret);
+        assert_eq!(il.name(), "IL-Turret");
+        assert_eq!(il.description(), "Incident Light Reflector Turret");
+
+        let objective = LeicaDMITurret::new(TurretType::ObjectiveTurret);
+        assert_eq!(objective.name(), "ObjectiveTurret");
+        assert_eq!(objective.description(), "Objective Turret");
+    }
+
+    #[test]
     fn objective_turret_initialize() {
         let t = MockTransport::new().expect("76023\r", "76023 1"); // pos 0 (0-based)
         let mut turret =
@@ -285,6 +305,13 @@ mod tests {
         let mut turret = LeicaDMITurret::new(TurretType::ILTurret).with_transport(Box::new(t));
         turret.initialize().unwrap();
         assert!(turret.set_position(6).is_err());
+    }
+
+    #[test]
+    fn zero_wire_position_is_rejected_on_initialize() {
+        let t = MockTransport::new().expect("78023\r", "78023 0");
+        let mut turret = LeicaDMITurret::new(TurretType::ILTurret).with_transport(Box::new(t));
+        assert_eq!(turret.initialize(), Err(MmError::UnknownPosition));
     }
 
     #[test]

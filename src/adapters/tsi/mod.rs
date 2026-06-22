@@ -1,3 +1,5 @@
+#[cfg(feature = "tsi")]
+pub mod camera;
 /// Thorlabs Scientific Imaging camera adapter (TSI SDK3).
 ///
 /// Wraps the Thorlabs Scientific Camera SDK3 C API behind the MicroManager
@@ -7,10 +9,13 @@
 ///
 /// 1. Install the [Thorlabs Scientific Camera SDK](https://www.thorlabs.com/software_pages/ViewSoftwarePage.cfm?Code=ThorCam)
 ///    for your platform.
-/// 2. Build with: `cargo build -p mm-adapter-tsi --features tsi`
+/// 2. Build with: `cargo build --features tsi`
 ///
 /// Set `TSI_SDK_ROOT` to the SDK installation root if it is not found
-/// automatically.
+/// automatically. The build also accepts Thorlabs' native
+/// `THORLABS_TSI_SDK_PATH_64_BIT` / `THORLABS_TSI_SDK_PATH_32_BIT`
+/// environment variables. The root must contain `tl_camera_sdk.h` and
+/// `libtl_camera_sdk.*`.
 ///
 /// # Properties
 ///
@@ -37,7 +42,5 @@
 
 #[cfg(feature = "tsi")]
 pub mod ffi;
-#[cfg(feature = "tsi")]
-pub mod camera;
 #[cfg(feature = "tsi")]
 pub use camera::TSICamera;

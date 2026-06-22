@@ -16,6 +16,7 @@ pub struct Lambda2Hub {
     initialized: bool,
     controller_type: String,
     controller_id: String,
+    motors_enabled: bool,
 }
 
 impl Lambda2Hub {
@@ -24,12 +25,23 @@ impl Lambda2Hub {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
+        props
+            .define_property(
+                "Motors Enabled",
+                PropertyValue::String("True".into()),
+                false,
+            )
+            .unwrap();
+        props
+            .set_allowed_values("Motors Enabled", &["True", "False"])
+            .unwrap();
         Self {
             props,
             transport: None,
             initialized: false,
             controller_type: "10-2".into(),
             controller_id: String::new(),
+            motors_enabled: true,
         }
     }
 
@@ -60,25 +72,25 @@ impl Lambda2Hub {
         })
     }
 
-    /// Query controller type with [0xFD]; returns text like "SC\r" or "10-3 vX.Y\r".
-    fn query_controller_type(&mut self) -> MmResult<(String, String)> {
-        self.call_transport(|t| {
-            t.send_bytes(&[0xFD])?;
-            let ans = t.receive_line()?;
-            let ans = ans.trim().to_string();
-            let ctrl_type = if ans.starts_with("SC") {
-                "SC".to_string()
-            } else if ans.starts_with("10-3") {
-                "10-3".to_string()
-            } else {
-                "10-2".to_string()
-            };
-            Ok((ctrl_type, ans))
-        })
-    }
-
     pub fn controller_type(&self) -> &str {
         &self.controller_type
+    }
+
+    fn set_motors_enabled(&mut self, enabled: bool) -> MmResult<()> {
+        let cmd = if enabled { 0xCF } else { 0xCE };
+        self.call_transport(|t| {
+            t.send_bytes(&[cmd])?;
+            let resp = t.receive_bytes(2)?;
+            if resp.len() != 2 || resp[0] != cmd || resp[1] != 0x0D {
+                return Err(MmError::SerialInvalidResponse);
+            }
+            Ok(())
+        })?;
+        self.motors_enabled = enabled;
+        self.props.set(
+            "Motors Enabled",
+            PropertyValue::String(if enabled { "True" } else { "False" }.into()),
+        )
     }
 }
 
@@ -101,9 +113,6 @@ impl Device for Lambda2Hub {
             return Err(MmError::NotConnected);
         }
         self.go_online()?;
-        let (ctype, cid) = self.query_controller_type()?;
-        self.controller_type = ctype;
-        self.controller_id = cid;
         self.initialized = true;
         Ok(())
     }
@@ -117,12 +126,22 @@ impl Device for Lambda2Hub {
         match name {
             "ControllerType" => Ok(PropertyValue::String(self.controller_type.clone())),
             "ControllerID" => Ok(PropertyValue::String(self.controller_id.clone())),
+            "Motors Enabled" => Ok(PropertyValue::String(
+                if self.motors_enabled { "True" } else { "False" }.into(),
+            )),
             _ => self.props.get(name).cloned(),
         }
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
-        self.props.set(name, val)
+        match name {
+            "Motors Enabled" => match val.as_str() {
+                "True" => self.set_motors_enabled(true),
+                "False" => self.set_motors_enabled(false),
+                _ => Err(MmError::InvalidPropertyValue),
+            },
+            _ => self.props.set(name, val),
+        }
     }
 
     fn property_names(&self) -> Vec<String> {
@@ -145,11 +164,11 @@ impl Device for Lambda2Hub {
 impl Hub for Lambda2Hub {
     fn detect_installed_devices(&mut self) -> MmResult<Vec<String>> {
         Ok(vec![
-            "Lambda2-Wheel-A".to_string(),
-            "Lambda2-Wheel-B".to_string(),
-            "Lambda2-Wheel-C".to_string(),
-            "Lambda2-Shutter-A".to_string(),
-            "Lambda2-Shutter-B".to_string(),
+            "Wheel-A".to_string(),
+            "Wheel-B".to_string(),
+            "Wheel-C".to_string(),
+            "Shutter-A".to_string(),
+            "Shutter-B".to_string(),
             "VF-5".to_string(),
         ])
     }
@@ -163,13 +182,10 @@ mod tests {
     #[test]
     fn hub_initialize() {
         // go-online: send 0xEE, recv [0xEE, 0x0D]
-        // query type: send 0xFD, recv "10-3 v1.0\r"
-        let t = MockTransport::new()
-            .expect_binary(&[0xEE, 0x0D])
-            .any("10-3 v1.0");
+        let t = MockTransport::new().expect_binary(&[0xEE, 0x0D]);
         let mut hub = Lambda2Hub::new().with_transport(Box::new(t));
         hub.initialize().unwrap();
-        assert_eq!(hub.controller_type(), "10-3");
+        assert_eq!(hub.controller_type(), "10-2");
     }
 
     #[test]
@@ -180,13 +196,55 @@ mod tests {
 
     #[test]
     fn detect_installed_devices() {
-        let t = MockTransport::new().expect_binary(&[0xEE, 0x0D]).any("SC");
+        let t = MockTransport::new().expect_binary(&[0xEE, 0x0D]);
         let mut hub = Lambda2Hub::new().with_transport(Box::new(t));
         hub.initialize().unwrap();
         let devs = hub.detect_installed_devices().unwrap();
-        assert!(devs.contains(&"Lambda2-Shutter-A".to_string()));
-        assert!(devs.contains(&"Lambda2-Wheel-A".to_string()));
-        assert!(devs.contains(&"Lambda2-Wheel-C".to_string()));
-        assert!(devs.contains(&"VF-5".to_string()));
+        assert_eq!(
+            devs,
+            vec![
+                "Wheel-A".to_string(),
+                "Wheel-B".to_string(),
+                "Wheel-C".to_string(),
+                "Shutter-A".to_string(),
+                "Shutter-B".to_string(),
+                "VF-5".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn motors_enabled_property_sends_upstream_commands() {
+        let t = MockTransport::new()
+            .expect_binary(&[0xEE, 0x0D])
+            .expect_binary(&[0xCE, 0x0D])
+            .expect_binary(&[0xCF, 0x0D]);
+        let mut hub = Lambda2Hub::new().with_transport(Box::new(t));
+        hub.initialize().unwrap();
+        hub.set_property("Motors Enabled", PropertyValue::String("False".into()))
+            .unwrap();
+        assert_eq!(
+            hub.get_property("Motors Enabled").unwrap(),
+            PropertyValue::String("False".into())
+        );
+        hub.set_property("Motors Enabled", PropertyValue::String("True".into()))
+            .unwrap();
+        assert_eq!(
+            hub.get_property("Motors Enabled").unwrap(),
+            PropertyValue::String("True".into())
+        );
+    }
+
+    #[test]
+    fn invalid_motors_enabled_value_rejected_without_transport() {
+        let mut hub = Lambda2Hub::new();
+        assert_eq!(
+            hub.set_property("Motors Enabled", PropertyValue::String("Maybe".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            hub.get_property("Motors Enabled").unwrap(),
+            PropertyValue::String("True".into())
+        );
     }
 }

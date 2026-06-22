@@ -19,6 +19,12 @@
 /// - `GRAY8` — 1 byte/pixel grayscale (converted from BGR via `cvtColor`)
 /// - `BGR8` — 3 bytes/pixel in OpenCV native BGR order
 ///
+/// # Setup
+///
+/// Debian/Ubuntu: `apt install libopencv-dev pkg-config clang libclang-dev`.
+/// The `opencv` crate probes `opencv4.pc`/`opencv.pc`, then CMake
+/// (`OpenCV_DIR` or `CMAKE_PREFIX_PATH`).
+///
 /// # Usage
 ///
 /// ```rust,no_run

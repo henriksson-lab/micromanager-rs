@@ -42,20 +42,19 @@ impl OfZStage {
 
     pub fn sync_state(&mut self) -> MmResult<()> {
         let resp = self.send("p")?;
-        let mut parts = resp.split_whitespace();
-        let _x: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let _y: i64 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let z: i64 = parts
-            .next()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(self.steps_z);
+        let mut z = self.steps_z;
+        for token in resp.split_whitespace().take(3) {
+            match token.parse::<i64>() {
+                Ok(value) => z = value,
+                Err(_) => break,
+            }
+        }
         self.steps_z = z;
         Ok(())
     }
 
     pub fn set_origin(&mut self) -> MmResult<()> {
         self.send("zero")?;
-        self.sync_state()?;
         Ok(())
     }
 }
@@ -99,6 +98,13 @@ impl Device for OfZStage {
         self.props.get(name).cloned()
     }
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if name == "StepSizeUm" {
+            let step_size = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
+            if step_size <= 0.0 {
+                return Err(MmError::InvalidPropertyValue);
+            }
+            self.step_size_um = step_size;
+        }
         self.props.set(name, val)
     }
     fn property_names(&self) -> Vec<String> {
@@ -191,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn set_origin_sends_zero_and_resyncs_cached_position() {
+    fn set_origin_sends_zero_without_resyncing_cached_position() {
         let (mut stage, log) = make_stage();
         stage.initialize().unwrap();
         stage.set_relative_position_um(10.0).unwrap();
@@ -199,8 +205,66 @@ mod tests {
         stage.set_origin().unwrap();
 
         let pos = stage.get_position_um().unwrap();
-        assert!(pos.abs() < 0.1);
+        assert!((pos - 10.0).abs() < 0.1);
         assert!(log.lock().unwrap().iter().any(|cmd| cmd == "zero"));
-        assert!(log.lock().unwrap().iter().filter(|cmd| *cmd == "p").count() >= 2);
+        assert_eq!(
+            log.lock().unwrap().iter().filter(|cmd| *cmd == "p").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn step_size_property_updates_position_conversion() {
+        let (mut stage, _) = make_stage();
+        stage.initialize().unwrap();
+
+        stage
+            .set_property("StepSizeUm", PropertyValue::Float(0.1))
+            .unwrap();
+        stage.set_relative_position_um(1.0).unwrap();
+
+        assert!((stage.get_position_um().unwrap() - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn step_size_rejects_non_positive_values() {
+        let mut stage = OfZStage::new();
+
+        assert_eq!(
+            stage
+                .set_property("StepSizeUm", PropertyValue::Float(0.0))
+                .unwrap_err(),
+            MmError::InvalidPropertyValue
+        );
+    }
+
+    #[test]
+    fn sync_state_uses_last_successfully_parsed_position_field() {
+        let commander: Commander = Arc::new(|cmd| match cmd {
+            "p" => Ok("11 22".to_string()),
+            other => Err(MmError::LocallyDefined(format!(
+                "unexpected command {other}"
+            ))),
+        });
+        let mut stage = OfZStage::new().with_commander(commander);
+
+        stage.sync_state().unwrap();
+
+        assert_eq!(stage.steps_z, 22);
+    }
+
+    #[test]
+    fn sync_state_stops_at_first_malformed_position_field() {
+        let commander: Commander = Arc::new(|cmd| match cmd {
+            "p" => Ok("11 bad 33".to_string()),
+            other => Err(MmError::LocallyDefined(format!(
+                "unexpected command {other}"
+            ))),
+        });
+        let mut stage = OfZStage::new().with_commander(commander);
+
+        stage.sync_state().unwrap();
+
+        assert_eq!(stage.steps_z, 11);
     }
 }

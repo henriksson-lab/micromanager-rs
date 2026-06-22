@@ -201,7 +201,12 @@ impl Device for NijiController {
             let enable_key = format!("Channel{}_{}nm_Enable", ch, nm);
             let intensity_key = format!("Channel{}_{}nm_Intensity", ch, nm);
             if name == enable_key {
-                let v = val.as_str() == "1";
+                let raw = val.as_str();
+                let v = match raw {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(MmError::InvalidPropertyValue),
+                };
                 if self.initialized {
                     self.set_channel(i, v)?;
                 } else {
@@ -213,7 +218,11 @@ impl Device for NijiController {
                 return Ok(());
             }
             if name == intensity_key {
-                let pct = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u32;
+                let raw = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
+                if !(0..=100).contains(&raw) {
+                    return Err(MmError::InvalidPropertyValue);
+                }
+                let pct = raw as u32;
                 if self.initialized {
                     self.set_channel_intensity(i, pct)?;
                 } else {
@@ -323,5 +332,26 @@ mod tests {
         let mut dev = NijiController::new().with_transport(Box::new(make_init_transport()));
         dev.initialize().unwrap();
         assert_eq!(dev.fire(1.0), Err(MmError::UnsupportedCommand));
+    }
+
+    #[test]
+    fn rejects_invalid_channel_property_values_without_cache_drift() {
+        let mut dev = NijiController::new().with_transport(Box::new(make_init_transport()));
+        dev.initialize().unwrap();
+
+        assert_eq!(
+            dev.set_property("Channel1_395nm_Enable", PropertyValue::String("yes".into())),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.set_property("Channel1_395nm_Intensity", PropertyValue::Integer(-1)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            dev.set_property("Channel1_395nm_Intensity", PropertyValue::Integer(101)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(dev.channel_enabled[0], false);
+        assert_eq!(dev.channel_intensity[0], 100);
     }
 }

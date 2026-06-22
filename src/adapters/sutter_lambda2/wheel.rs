@@ -47,6 +47,12 @@ impl Lambda2Wheel {
             .define_property("Speed", PropertyValue::Integer(3), false)
             .unwrap();
         props.set_property_limits("Speed", 0.0, 7.0).unwrap();
+        props
+            .define_property("State Change Speed", PropertyValue::Integer(3), false)
+            .unwrap();
+        props
+            .set_property_limits("State Change Speed", 0.0, 7.0)
+            .unwrap();
         let wname = match wheel {
             WheelId::A => "A",
             WheelId::B => "B",
@@ -86,29 +92,33 @@ impl Lambda2Wheel {
     fn send_move(&mut self, pos: u8) -> MmResult<()> {
         let speed = self.speed;
         let wheel = self.wheel;
+        let payload = (speed << 4) | pos;
         self.call_transport(|t| {
             match wheel {
                 WheelId::A => {
-                    let cmd = (speed << 4) | pos;
+                    let cmd = payload;
                     t.send_bytes(&[cmd])?;
                     let resp = t.receive_bytes(2)?;
-                    if resp.last() != Some(&0x0D) {
+                    if resp.len() != 2 || resp[1] != 0x0D || (resp[0] != cmd && resp[0] != pos) {
                         return Err(MmError::SerialInvalidResponse);
                     }
                 }
                 WheelId::B => {
-                    let cmd = 0x80 | (speed << 4) | pos;
+                    let cmd = 0x80 | payload;
                     t.send_bytes(&[cmd])?;
                     let resp = t.receive_bytes(2)?;
-                    if resp.last() != Some(&0x0D) {
+                    if resp.len() != 2 || resp[1] != 0x0D || (resp[0] != cmd && resp[0] != pos) {
                         return Err(MmError::SerialInvalidResponse);
                     }
                 }
                 WheelId::C => {
-                    let payload = (speed << 4) | pos;
                     t.send_bytes(&[0xFC, payload])?;
                     let resp = t.receive_bytes(3)?;
-                    if resp.last() != Some(&0x0D) {
+                    if resp.len() != 3
+                        || resp[2] != 0x0D
+                        || resp[0] != 0xFC
+                        || (resp[1] != payload && resp[1] != pos)
+                    {
                         return Err(MmError::SerialInvalidResponse);
                     }
                 }
@@ -127,7 +137,7 @@ impl Device for Lambda2Wheel {
         }
     }
     fn description(&self) -> &str {
-        "Sutter Lambda 2 filter wheel"
+        "Sutter Lambda Filter Wheel"
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -153,6 +163,7 @@ impl Device for Lambda2Wheel {
                     .cloned()
                     .unwrap_or_default(),
             )),
+            "Speed" | "State Change Speed" => Ok(PropertyValue::Integer(self.speed as i64)),
             _ => self.props.get(name).cloned(),
         }
     }
@@ -167,13 +178,15 @@ impl Device for Lambda2Wheel {
                 let label = val.as_str().to_string();
                 self.set_position_by_label(&label)
             }
-            "Speed" => {
+            "Speed" | "State Change Speed" => {
                 let s = val.as_i64().ok_or(MmError::InvalidPropertyValue)? as u8;
                 if s > 7 {
                     return Err(MmError::InvalidPropertyValue);
                 }
                 self.speed = s;
-                self.props.set(name, PropertyValue::Integer(s as i64))
+                self.props.set("Speed", PropertyValue::Integer(s as i64))?;
+                self.props
+                    .set("State Change Speed", PropertyValue::Integer(s as i64))
             }
             _ => self.props.set(name, val),
         }
@@ -284,6 +297,15 @@ mod tests {
     }
 
     #[test]
+    fn wheel_c_accepts_stripped_position_echo() {
+        let t = MockTransport::new().expect_binary(&[0xFC, 0x02, 0x0D]);
+        let mut w = Lambda2Wheel::new(WheelId::C).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        w.set_position(2).unwrap();
+        assert_eq!(w.get_position().unwrap(), 2);
+    }
+
+    #[test]
     fn out_of_range_rejected() {
         let t = MockTransport::new();
         let mut w = Lambda2Wheel::new(WheelId::A).with_transport(Box::new(t));
@@ -299,5 +321,38 @@ mod tests {
         w.set_position_label(4, "FITC").unwrap();
         w.set_position_by_label("FITC").unwrap();
         assert_eq!(w.get_position().unwrap(), 4);
+    }
+
+    #[test]
+    fn rejects_wrong_echo_without_mutating_position() {
+        let t = MockTransport::new().expect_binary(&[0x35, 0x0D]);
+        let mut w = Lambda2Wheel::new(WheelId::A).with_transport(Box::new(t));
+        w.initialize().unwrap();
+        assert_eq!(w.set_position(4), Err(MmError::SerialInvalidResponse));
+        assert_eq!(w.get_position().unwrap(), 0);
+    }
+
+    #[test]
+    fn upstream_state_change_speed_name_controls_move_byte() {
+        let t = MockTransport::new().expect_binary(&[0x75, 0x0D]);
+        let mut w = Lambda2Wheel::new(WheelId::A).with_transport(Box::new(t));
+        w.set_property("State Change Speed", PropertyValue::Integer(7))
+            .unwrap();
+        assert_eq!(w.get_property("Speed").unwrap(), PropertyValue::Integer(7));
+        w.initialize().unwrap();
+        w.set_position(5).unwrap();
+    }
+
+    #[test]
+    fn invalid_state_change_speed_preserves_cached_speed() {
+        let mut w = Lambda2Wheel::new(WheelId::A);
+        assert_eq!(
+            w.set_property("State Change Speed", PropertyValue::Integer(8)),
+            Err(MmError::InvalidPropertyValue)
+        );
+        assert_eq!(
+            w.get_property("State Change Speed").unwrap(),
+            PropertyValue::Integer(3)
+        );
     }
 }

@@ -104,7 +104,7 @@ impl Device for CsuShutter {
     }
     fn description(&self) -> &str {
         if self.nir {
-            "NIR Shutter"
+            "CSUW1 NIR Shutter"
         } else {
             "CSUW1 Shutter"
         }
@@ -114,7 +114,13 @@ impl Device for CsuShutter {
         if self.transport.borrow().is_none() {
             return Err(MmError::NotConnected);
         }
-        let q = format!("{}, ?", self.prefix());
+        let q = if self.nir {
+            // Upstream NIRShutter::Initialize calls GetShutterPosition(), not
+            // GetNIRShutterPosition(); live NIR reads still use SH2 below.
+            "SH, ?".to_string()
+        } else {
+            format!("{}, ?", self.prefix())
+        };
         let resp = self.cmd(&q)?;
         self.open.set(resp.contains("OPEN"));
         self.props.set(
@@ -187,11 +193,14 @@ impl Shutter for CsuShutter {
         let cmd = format!("{}{}", self.prefix(), if open { "O" } else { "C" });
         self.changed_time = Instant::now();
         let resp = self.cmd(&cmd)?;
-        if resp.contains('N') {
+        if resp.ends_with('N') {
             return Err(MmError::LocallyDefined(format!(
                 "CSU shutter NAK: {}",
                 resp
             )));
+        }
+        if !resp.ends_with('A') {
+            return Err(MmError::SerialInvalidResponse);
         }
         self.open.set(open);
         self.props.set(
@@ -223,6 +232,7 @@ mod tests {
     fn initialize_closed() {
         let t = MockTransport::new().expect("SH, ?\r", "CLOSED\rA");
         let mut s = CsuShutter::new(false).with_transport(Box::new(t));
+        assert_eq!(s.description(), "CSUW1 Shutter");
         s.initialize().unwrap();
         assert!(!s.get_open().unwrap());
     }
@@ -244,10 +254,11 @@ mod tests {
     #[test]
     fn nir_shutter() {
         let t = MockTransport::new()
-            .expect("SH2, ?\r", "OPEN\rA")
+            .expect("SH, ?\r", "OPEN\rA")
             .expect("SH2, ?\r", "OPEN\rA")
             .expect("SH2C\r", "A");
         let mut s = CsuShutter::new(true).with_transport(Box::new(t));
+        assert_eq!(s.description(), "CSUW1 NIR Shutter");
         s.initialize().unwrap();
         assert!(s.get_open().unwrap());
         s.set_open(false).unwrap();
@@ -257,13 +268,21 @@ mod tests {
     #[test]
     fn nir_get_open_reads_live_state() {
         let t = MockTransport::new()
-            .expect("SH2, ?\r", "CLOSED\rA")
+            .expect("SH, ?\r", "CLOSED\rA")
             .expect("SH2O\r", "A")
             .expect("SH2, ?\r", "CLOSED\rA");
         let mut s = CsuShutter::new(true).with_transport(Box::new(t));
         s.initialize().unwrap();
         s.set_open(true).unwrap();
         assert!(!s.get_open().unwrap());
+    }
+
+    #[test]
+    fn nir_initialize_queries_main_shutter_like_upstream() {
+        let t = MockTransport::new().expect("SH, ?\r", "OPEN\rA");
+        let mut s = CsuShutter::new(true).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.open.get());
     }
 
     #[test]
@@ -297,5 +316,18 @@ mod tests {
         assert!(s.busy());
         s.set_open(true).unwrap();
         assert!(s.busy());
+    }
+
+    #[test]
+    fn set_open_rejects_non_acknowledgment_like_upstream() {
+        let t = MockTransport::new()
+            .expect("SH, ?\r", "CLOSED\rA")
+            .expect("SHO\r", "OK");
+        let mut s = CsuShutter::new(false).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(
+            s.set_open(true).unwrap_err(),
+            MmError::SerialInvalidResponse
+        );
     }
 }

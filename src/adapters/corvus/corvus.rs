@@ -18,6 +18,7 @@ use crate::traits::{Device, XYStage};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::{Cell, RefCell};
+use std::time::Duration;
 
 pub struct CorvusXYStage {
     props: PropertyMap,
@@ -28,6 +29,7 @@ pub struct CorvusXYStage {
     speed_mm_s: Cell<f64>,
     accel_m_s2: Cell<f64>,
     joystick_enabled: Cell<bool>,
+    range_measured: Cell<bool>,
 }
 
 impl CorvusXYStage {
@@ -70,6 +72,7 @@ impl CorvusXYStage {
             speed_mm_s: Cell::new(40.0),
             accel_m_s2: Cell::new(0.2),
             joystick_enabled: Cell::new(false),
+            range_measured: Cell::new(false),
         }
     }
 
@@ -155,6 +158,46 @@ impl CorvusXYStage {
         self.accel_m_s2.set(accel);
         Ok(accel)
     }
+
+    fn wait_until_not_busy(&self) -> MmResult<()> {
+        for _ in 0..400 {
+            if !self.query_busy()? {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(MmError::Err)
+    }
+
+    fn query_measured_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
+        if !self.range_measured.get() {
+            return Err(MmError::UnknownPosition);
+        }
+        self.cmd("2 setdim")?;
+        self.call_transport(|t| {
+            t.send("getlimit ")?;
+            let x_line = t.receive_line()?;
+            let y_line = t.receive_line()?;
+            let _ack = t.receive_line()?;
+            let (x_min, x_max) = Self::parse_limit_line(&x_line)?;
+            let (y_min, y_max) = Self::parse_limit_line(&y_line)?;
+            Ok((x_min, x_max, y_min, y_max))
+        })
+    }
+
+    fn parse_limit_line(resp: &str) -> MmResult<(f64, f64)> {
+        let parts: Vec<&str> = resp.split_whitespace().collect();
+        if parts.len() < 2 {
+            return Err(MmError::SerialInvalidResponse);
+        }
+        let lower = parts[0]
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        let upper = parts[1]
+            .parse()
+            .map_err(|_| MmError::SerialInvalidResponse)?;
+        Ok((lower, upper))
+    }
 }
 
 impl Default for CorvusXYStage {
@@ -193,6 +236,7 @@ impl Device for CorvusXYStage {
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
+        self.range_measured.set(false);
         self.initialized = false;
         Ok(())
     }
@@ -241,17 +285,12 @@ impl Device for CorvusXYStage {
             "Enable joystick?" => {
                 let state = val.as_str();
                 let toggle = match state {
-                    "True" => {
-                        self.joystick_enabled.set(true);
-                        1
-                    }
-                    "False" => {
-                        self.joystick_enabled.set(false);
-                        0
-                    }
+                    "True" => 1,
+                    "False" => 0,
                     _ => return Err(MmError::InvalidPropertyValue),
                 };
                 self.cmd(&format!("{} j", toggle))?;
+                self.joystick_enabled.set(toggle == 1);
                 self.props
                     .set(name, PropertyValue::String(state.to_string()))
             }
@@ -294,7 +333,12 @@ impl XYStage for CorvusXYStage {
         Ok(())
     }
     fn home(&mut self) -> MmResult<()> {
+        self.range_measured.set(false);
         self.cmd("cal")?;
+        self.wait_until_not_busy()?;
+        self.cmd("rm")?;
+        self.wait_until_not_busy()?;
+        self.range_measured.set(true);
         self.x_um.set(0.0);
         self.y_um.set(0.0);
         Ok(())
@@ -304,7 +348,7 @@ impl XYStage for CorvusXYStage {
         Ok(())
     }
     fn get_limits_um(&self) -> MmResult<(f64, f64, f64, f64)> {
-        Err(MmError::UnknownPosition)
+        self.query_measured_limits_um()
     }
     fn get_step_size_um(&self) -> (f64, f64) {
         (0.1, 0.1)
@@ -386,6 +430,27 @@ mod tests {
     }
 
     #[test]
+    fn home_measures_range_and_get_limits_reads_controller_limits() {
+        let t = make_transport()
+            .expect("cal ", "OK")
+            .expect("st ", "0")
+            .expect("rm ", "OK")
+            .expect("st ", "0")
+            .expect("2 setdim ", "OK")
+            .expect("getlimit ", "-100.0 25000.0")
+            .expect("getlimit ", "-50.0 12000.0")
+            .expect("getlimit ", "OK");
+        let mut s = CorvusXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert_eq!(s.get_limits_um().unwrap_err(), MmError::UnknownPosition);
+        s.home().unwrap();
+        assert_eq!(
+            s.get_limits_um().unwrap(),
+            (-100.0, 25000.0, -50.0, 12000.0)
+        );
+    }
+
+    #[test]
     fn speed_accel_and_joystick_properties_send_controller_commands() {
         let t = make_transport()
             .expect("42000 setvel ", "OK")
@@ -405,6 +470,24 @@ mod tests {
         assert_eq!(
             s.get_property("Enable joystick?").unwrap(),
             PropertyValue::String("True".to_string())
+        );
+    }
+
+    #[test]
+    fn failed_joystick_write_preserves_cached_state() {
+        let t = make_transport();
+        let mut s = CorvusXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+
+        assert!(s
+            .set_property(
+                "Enable joystick?",
+                PropertyValue::String("True".to_string()),
+            )
+            .is_err());
+        assert_eq!(
+            s.get_property("Enable joystick?").unwrap(),
+            PropertyValue::String("False".to_string())
         );
     }
 

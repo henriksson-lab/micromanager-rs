@@ -18,10 +18,23 @@
 /// LED device number is 0-based (matches the C++ `m_nLedDevNumber`).
 use crate::error::{MmError, MmResult};
 use crate::property::PropertyMap;
-use crate::traits::{Device, Shutter};
+use crate::traits::{Device, Generic, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::{Cell, RefCell};
+
+pub const DEVICE_NAME_CONTROLLER: &str = "XLED1 Controller";
+pub const DEVICE_NAME_LED1: &str = "LED1 Device";
+pub const DEVICE_NAME_LED2: &str = "LED2 Device";
+pub const DEVICE_NAME_LED3: &str = "LED3 Device";
+pub const DEVICE_NAME_LED4: &str = "LED4 Device";
+
+const LED_DEVICE_NAMES: [&str; 4] = [
+    DEVICE_NAME_LED1,
+    DEVICE_NAME_LED2,
+    DEVICE_NAME_LED3,
+    DEVICE_NAME_LED4,
+];
 
 const LED_METADATA_PROPERTIES: &[(&str, &str)] = &[
     ("L.00 Device ", "ln?"),
@@ -97,6 +110,13 @@ impl XCiteLedShutter {
         self
     }
 
+    fn device_name(&self) -> &'static str {
+        LED_DEVICE_NAMES
+            .get(self.led_number as usize)
+            .copied()
+            .unwrap_or(DEVICE_NAME_LED1)
+    }
+
     fn call_transport<R, F>(&self, f: F) -> MmResult<R>
     where
         F: FnOnce(&mut dyn Transport) -> MmResult<R>,
@@ -152,12 +172,8 @@ impl XCiteLedShutter {
 
     fn live_open(&self) -> MmResult<bool> {
         let response = self.cmd("on?")?;
-        let idx = self.led_number as usize;
-        let open = response
-            .as_bytes()
-            .get(idx)
-            .map(|b| *b == b'1' || *b == b'Y' || *b == b'y')
-            .unwrap_or_else(|| response.trim() == "1");
+        let field = self.led_field(&response);
+        let open = matches!(field.as_str(), "1" | "Y" | "y");
         self.is_open.set(open);
         Ok(open)
     }
@@ -225,10 +241,10 @@ impl Default for XCiteLedController {
 
 impl Device for XCiteLedController {
     fn name(&self) -> &str {
-        "XCiteLedController"
+        DEVICE_NAME_CONTROLLER
     }
     fn description(&self) -> &str {
-        "X-Cite LED controller"
+        DEVICE_NAME_CONTROLLER
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -280,6 +296,8 @@ impl Device for XCiteLedController {
     }
 }
 
+impl Generic for XCiteLedController {}
+
 impl Default for XCiteLedShutter {
     fn default() -> Self {
         Self::new(0)
@@ -288,10 +306,10 @@ impl Default for XCiteLedShutter {
 
 impl Device for XCiteLedShutter {
     fn name(&self) -> &str {
-        "XCite-LED-Shutter"
+        self.device_name()
     }
     fn description(&self) -> &str {
-        "X-Cite XLED1 LED shutter"
+        self.device_name()
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -308,17 +326,13 @@ impl Device for XCiteLedShutter {
                 .entry_mut("UnitStatus")
                 .map(|e| e.value = PropertyValue::String(status));
         }
-        // Turn LED off at init
-        self.set_led_on_off(false)?;
-        self.is_open.set(false);
+        self.live_open()?;
         self.initialized = true;
         Ok(())
     }
 
     fn shutdown(&mut self) -> MmResult<()> {
         if self.initialized {
-            let _ = self.set_led_on_off(false);
-            self.is_open.set(false);
             self.initialized = false;
         }
         Ok(())
@@ -389,7 +403,7 @@ impl Device for XCiteLedShutter {
 impl Shutter for XCiteLedShutter {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
         self.set_led_on_off(open)?;
-        self.is_open.set(open);
+        self.live_open()?;
         Ok(())
     }
 
@@ -412,8 +426,7 @@ mod tests {
     use crate::transport::MockTransport;
 
     fn make_initialized() -> XCiteLedShutter {
-        // init: "sn?\r" → any, "of=1\r" → any (LED0 = channel '1')
-        let t = MockTransport::new().any("SN12345").any("0").any("ok");
+        let t = MockTransport::new().any("SN12345").any("0").any("0");
         let mut s = XCiteLedShutter::new(0).with_transport(Box::new(t));
         s.initialize().unwrap();
         s
@@ -432,6 +445,7 @@ mod tests {
         s.transport = Some(RefCell::new(Box::new(
             MockTransport::new()
                 .expect("on=1\r", "ok")
+                .expect("on?\r", "1")
                 .expect("on?\r", "1"),
         )));
         s.set_open(true).unwrap();
@@ -444,6 +458,7 @@ mod tests {
         s.transport = Some(RefCell::new(Box::new(
             MockTransport::new()
                 .expect("of=1\r", "ok")
+                .expect("on?\r", "0")
                 .expect("on?\r", "0"),
         )));
         s.set_open(false).unwrap();
@@ -493,7 +508,7 @@ mod tests {
         let t = MockTransport::new()
             .any("SN12345")
             .any("0")
-            .any("ok")
+            .any("0")
             .expect("sn?\r", "SN67890")
             .expect("us?\r", "READY")
             .expect("on?\r", "1");
@@ -518,7 +533,7 @@ mod tests {
         let t = MockTransport::new()
             .any("SN12345")
             .any("0")
-            .any("ok")
+            .any("0")
             .expect("lw?\r", "385,470,550,635")
             .expect("gt?\r", "31,32,33,34");
         let mut s = XCiteLedShutter::new(2).with_transport(Box::new(t));
@@ -534,7 +549,42 @@ mod tests {
     }
 
     #[test]
+    fn open_state_uses_indexed_query_field() {
+        let t = MockTransport::new()
+            .any("SN12345")
+            .any("0")
+            .any("0")
+            .expect("on?\r", "0,1,0,0");
+        let mut s = XCiteLedShutter::new(1).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.get_open().unwrap());
+    }
+
+    #[test]
     fn no_transport_error() {
         assert!(XCiteLedShutter::new(0).initialize().is_err());
+    }
+
+    #[test]
+    fn initialize_preserves_live_open_state() {
+        let t = MockTransport::new()
+            .expect("sn?\r", "SN12345")
+            .expect("us?\r", "0")
+            .expect("on?\r", "1");
+        let mut s = XCiteLedShutter::new(0).with_transport(Box::new(t));
+        s.initialize().unwrap();
+        assert!(s.is_open.get());
+    }
+
+    #[test]
+    fn set_open_uses_verified_live_state() {
+        let mut s = make_initialized();
+        s.transport = Some(RefCell::new(Box::new(
+            MockTransport::new()
+                .expect("on=1\r", "ok")
+                .expect("on?\r", "0"),
+        )));
+        s.set_open(true).unwrap();
+        assert!(!s.is_open.get());
     }
 }

@@ -139,6 +139,10 @@ impl Device for LumencorSpectra {
 
 impl Shutter for LumencorSpectra {
     fn set_open(&mut self, open: bool) -> MmResult<()> {
+        if self.open == open {
+            return Ok(());
+        }
+
         let mask = if open { ALL_ON_MASK } else { ALL_OFF_MASK };
         self.send_mask(mask)?;
         self.open = open;
@@ -160,6 +164,36 @@ impl Shutter for LumencorSpectra {
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingTransport {
+        sent: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl RecordingTransport {
+        fn new(sent: Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
+            Self { sent }
+        }
+    }
+
+    impl Transport for RecordingTransport {
+        fn send(&mut self, _cmd: &str) -> MmResult<()> {
+            Ok(())
+        }
+
+        fn receive_line(&mut self) -> MmResult<String> {
+            Err(MmError::SerialTimeout)
+        }
+
+        fn purge(&mut self) -> MmResult<()> {
+            Ok(())
+        }
+
+        fn send_bytes(&mut self, bytes: &[u8]) -> MmResult<()> {
+            self.sent.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+    }
 
     #[test]
     fn initialize() {
@@ -188,5 +222,49 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(LumencorSpectra::new().initialize().is_err());
+    }
+
+    #[test]
+    fn initialize_and_open_close_use_upstream_masks() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut s = LumencorSpectra::new()
+            .with_transport(Box::new(RecordingTransport::new(Arc::clone(&sent))));
+
+        s.initialize().unwrap();
+        s.set_open(true).unwrap();
+        s.set_open(false).unwrap();
+
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            &[
+                vec![0x57, 0x02, 0xff, 0x50],
+                vec![0x57, 0x03, 0xab, 0x50],
+                vec![0x4f, 0x7f, 0x50],
+                vec![0x4f, 0x10, 0x50],
+                vec![0x4f, 0x7f, 0x50],
+            ]
+        );
+    }
+
+    #[test]
+    fn set_open_is_noop_when_state_is_unchanged() {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let mut s = LumencorSpectra::new()
+            .with_transport(Box::new(RecordingTransport::new(Arc::clone(&sent))));
+
+        s.initialize().unwrap();
+        s.set_open(false).unwrap();
+        s.set_open(true).unwrap();
+        s.set_open(true).unwrap();
+
+        assert_eq!(
+            sent.lock().unwrap().as_slice(),
+            &[
+                vec![0x57, 0x02, 0xff, 0x50],
+                vec![0x57, 0x03, 0xab, 0x50],
+                vec![0x4f, 0x7f, 0x50],
+                vec![0x4f, 0x10, 0x50],
+            ]
+        );
     }
 }

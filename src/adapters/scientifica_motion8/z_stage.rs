@@ -76,10 +76,18 @@ impl Default for Motion8ZStage {
 
 impl Device for Motion8ZStage {
     fn name(&self) -> &str {
-        "ScientificaMotion8-ZStage"
+        match self.device_id {
+            0 => "Scientifica-Motion8-Z_Device_1",
+            1 => "Scientifica-Moition8-Z_Device_2",
+            _ => "Scientifica-Motion8-Z_Device_1",
+        }
     }
     fn description(&self) -> &str {
-        "Scientifica Motion8 Z stage"
+        match self.device_id {
+            0 => "Z Stage (Device 1)",
+            1 => "Z Stage (Device 2)",
+            _ => "Z Stage (Device 1)",
+        }
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -182,6 +190,8 @@ mod tests {
         let mut s = Motion8ZStage::new(0).with_transport(Box::new(t));
         s.initialize().unwrap();
         assert!((s.get_position_um().unwrap() - 50.0).abs() < 1e-9);
+        assert_eq!(s.name(), "Scientifica-Motion8-Z_Device_1");
+        assert_eq!(s.description(), "Z Stage (Device 1)");
     }
 
     #[test]

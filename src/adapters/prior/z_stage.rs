@@ -178,21 +178,21 @@ impl Device for PriorZStage {
             "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "MaxSpeed" if self.initialized => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(v))?;
                 self.clear_port()?;
-                Self::check_zero(&self.cmd(&format!("SMZ,{}", v))?, name)
+                Self::check_zero(&self.cmd(&format!("SMZ,{}", v))?, name)?;
+                self.props.set(name, PropertyValue::Integer(v))
             }
             "Acceleration" if self.initialized => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(v))?;
                 self.clear_port()?;
-                Self::check_zero(&self.cmd(&format!("SAZ,{}", v))?, name)
+                Self::check_zero(&self.cmd(&format!("SAZ,{}", v))?, name)?;
+                self.props.set(name, PropertyValue::Integer(v))
             }
             "SCurve" if self.initialized => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(v))?;
                 self.clear_port()?;
-                Self::check_zero(&self.cmd(&format!("SCZ,{}", v))?, name)
+                Self::check_zero(&self.cmd(&format!("SCZ,{}", v))?, name)?;
+                self.props.set(name, PropertyValue::Integer(v))
             }
             _ => self.props.set(name, val),
         }
@@ -392,6 +392,26 @@ mod tests {
         assert_eq!(
             s.get_property("SCurve").unwrap(),
             PropertyValue::Integer(43)
+        );
+    }
+
+    #[test]
+    fn failed_motion_property_write_preserves_cached_value() {
+        let t = MockTransport::new()
+            .expect("COMP 0\r", "0")
+            .expect("RES,Z\r", "0.1")
+            .expect("PZ\r", "0")
+            .expect("SMZ,41\r", "E8");
+        let mut s = PriorZStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+
+        assert!(s
+            .set_property("MaxSpeed", PropertyValue::Integer(41))
+            .is_err());
+        s.shutdown().unwrap();
+        assert_eq!(
+            s.get_property("MaxSpeed").unwrap(),
+            PropertyValue::Integer(20)
         );
     }
 }

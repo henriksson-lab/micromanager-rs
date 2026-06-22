@@ -38,50 +38,6 @@ impl TriggerScopeMMTTL {
         props
             .define_property("PinGroup", PropertyValue::Integer(pin_group as i64), true)
             .unwrap();
-        props
-            .define_property("State", PropertyValue::Integer(0), false)
-            .unwrap();
-        props.set_property_limits("State", 0.0, 255.0).unwrap();
-        props
-            .define_property("Sequence", PropertyValue::String("On".into()), false)
-            .unwrap();
-        props
-            .set_allowed_values("Sequence", &["On", "Off"])
-            .unwrap();
-        props
-            .define_property(
-                "Sequence Trigger Edge",
-                PropertyValue::String("Rising".into()),
-                false,
-            )
-            .unwrap();
-        props
-            .set_allowed_values("Sequence Trigger Edge", &["Falling", "Rising"])
-            .unwrap();
-        props
-            .define_property("Blanking", PropertyValue::String("Off".into()), false)
-            .unwrap();
-        props
-            .set_allowed_values("Blanking", &["Off", "On"])
-            .unwrap();
-        props
-            .define_property("Blank On", PropertyValue::String("Low".into()), false)
-            .unwrap();
-        props
-            .set_allowed_values("Blank On", &["Low", "High"])
-            .unwrap();
-        for ttl_nr in 1..=8 {
-            let pin_nr = ttl_nr + (pin_group as usize * 8);
-            let name = if pin_nr == 9 {
-                "TTL-09".to_string()
-            } else {
-                format!("TTL-{}", pin_nr)
-            };
-            props
-                .define_property(name.clone(), PropertyValue::Integer(0), false)
-                .unwrap();
-            props.set_property_limits(&name, 0.0, 1.0).unwrap();
-        }
         Self {
             props,
             transport: None,
@@ -103,6 +59,47 @@ impl TriggerScopeMMTTL {
             num_patterns: 50,
             sequence: Vec::new(),
         }
+    }
+
+    fn define_runtime_properties(&mut self) -> MmResult<()> {
+        if self.props.has_property("State") {
+            return Ok(());
+        }
+
+        self.props
+            .define_property("Sequence", PropertyValue::String("On".into()), false)?;
+        self.props.set_allowed_values("Sequence", &["On", "Off"])?;
+        self.props.define_property(
+            "Sequence Trigger Edge",
+            PropertyValue::String("Rising".into()),
+            false,
+        )?;
+        self.props
+            .set_allowed_values("Sequence Trigger Edge", &["Falling", "Rising"])?;
+        self.props
+            .define_property("Blanking", PropertyValue::String("Off".into()), false)?;
+        self.props.set_allowed_values("Blanking", &["Off", "On"])?;
+        self.props
+            .define_property("Blank On", PropertyValue::String("Low".into()), false)?;
+        self.props
+            .set_allowed_values("Blank On", &["Low", "High"])?;
+        self.props
+            .define_property("State", PropertyValue::Integer(0), false)?;
+        self.props.set_property_limits("State", 0.0, 255.0)?;
+
+        for ttl_nr in 1..=8 {
+            let pin_nr = ttl_nr + (self.pin_group as usize * 8);
+            let name = if pin_nr == 9 {
+                "TTL-09".to_string()
+            } else {
+                format!("TTL-{}", pin_nr)
+            };
+            self.props
+                .define_property(name.clone(), PropertyValue::Integer(0), false)?;
+            self.props.set_property_limits(&name, 0.0, 1.0)?;
+        }
+
+        Ok(())
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -243,6 +240,7 @@ impl Device for TriggerScopeMMTTL {
         if let Some(value) = resp.split('-').nth(1).and_then(|v| v.parse::<usize>().ok()) {
             self.num_patterns = value;
         }
+        self.define_runtime_properties()?;
         self.initialized = true;
         Ok(())
     }
@@ -254,11 +252,13 @@ impl Device for TriggerScopeMMTTL {
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
         match name {
-            "State" => Ok(PropertyValue::Integer(self.cur_pos as i64)),
-            "Sequence" => Ok(PropertyValue::String(
+            "State" if self.props.has_property(name) => {
+                Ok(PropertyValue::Integer(self.cur_pos as i64))
+            }
+            "Sequence" if self.props.has_property(name) => Ok(PropertyValue::String(
                 if self.sequence_on { "On" } else { "Off" }.into(),
             )),
-            "Sequence Trigger Edge" => Ok(PropertyValue::String(
+            "Sequence Trigger Edge" if self.props.has_property(name) => Ok(PropertyValue::String(
                 if self.sequence_rising {
                     "Rising"
                 } else {
@@ -266,13 +266,13 @@ impl Device for TriggerScopeMMTTL {
                 }
                 .into(),
             )),
-            "Blanking" => Ok(PropertyValue::String(
+            "Blanking" if self.props.has_property(name) => Ok(PropertyValue::String(
                 if self.blanking { "On" } else { "Off" }.into(),
             )),
-            "Blank On" => Ok(PropertyValue::String(
+            "Blank On" if self.props.has_property(name) => Ok(PropertyValue::String(
                 if self.blank_on_low { "Low" } else { "High" }.into(),
             )),
-            _ if name.starts_with("TTL-") => {
+            _ if name.starts_with("TTL-") && self.props.has_property(name) => {
                 let pin = name
                     .trim_start_matches("TTL-")
                     .parse::<usize>()
@@ -290,11 +290,11 @@ impl Device for TriggerScopeMMTTL {
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
         match name {
-            "State" => {
+            "State" if self.props.has_property(name) => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
                 self.set_position(v as u64)
             }
-            "Sequence" => {
+            "Sequence" if self.props.has_property(name) => {
                 let label = val.to_string();
                 self.sequence_on = match label.as_str() {
                     "On" => true,
@@ -303,7 +303,7 @@ impl Device for TriggerScopeMMTTL {
                 };
                 self.props.set(name, PropertyValue::String(label))
             }
-            "Sequence Trigger Edge" => {
+            "Sequence Trigger Edge" if self.props.has_property(name) => {
                 let label = val.to_string();
                 self.sequence_rising = match label.as_str() {
                     "Rising" => true,
@@ -312,7 +312,7 @@ impl Device for TriggerScopeMMTTL {
                 };
                 self.props.set(name, PropertyValue::String(label))
             }
-            "Blanking" => {
+            "Blanking" if self.props.has_property(name) => {
                 let label = val.to_string();
                 self.blanking = match label.as_str() {
                     "On" => true,
@@ -322,7 +322,7 @@ impl Device for TriggerScopeMMTTL {
                 self.send_blanking_command()?;
                 self.props.set(name, PropertyValue::String(label))
             }
-            "Blank On" => {
+            "Blank On" if self.props.has_property(name) => {
                 let label = val.to_string();
                 self.blank_on_low = match label.as_str() {
                     "Low" => true,
@@ -332,7 +332,7 @@ impl Device for TriggerScopeMMTTL {
                 self.send_blanking_command()?;
                 self.props.set(name, PropertyValue::String(label))
             }
-            _ if name.starts_with("TTL-") => {
+            _ if name.starts_with("TTL-") && self.props.has_property(name) => {
                 let pin = name
                     .trim_start_matches("TTL-")
                     .parse::<usize>()
@@ -443,7 +443,14 @@ mod tests {
     fn ttl_initialize() {
         let t = MockTransport::new().expect("PDN0\n", "PDN0-50");
         let mut ttl = TriggerScopeMMTTL::new(0).with_transport(Box::new(t));
+        assert!(ttl.has_property("PinGroup"));
+        assert!(!ttl.has_property("State"));
+        assert!(!ttl.has_property("TTL-1"));
+        assert!(ttl.get_property("State").is_err());
         ttl.initialize().unwrap();
+        assert!(ttl.has_property("State"));
+        assert!(ttl.has_property("Sequence"));
+        assert!(ttl.has_property("TTL-1"));
         assert_eq!(ttl.get_position().unwrap(), 0);
     }
 

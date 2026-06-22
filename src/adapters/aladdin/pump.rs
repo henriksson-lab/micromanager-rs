@@ -25,7 +25,6 @@ use crate::traits::{Device, VolumetricPump};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
 use std::cell::{Cell, RefCell};
-use std::time::Instant;
 
 pub struct AladdinPump {
     props: PropertyMap,
@@ -37,7 +36,6 @@ pub struct AladdinPump {
     infuse: Cell<bool>, // true = infuse, false = withdraw
     running: Cell<bool>,
     delay_ms: Cell<f64>,
-    last_command_time: Cell<Option<Instant>>,
 }
 
 impl AladdinPump {
@@ -46,25 +44,6 @@ impl AladdinPump {
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
             .unwrap();
-        props
-            .define_property("Volume-uL", PropertyValue::Float(0.0), false)
-            .unwrap();
-        props
-            .define_property("SyringeDiameter", PropertyValue::Float(4.699), false)
-            .unwrap();
-        props
-            .define_property("FlowRate-uL/min", PropertyValue::Float(0.0), false)
-            .unwrap();
-        props
-            .define_property("Direction", PropertyValue::String("Infuse".into()), false)
-            .unwrap();
-        props
-            .set_allowed_values("Direction", &["Infuse", "Withdraw"])
-            .unwrap();
-        props
-            .define_property("Run", PropertyValue::Integer(0), false)
-            .unwrap();
-        props.set_allowed_values("Run", &["0", "1"]).unwrap();
         props
             .define_property("Delay_ms", PropertyValue::Float(0.0), false)
             .unwrap();
@@ -78,8 +57,47 @@ impl AladdinPump {
             infuse: Cell::new(true),
             running: Cell::new(false),
             delay_ms: Cell::new(0.0),
-            last_command_time: Cell::new(None),
         }
+    }
+
+    fn define_initialized_properties(&mut self) -> MmResult<()> {
+        if self.props.has_property("Volume-uL") {
+            return Ok(());
+        }
+
+        self.props.define_property(
+            "Volume-uL",
+            PropertyValue::Float(self.volume_ul.get()),
+            false,
+        )?;
+        self.props.define_property(
+            "SyringeDiameter",
+            PropertyValue::Float(self.diameter_mm.get()),
+            false,
+        )?;
+        self.props.define_property(
+            "FlowRate-uL/min",
+            PropertyValue::Float(self.rate_ul_per_min.get()),
+            false,
+        )?;
+        self.props.define_property(
+            "Direction",
+            PropertyValue::String(if self.infuse.get() {
+                "Infuse".into()
+            } else {
+                "Withdraw".into()
+            }),
+            false,
+        )?;
+        self.props
+            .set_allowed_values("Direction", &["Infuse", "Withdraw"])?;
+        self.props.define_property(
+            "Run",
+            PropertyValue::Integer(if self.running.get() { 1 } else { 0 }),
+            false,
+        )?;
+        self.props.set_allowed_values("Run", &["0", "1"])?;
+        Ok(())
     }
 
     pub fn with_transport(mut self, t: Box<dyn Transport>) -> Self {
@@ -103,9 +121,7 @@ impl AladdinPump {
         self.call_transport(|t| {
             t.purge()?;
             t.send_recv(&c).map(|_| ())
-        })?;
-        self.last_command_time.set(Some(Instant::now()));
-        Ok(())
+        })
     }
 
     /// Send command and return a fixed-width controller response.
@@ -173,6 +189,30 @@ impl AladdinPump {
         }
     }
 
+    fn format_cpp_default_float(value: f64) -> String {
+        if value == 0.0 {
+            return "0".to_string();
+        }
+
+        let abs = value.abs();
+        let integer_digits = if abs >= 1.0 {
+            abs.log10().floor() as i32 + 1
+        } else {
+            0
+        };
+        let decimals = (6 - integer_digits).max(0) as usize;
+        let mut formatted = format!("{:.*}", decimals, value);
+        if formatted.contains('.') {
+            while formatted.ends_with('0') {
+                formatted.pop();
+            }
+            if formatted.ends_with('.') {
+                formatted.pop();
+            }
+        }
+        formatted
+    }
+
     fn query_volume_ul(&self) -> MmResult<f64> {
         let volume = Self::parse_volume_ul(&self.query_fixed("VOL", 11)?)?;
         self.volume_ul.set(volume);
@@ -235,7 +275,10 @@ impl AladdinPump {
         let rate = self.query_rate_ul_per_min()?;
         self.set_cached_rate_ul_per_min(rate);
         self.send_cmd("PHN1")?;
-        self.send_cmd(&format!("FUN RAT{:.4}UM", self.rate_ul_per_min.get()))?;
+        self.send_cmd(&format!(
+            "FUN RAT{}UM",
+            Self::format_cpp_default_float(self.rate_ul_per_min.get())
+        ))?;
         self.send_cmd("PHN2")?;
         self.send_cmd("FUN STP")?;
         self.send_cmd("PHN1")?;
@@ -261,6 +304,7 @@ impl Device for AladdinPump {
         if self.transport.is_none() {
             return Err(MmError::NotConnected);
         }
+        self.define_initialized_properties()?;
         self.setup_program()?;
         self.initialized = true;
         Ok(())
@@ -274,6 +318,10 @@ impl Device for AladdinPump {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if !self.props.has_property(name) {
+            return self.props.get(name).cloned();
+        }
+
         match name {
             "Volume-uL" if self.initialized => Ok(PropertyValue::Float(self.query_volume_ul()?)),
             "Volume-uL" => Ok(PropertyValue::Float(self.volume_ul.get())),
@@ -317,6 +365,10 @@ impl Device for AladdinPump {
     }
 
     fn set_property(&mut self, name: &str, val: PropertyValue) -> MmResult<()> {
+        if !self.props.has_property(name) {
+            return self.props.set(name, val);
+        }
+
         match name {
             "Port" if self.initialized => Err(MmError::CanNotSetProperty),
             "Volume-uL" => {
@@ -326,7 +378,7 @@ impl Device for AladdinPump {
             "FlowRate-uL/min" => {
                 let rate = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 if self.initialized {
-                    self.send_cmd(&format!("RAT{:.4}UM", rate))?;
+                    self.send_cmd(&format!("RAT{}UM", Self::format_cpp_default_float(rate)))?;
                 }
                 self.set_cached_rate_ul_per_min(rate);
                 Ok(())
@@ -342,7 +394,7 @@ impl Device for AladdinPump {
             "SyringeDiameter" => {
                 let d = val.as_f64().ok_or(MmError::InvalidPropertyValue)?;
                 if self.initialized {
-                    self.send_cmd(&format!("DIA{:.4}", d))?;
+                    self.send_cmd(&format!("DIA{}", Self::format_cpp_default_float(d)))?;
                 }
                 self.set_cached_diameter_mm(d);
                 Ok(())
@@ -352,15 +404,11 @@ impl Device for AladdinPump {
                 if s != "Infuse" && s != "Withdraw" {
                     return Err(MmError::InvalidPropertyValue);
                 }
-                self.infuse.set(s == "Infuse");
                 if self.initialized {
-                    let cmd = if self.infuse.get() {
-                        "DIR INF"
-                    } else {
-                        "DIR WDR"
-                    };
+                    let cmd = if s == "Infuse" { "DIR INF" } else { "DIR WDR" };
                     self.send_cmd(cmd)?;
                 }
+                self.infuse.set(s == "Infuse");
                 self.props
                     .entry_mut("Direction")
                     .map(|e| e.value = PropertyValue::String(s));
@@ -394,10 +442,7 @@ impl Device for AladdinPump {
         DeviceType::Generic
     }
     fn busy(&self) -> bool {
-        self.last_command_time
-            .get()
-            .map(|last| last.elapsed().as_secs_f64() * 1000.0 < self.delay_ms.get())
-            .unwrap_or(false)
+        false
     }
 }
 
@@ -405,7 +450,7 @@ impl VolumetricPump for AladdinPump {
     fn set_volume_ul(&mut self, volume: f64) -> MmResult<()> {
         let vol_ml = volume / 1000.0;
         if self.initialized {
-            self.send_cmd(&format!("VOL{:.6}", vol_ml))?;
+            self.send_cmd(&format!("VOL{}", Self::format_cpp_default_float(vol_ml)))?;
         }
         self.set_cached_volume_ul(volume);
         Ok(())
@@ -421,7 +466,10 @@ impl VolumetricPump for AladdinPump {
     fn set_flow_rate(&mut self, rate_ul_per_s: f64) -> MmResult<()> {
         let rate_ul_per_min = rate_ul_per_s * 60.0;
         if self.initialized {
-            self.send_cmd(&format!("RAT{:.4}UM", rate_ul_per_min))?;
+            self.send_cmd(&format!(
+                "RAT{}UM",
+                Self::format_cpp_default_float(rate_ul_per_min)
+            ))?;
         }
         self.set_cached_rate_ul_per_min(rate_ul_per_min);
         Ok(())
@@ -459,7 +507,7 @@ mod tests {
         MockTransport::new()
             .expect_binary(b"00S 01.00UM")
             .expect("PHN1\r", "00 W")
-            .expect("FUN RAT1.0000UM\r", "00 W")
+            .expect("FUN RAT1UM\r", "00 W")
             .expect("PHN2\r", "00 W")
             .expect("FUN STP\r", "00 W")
             .expect("PHN1\r", "00 W")
@@ -468,7 +516,17 @@ mod tests {
     #[test]
     fn initialize() {
         let mut p = AladdinPump::new().with_transport(Box::new(make_init_transport()));
+        assert!(!p.has_property("Volume-uL"));
+        assert_eq!(
+            p.get_property("Volume-uL"),
+            Err(MmError::UnknownLabel("Volume-uL".into()))
+        );
         p.initialize().unwrap();
+        assert!(p.has_property("Volume-uL"));
+        assert!(p.has_property("SyringeDiameter"));
+        assert!(p.has_property("FlowRate-uL/min"));
+        assert!(p.has_property("Direction"));
+        assert!(p.has_property("Run"));
         assert!(!p.is_running());
     }
 
@@ -488,7 +546,7 @@ mod tests {
     #[test]
     fn set_volume() {
         let t = make_init_transport()
-            .expect("VOL0.500000\r", "00 W")
+            .expect("VOL0.5\r", "00 W")
             .expect_binary(b"00S 00.50ML");
         let mut p = AladdinPump::new().with_transport(Box::new(t));
         p.initialize().unwrap();
@@ -499,7 +557,7 @@ mod tests {
     #[test]
     fn set_flow_rate() {
         let t = make_init_transport()
-            .expect("RAT120.0000UM\r", "00 W")
+            .expect("RAT120UM\r", "00 W")
             .expect_binary(b"00S 120.0UM");
         let mut p = AladdinPump::new().with_transport(Box::new(t));
         p.initialize().unwrap();
@@ -518,10 +576,29 @@ mod tests {
     }
 
     #[test]
+    fn failed_direction_write_preserves_cached_state() {
+        let t = make_init_transport().expect("DIR WDR\r", "00 W");
+        let mut p = AladdinPump::new().with_transport(Box::new(t));
+        p.initialize().unwrap();
+        assert_eq!(
+            p.set_property("Direction", PropertyValue::String("Infuse".into())),
+            Err(MmError::LocallyDefined(
+                "MockTransport: expected command \"DIR WDR\\r\", got \"DIR INF\\r\"".into()
+            ))
+        );
+        assert!(p.infuse.get());
+        p.shutdown().unwrap();
+        assert_eq!(
+            p.get_property("Direction").unwrap(),
+            PropertyValue::String("Infuse".into())
+        );
+    }
+
+    #[test]
     fn upstream_property_aliases() {
         let t = make_init_transport()
-            .expect("VOL0.250000\r", "00 W")
-            .expect("RAT30.0000UM\r", "00 W")
+            .expect("VOL0.25\r", "00 W")
+            .expect("RAT30UM\r", "00 W")
             .expect("RUN\r", "00 W")
             .expect_binary(b"00SI")
             .expect("STP\r", "00 W");
@@ -594,6 +671,25 @@ mod tests {
     }
 
     #[test]
+    fn set_diameter_uses_upstream_default_float_formatting() {
+        let t = make_init_transport().expect("DIA4.7\r", "00 W");
+        let mut p = AladdinPump::new().with_transport(Box::new(t));
+        p.initialize().unwrap();
+        p.set_property("SyringeDiameter", PropertyValue::Float(4.7))
+            .unwrap();
+    }
+
+    #[test]
+    fn command_float_formatting_matches_cpp_default_style_for_common_values() {
+        assert_eq!(AladdinPump::format_cpp_default_float(0.0), "0");
+        assert_eq!(AladdinPump::format_cpp_default_float(0.5), "0.5");
+        assert_eq!(AladdinPump::format_cpp_default_float(1.0), "1");
+        assert_eq!(AladdinPump::format_cpp_default_float(4.699), "4.699");
+        assert_eq!(AladdinPump::format_cpp_default_float(120.0), "120");
+        assert_eq!(AladdinPump::format_cpp_default_float(1.234567), "1.23457");
+    }
+
+    #[test]
     fn port_is_locked_after_initialize() {
         let t = make_init_transport();
         let mut p = AladdinPump::new().with_transport(Box::new(t));
@@ -607,15 +703,15 @@ mod tests {
     }
 
     #[test]
-    fn delay_property_drives_busy_after_command() {
+    fn delay_property_does_not_drive_busy_after_command() {
         let t = make_init_transport().expect("RUN\r", "00 W");
         let mut p = AladdinPump::new().with_transport(Box::new(t));
         p.set_property("Delay_ms", PropertyValue::Float(1000.0))
             .unwrap();
         p.initialize().unwrap();
-        assert!(p.busy());
+        assert!(!p.busy());
         p.start().unwrap();
-        assert!(p.busy());
+        assert!(!p.busy());
     }
 
     #[test]

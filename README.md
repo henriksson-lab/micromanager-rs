@@ -85,7 +85,22 @@ The `CMMCore` engine:
 
 W = Windows, M = macOS, L = Linux. SDK-wrapped adapters are feature-gated; all others are pure serial with no vendor dependencies.
 
-#### Implemented (113 crates)
+#### Native SDK / System Dependencies
+
+Open-source Linux packages:
+
+- Aravis: `sudo apt-get install libaravis-dev libusb-1.0-0-dev` (`aravis-0.8.pc` and its libusb pkg-config dependency for `--features aravis`).
+- OpenCV: `sudo apt-get install libopencv-dev pkg-config clang libclang-dev` (`opencv4.pc` or `OpenCVConfig.cmake` for `--features opencv`).
+
+Vendor SDKs:
+
+- Andor SDK3: set `ANDOR_SDK3_ROOT`; Linux expects `include/`, `lib/libatcore.so`, and `lib/libatutility.so`. Use `ANDOR_SDK3_STUB=1` only for compile-only tests without hardware.
+- Basler Pylon: install Pylon and set `PYLON_ROOT` if not under `/opt/pylon`.
+- Daheng Galaxy: install Galaxy SDK and set `DAHENG_SDK_ROOT` or `GALAXY_ROOT`, or otherwise make `libgxiapi.so` visible to the linker/runtime loader. Use `DAHENG_STUB=1` only for compile-only tests without hardware.
+- PVCAM/PICAM: set `PVCAM_ROOT`; Linux expects `include/pvcam/master.h`, `include/pvcam/pvcam.h`, and `lib/libpvcam.so`. Use `PVCAM_STUB=1` only for compile-only tests without hardware.
+- Thorlabs TSI: set `TSI_SDK_ROOT` or Thorlabs' `THORLABS_TSI_SDK_PATH_64_BIT` / `THORLABS_TSI_SDK_PATH_32_BIT`; the root must contain `tl_camera_sdk.h` and `libtl_camera_sdk.*`. Use `TSI_STUB=1` only for compile-only tests without hardware.
+
+#### Implemented (114 crates)
 
 | Crate | Devices | Protocol | W | M | L |
 |---|---|---|:---:|:---:|:---:|
@@ -115,6 +130,7 @@ W = Windows, M = macOS, L = Linux. SDK-wrapped adapters are feature-gated; all o
 | `mm-adapter-coolled-pe4000` | [CoolLED pE-4000 LED (4-channel)](https://micro-manager.org/CoolLED) | CSS format | ✓ | ✓ | ✓ |
 | `mm-adapter-corvus` | [Corvus XY + Z stage](https://micro-manager.org/Corvus) | Space-terminated ASCII | ✓ | ✓ | ✓ |
 | `mm-adapter-csuw1` | [Yokogawa CSU-W1 spinning disk](https://micro-manager.org/Yokogawa_CSUW1) | CSV ASCII `\r` | ✓ | ✓ | ✓ |
+| `mm-adapter-daheng` | [Daheng Galaxy cameras](https://micro-manager.org/Daheng) | Daheng Galaxy SDK; `--features daheng` | ✓ | ✗ | ✓ |
 | `mm-adapter-demo` | [DemoCamera, DemoStage, DemoShutter](https://micro-manager.org/DemoCamera) | Simulated | ✓ | ✓ | ✓ |
 | `mm-adapter-diskovery` | [Intelligent Imaging Diskovery spinning disk](https://micro-manager.org/Diskovery) | ASCII `\r` | ✓ | ✓ | ✓ |
 | `mm-adapter-elliptec` | [Thorlabs Elliptec linear stage + 2-position slider](https://micro-manager.org/ThorlabsElliptecSlider) | Hex-position `\r` | ✓ | ✓ | ✓ |
@@ -153,7 +169,7 @@ W = Windows, M = macOS, L = Linux. SDK-wrapped adapters are feature-gated; all o
 | `mm-adapter-pecon` | [Pecon TempControl 37-2 (temp + CO2)](https://micro-manager.org/Pecon) | Raw 3-byte BCD | ✓ | ✓ | ✓ |
 | `mm-adapter-pgfocus` | [pgFocus open-source autofocus](https://micro-manager.org/pgFocus) | ASCII `\r` | ✓ | ✓ | ✓ |
 | `mm-adapter-pi-gcs` | [PI GCS Z-stage (C-863, CONEX, etc.)](https://micro-manager.org/PI_GCS) | `SVO`/`MOV`/`POS?` ASCII `\n` | ✓ | ✓ | ✓ |
-| `mm-adapter-picam` | [Princeton Instruments / Photometrics cameras](https://micro-manager.org/PICAM) | PVCAM SDK; `--features picam` | ✓ | ✓ | ✓ |
+| `mm-adapter-picam` | [Princeton Instruments / Photometrics cameras](https://micro-manager.org/PICAM) | PVCAM SDK; `--features picam`; set `PVCAM_ROOT` or use `PVCAM_STUB=1` for compile-only tests | ✓ | ✓ | ✓ |
 | `mm-adapter-piezosystem-30dv50` | [Piezosystem Jena 30DV50](https://micro-manager.org/Piezosystem_30DV50) | ASCII `\r` | ✓ | ✓ | ✓ |
 | `mm-adapter-piezosystem-ddrive` | [Piezosystem Jena dDrive](https://micro-manager.org/Piezosystem_dDrive) | ASCII `\r` | ✓ | ✓ | ✓ |
 | `mm-adapter-piezosystem-nv120` | [Piezosystem Jena NV-120/1](https://micro-manager.org/Piezosystem_NV120_1) | ASCII `\r` | ✓ | ✓ | ✓ |
@@ -227,7 +243,6 @@ These adapters need proprietary SDKs or closed hardware interfaces not available
 | [CairnOptoSpinUCSF](https://micro-manager.org/CairnOptospinUCSF) | Cairn/UCSF custom controller | ✓ | ✗ | ✓ |
 | Cephla | Cephla controller | ✓ | ✗ | ✓ |
 | [DTOpenLayer](https://micro-manager.org/DTOpenLayer) | DAQ hardware I/O | ✓ | ✗ | ✓ |
-| [DahengGalaxy](https://micro-manager.org/Daheng) | Daheng Galaxy SDK | ✓ | ✗ | ✗ |
 | [DirectElectron](https://micro-manager.org/DECamera) | Direct Electron camera SDK | ✓ | ✗ | ✗ |
 | Dragonfly | Andor Dragonfly SDK | ✓ | ✗ | ✗ |
 | [Elveflow](https://micro-manager.org/Elveflow) | `ob1_mk4.h` proprietary SDK | ✓ | ✗ | ✗ |

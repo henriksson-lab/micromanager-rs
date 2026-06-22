@@ -13,14 +13,14 @@
 //! - `openUC2-LED-Laser` — Shutter
 
 pub mod hub;
+pub mod shutter;
 pub mod xystage;
 pub mod zstage;
-pub mod shutter;
 
 pub use hub::Uc2Hub;
+pub use shutter::Uc2Shutter;
 pub use xystage::Uc2XYStage;
 pub use zstage::Uc2ZStage;
-pub use shutter::Uc2Shutter;
 
 use crate::traits::{AdapterModule, AnyDevice, DeviceInfo};
 use crate::types::DeviceType;
@@ -31,22 +31,42 @@ pub const DEVICE_NAME_ZSTAGE: &str = "openUC2-ZStage";
 pub const DEVICE_NAME_SHUTTER: &str = "openUC2-LED-Laser";
 
 static DEVICE_LIST: &[DeviceInfo] = &[
-    DeviceInfo { name: DEVICE_NAME_HUB,     description: "openUC2 hub device",                device_type: DeviceType::Hub },
-    DeviceInfo { name: DEVICE_NAME_XYSTAGE,  description: "XY Stage for openUC2",              device_type: DeviceType::XYStage },
-    DeviceInfo { name: DEVICE_NAME_ZSTAGE,   description: "Z Stage for openUC2",               device_type: DeviceType::Stage },
-    DeviceInfo { name: DEVICE_NAME_SHUTTER,  description: "LED/Laser Shutter for openUC2",     device_type: DeviceType::Shutter },
+    DeviceInfo {
+        name: DEVICE_NAME_HUB,
+        description: "openUC2 hub device",
+        device_type: DeviceType::Hub,
+    },
+    DeviceInfo {
+        name: DEVICE_NAME_XYSTAGE,
+        description: "XY Stage for openUC2",
+        device_type: DeviceType::XYStage,
+    },
+    DeviceInfo {
+        name: DEVICE_NAME_ZSTAGE,
+        description: "Z Stage for openUC2",
+        device_type: DeviceType::Stage,
+    },
+    DeviceInfo {
+        name: DEVICE_NAME_SHUTTER,
+        description: "LED/Laser Shutter for openUC2",
+        device_type: DeviceType::Shutter,
+    },
 ];
 
 pub struct Uc2Adapter;
 
 impl AdapterModule for Uc2Adapter {
-    fn module_name(&self) -> &'static str { "openuc2" }
-    fn devices(&self) -> &'static [DeviceInfo] { DEVICE_LIST }
+    fn module_name(&self) -> &'static str {
+        "openuc2"
+    }
+    fn devices(&self) -> &'static [DeviceInfo] {
+        DEVICE_LIST
+    }
     fn create_device(&self, name: &str) -> Option<AnyDevice> {
         match name {
-            DEVICE_NAME_HUB     => Some(AnyDevice::Hub(Box::new(Uc2Hub::new()))),
+            DEVICE_NAME_HUB => Some(AnyDevice::Hub(Box::new(Uc2Hub::new()))),
             DEVICE_NAME_XYSTAGE => Some(AnyDevice::XYStage(Box::new(Uc2XYStage::new()))),
-            DEVICE_NAME_ZSTAGE  => Some(AnyDevice::Stage(Box::new(Uc2ZStage::new()))),
+            DEVICE_NAME_ZSTAGE => Some(AnyDevice::Stage(Box::new(Uc2ZStage::new()))),
             DEVICE_NAME_SHUTTER => Some(AnyDevice::Shutter(Box::new(Uc2Shutter::new()))),
             _ => None,
         }

@@ -1,7 +1,6 @@
 /// Prior Scientific ProScan XY stage.
 ///
 /// Protocol (TX `\r`, RX `\r`):
-///   `DATE\r`       → firmware/date string (version check)
 ///   `G,x,y\r`      → absolute move (steps); response `R\r` or `E<code>\r`
 ///   `GR,dx,dy\r`   → relative move (steps); same response
 ///   `PX\r`         → X position in steps
@@ -36,29 +35,6 @@ impl PriorXYStage {
         props
             .define_pre_init_property("Port", PropertyValue::String("Undefined".into()))
             .unwrap();
-        props
-            .define_property("Version", PropertyValue::String(String::new()), true)
-            .unwrap();
-        props
-            .define_property("StepSizeX_um", PropertyValue::Float(0.1), true)
-            .unwrap();
-        props
-            .define_property("StepSizeY_um", PropertyValue::Float(0.1), true)
-            .unwrap();
-        props
-            .define_property("MaxSpeed", PropertyValue::Integer(20), false)
-            .unwrap();
-        props.set_property_limits("MaxSpeed", 1.0, 100.0).unwrap();
-        props
-            .define_property("Acceleration", PropertyValue::Integer(20), false)
-            .unwrap();
-        props
-            .set_property_limits("Acceleration", 1.0, 100.0)
-            .unwrap();
-        props
-            .define_property("SCurve", PropertyValue::Integer(20), false)
-            .unwrap();
-        props.set_property_limits("SCurve", 1.0, 100.0).unwrap();
         Self {
             props,
             transport: RefCell::new(None),
@@ -131,6 +107,25 @@ impl PriorXYStage {
         Ok(PropertyValue::Integer(value))
     }
 
+    fn ensure_runtime_properties(&mut self) -> MmResult<()> {
+        if !self.props.has_property("StepSizeX_um") {
+            self.props
+                .define_property("StepSizeX_um", PropertyValue::Float(0.1), true)?;
+            self.props
+                .define_property("StepSizeY_um", PropertyValue::Float(0.1), true)?;
+            self.props
+                .define_property("MaxSpeed", PropertyValue::Integer(20), false)?;
+            self.props.set_property_limits("MaxSpeed", 1.0, 100.0)?;
+            self.props
+                .define_property("Acceleration", PropertyValue::Integer(20), false)?;
+            self.props.set_property_limits("Acceleration", 1.0, 100.0)?;
+            self.props
+                .define_property("SCurve", PropertyValue::Integer(20), false)?;
+            self.props.set_property_limits("SCurve", 1.0, 100.0)?;
+        }
+        Ok(())
+    }
+
     fn read_xy(&self) -> MmResult<(f64, f64)> {
         let rx = self.cmd("PX")?;
         let ry = self.cmd("PY")?;
@@ -180,10 +175,7 @@ impl Device for PriorXYStage {
         }
         self.clear_port()?;
         self.cmd("COMP 0")?;
-        let ver = self.cmd("DATE")?;
-        self.props
-            .entry_mut("Version")
-            .map(|e| e.value = PropertyValue::String(ver));
+        self.ensure_runtime_properties()?;
         self.discover_resolution();
         let (x, y) = self.read_xy()?;
         self.x_um = x;
@@ -213,21 +205,21 @@ impl Device for PriorXYStage {
             "Port" if self.initialized => Err(MmError::InvalidPropertyValue),
             "MaxSpeed" if self.initialized => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(v))?;
                 self.clear_port()?;
-                Self::check_zero(&self.cmd(&format!("SMS,{}", v))?, name)
+                Self::check_zero(&self.cmd(&format!("SMS,{}", v))?, name)?;
+                self.props.set(name, PropertyValue::Integer(v))
             }
             "Acceleration" if self.initialized => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(v))?;
                 self.clear_port()?;
-                Self::check_zero(&self.cmd(&format!("SAS,{}", v))?, name)
+                Self::check_zero(&self.cmd(&format!("SAS,{}", v))?, name)?;
+                self.props.set(name, PropertyValue::Integer(v))
             }
             "SCurve" if self.initialized => {
                 let v = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-                self.props.set(name, PropertyValue::Integer(v))?;
                 self.clear_port()?;
-                Self::check_zero(&self.cmd(&format!("SCS,{}", v))?, name)
+                Self::check_zero(&self.cmd(&format!("SCS,{}", v))?, name)?;
+                self.props.set(name, PropertyValue::Integer(v))
             }
             _ => self.props.set(name, val),
         }
@@ -318,7 +310,6 @@ mod tests {
     fn make_transport() -> MockTransport {
         MockTransport::new()
             .expect("COMP 0\r", "0")
-            .any("Prior ProScan v3.01") // DATE
             .expect("RES,s\r", "0.1")
             .expect("PX\r", "1000") // PX -> 100 µm
             .expect("PY\r", "2000") // PY -> 200 µm
@@ -401,6 +392,26 @@ mod tests {
     }
 
     #[test]
+    fn initialize_creates_runtime_properties_like_upstream() {
+        let mut s = PriorXYStage::new().with_transport(Box::new(make_transport()));
+        assert!(!s.has_property("Version"));
+        assert!(!s.has_property("StepSizeX_um"));
+        assert!(!s.has_property("StepSizeY_um"));
+        assert!(!s.has_property("MaxSpeed"));
+        assert!(!s.has_property("Acceleration"));
+        assert!(!s.has_property("SCurve"));
+
+        s.initialize().unwrap();
+
+        assert!(!s.has_property("Version"));
+        assert!(s.has_property("StepSizeX_um"));
+        assert!(s.has_property("StepSizeY_um"));
+        assert!(s.has_property("MaxSpeed"));
+        assert!(s.has_property("Acceleration"));
+        assert!(s.has_property("SCurve"));
+    }
+
+    #[test]
     fn motion_properties_use_zero_ack_and_live_reads() {
         let t = make_transport()
             .expect("SMS,42\r", "0")
@@ -428,6 +439,22 @@ mod tests {
         assert_eq!(
             s.get_property("SCurve").unwrap(),
             PropertyValue::Integer(44)
+        );
+    }
+
+    #[test]
+    fn failed_motion_property_write_preserves_cached_value() {
+        let t = make_transport().expect("SMS,42\r", "E8");
+        let mut s = PriorXYStage::new().with_transport(Box::new(t));
+        s.initialize().unwrap();
+
+        assert!(s
+            .set_property("MaxSpeed", PropertyValue::Integer(42))
+            .is_err());
+        s.shutdown().unwrap();
+        assert_eq!(
+            s.get_property("MaxSpeed").unwrap(),
+            PropertyValue::Integer(20)
         );
     }
 

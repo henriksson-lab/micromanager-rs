@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 
 const MAX_LCS: usize = 4;
 const DEFAULT_NUM_PALETTE_ELEMENTS: usize = 5;
+const MAX_PALETTE_ELEMENTS: usize = 99;
 
 pub struct VariLC {
     props: PropertyMap,
@@ -242,6 +243,17 @@ impl VariLC {
         format!("Pal. elem. {:02}; enter 0 to define; 1 to activate", index)
     }
 
+    fn ensure_palette_properties(&mut self, count: usize) -> MmResult<()> {
+        for i in 0..count.min(MAX_PALETTE_ELEMENTS) {
+            let name = Self::palette_property_name(i);
+            if !self.props.has_property(&name) {
+                self.props
+                    .define_property(&name, PropertyValue::String(String::new()), false)?;
+            }
+        }
+        Ok(())
+    }
+
     fn set_integer_aliases(&mut self, names: &[&str], value: i64) {
         for name in names {
             if let Some(entry) = self.props.entry_mut(name) {
@@ -355,6 +367,11 @@ impl Device for VariLC {
     }
 
     fn get_property(&self, name: &str) -> MmResult<PropertyValue> {
+        if name == "Mode; 1=Brief; 0=Standard" && self.initialized {
+            let resp = self.query_cmd("B?")?;
+            let mode = if resp.trim() == "1" { " 1" } else { " 0" };
+            return Ok(PropertyValue::String(mode.into()));
+        }
         if name == "Wavelength" && self.initialized {
             let resp = self.query_cmd("W?")?;
             let wl = Self::parse_numbers(&resp)
@@ -453,12 +470,13 @@ impl Device for VariLC {
                 return Err(MmError::InvalidInputParam);
             }
             let count = val.as_i64().ok_or(MmError::InvalidPropertyValue)?;
-            if count < 1 || count as usize > DEFAULT_NUM_PALETTE_ELEMENTS {
+            if count < 1 || count as usize > MAX_PALETTE_ELEMENTS {
                 return Err(MmError::InvalidPropertyValue);
             }
             self.num_palette_elements = count as usize;
             self.palette_elements
                 .resize(self.num_palette_elements, String::new());
+            self.ensure_palette_properties(self.num_palette_elements)?;
             self.set_integer_aliases(&["Total Number of Palette Elements"], count);
             return Ok(());
         }
@@ -718,6 +736,38 @@ mod tests {
         assert_eq!(
             v.get_property(&name).unwrap(),
             PropertyValue::String("  589  0.75  0.25".into())
+        );
+    }
+
+    #[test]
+    fn preinit_palette_count_can_expand_past_default_like_upstream() {
+        let mut v = VariLC::new();
+        v.set_property(
+            "Total Number of Palette Elements",
+            PropertyValue::Integer(6),
+        )
+        .unwrap();
+        let name = VariLC::palette_property_name(5);
+        assert!(v.has_property(&name));
+        assert_eq!(
+            v.get_property("Total Number of Palette Elements").unwrap(),
+            PropertyValue::Integer(6)
+        );
+    }
+
+    #[test]
+    fn brief_mode_property_performs_live_before_get_read() {
+        let t = MockTransport::new()
+            .expect("B0\r", "B0")
+            .expect("V?\r", "V?")
+            .any("V 0 400 800 SN12345")
+            .expect("B?\r", "B?")
+            .any("1");
+        let mut v = VariLC::new().with_transport(Box::new(t));
+        v.initialize().unwrap();
+        assert_eq!(
+            v.get_property("Mode; 1=Brief; 0=Standard").unwrap(),
+            PropertyValue::String(" 1".into())
         );
     }
 }

@@ -82,13 +82,17 @@ impl ZeissTurret {
         self.hub.send(cmd)
     }
 
-    fn read_position(&self) -> MmResult<u64> {
+    fn read_wire_position(&self) -> MmResult<i64> {
         let resp = self.send(&format!("HPCr{},1", self.turret_id))?;
-        let pos = ZeissHub::parse_prefixed_i64(&resp, "PH")?;
-        if pos <= 0 {
-            return Ok(0);
+        ZeissHub::parse_prefixed_i64(&resp, "PH")
+    }
+
+    fn read_position(&self) -> MmResult<u64> {
+        let pos = self.read_wire_position()?;
+        if pos <= 0 || pos as u64 > self.num_positions {
+            return Err(MmError::UnknownPosition);
         }
-        Ok((pos as u64).saturating_sub(1))
+        Ok(pos as u64 - 1)
     }
 
     fn read_max_position(&self) -> MmResult<u64> {
@@ -159,6 +163,22 @@ impl TurretId {
         }
     }
 
+    fn description(self) -> &'static str {
+        match self {
+            TurretId::Reflector => "Zeiss Reflector Turret adapter",
+            TurretId::Objective => "Zeiss Objective Turret adapter",
+            TurretId::FilterWheel1 => "Zeiss Filter Wheel 1",
+            TurretId::FilterWheel2 => "Zeiss Filter Wheel 2",
+            TurretId::Condenser => "Zeiss Condenser Turret adapter",
+            TurretId::BasePort => "Zeiss BasePort Slider adapter",
+            TurretId::SidePort => "Zeiss SidePort Turret adapter",
+            TurretId::LampMirror => "Zeiss LampMirror adapter",
+            TurretId::ExternalFilterWheel => "Zeiss External Filter Wheel",
+            TurretId::Optovar => "Zeiss Optovar Turret adapter",
+            TurretId::TubeLens => "Zeiss Tubelens Turret adapter",
+        }
+    }
+
     fn label_prefix(self) -> &'static str {
         match self {
             TurretId::Reflector => "Dichroic",
@@ -172,7 +192,20 @@ impl Device for ZeissTurret {
         &self.name
     }
     fn description(&self) -> &str {
-        "Zeiss CAN-bus turret / filter wheel"
+        match self.turret_id {
+            1 => TurretId::Reflector.description(),
+            2 => TurretId::Objective.description(),
+            4 => TurretId::ExternalFilterWheel.description(),
+            6 => TurretId::Optovar.description(),
+            7 => TurretId::FilterWheel1.description(),
+            8 => TurretId::FilterWheel2.description(),
+            32 => TurretId::Condenser.description(),
+            36 => TurretId::TubeLens.description(),
+            38 => TurretId::BasePort.description(),
+            39 => TurretId::SidePort.description(),
+            51 => TurretId::LampMirror.description(),
+            _ => "Zeiss CAN-bus turret / filter wheel",
+        }
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -192,6 +225,9 @@ impl Device for ZeissTurret {
                 format!("{}-{}", prefix, i + 1)
             })
             .collect();
+        if self.turret_id == TurretId::Reflector.id() && self.busy() {
+            self.set_position(0)?;
+        }
         self.current_pos.set(self.read_position()?);
         self.initialized = true;
         Ok(())
@@ -222,7 +258,7 @@ impl Device for ZeissTurret {
     }
     fn busy(&self) -> bool {
         if self.turret_id == TurretId::Reflector.id() {
-            if matches!(self.read_position(), Ok(0)) {
+            if matches!(self.read_wire_position(), Ok(0)) {
                 return true;
             }
         }
@@ -302,6 +338,11 @@ mod tests {
         ZeissTurret::new_with_hub(TurretId::Objective, 6, hub)
     }
 
+    fn reflector_with(t: MockTransport) -> ZeissTurret {
+        let hub = ZeissHub::new().with_transport(Box::new(t));
+        ZeissTurret::new_with_hub(TurretId::Reflector, 6, hub)
+    }
+
     #[test]
     fn initialize_reads_position() {
         // HPCr2,1 → PH3 (Zeiss position 3 → 0-indexed position 2)
@@ -340,6 +381,35 @@ mod tests {
     }
 
     #[test]
+    fn zero_wire_position_is_rejected() {
+        let t = MockTransport::new()
+            .expect("HPCr2,0\r", "PH1")
+            .expect("HPCr2,3\r", "PH6")
+            .expect("HPCr2,1\r", "PH0");
+        let mut s = turret_with(t);
+        assert_eq!(s.initialize(), Err(MmError::UnknownPosition));
+    }
+
+    #[test]
+    fn reflector_zero_wire_position_reports_busy() {
+        let t = MockTransport::new().expect("HPCr1,1\r", "PH0");
+        let s = reflector_with(t);
+        assert!(s.busy());
+    }
+
+    #[test]
+    fn reflector_initialize_recovers_from_startup_zero_position() {
+        let t = MockTransport::new()
+            .expect("HPCr1,0\r", "PH1")
+            .expect("HPCr1,3\r", "PH6")
+            .expect("HPCr1,1\r", "PH0")
+            .expect("HPCr1,1\r", "PH1");
+        let mut s = reflector_with(t);
+        s.initialize().unwrap();
+        assert_eq!(s.get_number_of_positions(), 6);
+    }
+
+    #[test]
     fn turret_ids_match_zeiss_can_constants() {
         assert_eq!(TurretId::Reflector.id(), 1);
         assert_eq!(TurretId::Objective.id(), 2);
@@ -352,5 +422,25 @@ mod tests {
         assert_eq!(TurretId::BasePort.id(), 38);
         assert_eq!(TurretId::SidePort.id(), 39);
         assert_eq!(TurretId::LampMirror.id(), 51);
+    }
+
+    #[test]
+    fn descriptions_match_zeiss_can_devices() {
+        assert_eq!(
+            ZeissTurret::new(TurretId::Reflector, 6).description(),
+            "Zeiss Reflector Turret adapter"
+        );
+        assert_eq!(
+            ZeissTurret::new(TurretId::Objective, 6).description(),
+            "Zeiss Objective Turret adapter"
+        );
+        assert_eq!(
+            ZeissTurret::new(TurretId::FilterWheel1, 6).description(),
+            "Zeiss Filter Wheel 1"
+        );
+        assert_eq!(
+            ZeissTurret::new(TurretId::ExternalFilterWheel, 6).description(),
+            "Zeiss External Filter Wheel"
+        );
     }
 }

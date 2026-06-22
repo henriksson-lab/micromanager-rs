@@ -36,9 +36,19 @@ impl DiskoveryStateDevice {
         num_positions: u64,
         label_prefix: &'static str,
     ) -> Self {
-        let labels = (0..num_positions)
-            .map(|i| format!("{}{}", label_prefix, i + 1))
-            .collect();
+        let labels = if dev_name == "Diskovery-Disk-Position" {
+            vec![
+                "Disk Out".to_string(),
+                "Exchange".to_string(),
+                "Disk-1".to_string(),
+                "Disk-2".to_string(),
+                "Disk-3".to_string(),
+            ]
+        } else {
+            (0..num_positions)
+                .map(|i| format!("{}{}", label_prefix, i + 1))
+                .collect()
+        };
         let mut props = PropertyMap::new();
         props
             .define_property("Port", PropertyValue::String("Undefined".into()), false)
@@ -104,13 +114,23 @@ impl Device for DiskoveryStateDevice {
         }
         let q = format!("Q:{}", self.query_param);
         let resp = self.cmd(&q)?;
-        if let Some(wire_val) = Self::parse_response(&resp, self.query_param) {
-            self.position = if self.one_based {
-                (wire_val as u64).saturating_sub(1)
-            } else {
-                wire_val as u64
-            };
+        let wire_val =
+            Self::parse_response(&resp, self.query_param).ok_or(MmError::SerialInvalidResponse)?;
+        if wire_val < 0 {
+            return Err(MmError::UnknownPosition);
         }
+        let pos = if self.one_based {
+            if wire_val == 0 {
+                return Err(MmError::UnknownPosition);
+            }
+            wire_val as u64 - 1
+        } else {
+            wire_val as u64
+        };
+        if pos >= self.num_positions {
+            return Err(MmError::UnknownPosition);
+        }
+        self.position = pos;
         self.initialized = true;
         Ok(())
     }
@@ -174,7 +194,7 @@ impl StateDevice for DiskoveryStateDevice {
             let cmd = format!("A:{},{}", self.set_param, wire);
             let resp = self.cmd(&cmd)?;
             // Confirm echo
-            if Self::parse_response(&resp, self.set_param).is_none() {
+            if Self::parse_response(&resp, self.set_param) != Some(wire as i64) {
                 return Err(MmError::LocallyDefined(format!(
                     "Diskovery set command echo mismatch: {}",
                     resp
@@ -317,16 +337,16 @@ macro_rules! diskovery_device {
 diskovery_device!(
     DiskoverySD,
     "Diskovery-Disk-Position",
-    "Diskovery Spinning Disk Position",
+    "Diskovery-Disk-Position",
     "PRESET_SD",
     true,
-    4,
+    5,
     "Disk-"
 );
 diskovery_device!(
     DiskoveryWF,
     "Diskovery-Illumination-Size",
-    "Diskovery Illumination Size",
+    "Diskovery-Illumination-Size",
     "PRESET_WF",
     true,
     4,
@@ -335,7 +355,7 @@ diskovery_device!(
 diskovery_device!(
     DiskoveryFilterW,
     "Diskovery-Filter-W",
-    "Diskovery Filter W",
+    "Diskovery-Filter-W",
     "PRESET_FILTER_W",
     true,
     4,
@@ -344,7 +364,7 @@ diskovery_device!(
 diskovery_device!(
     DiskoveryFilterT,
     "Diskovery-Filter-T",
-    "Diskovery Filter T",
+    "Diskovery-Filter-T",
     "PRESET_FILTER_T",
     true,
     4,
@@ -353,7 +373,7 @@ diskovery_device!(
 diskovery_device!(
     DiskoveryIris,
     "Diskovery-Objective-Select",
-    "Diskovery Objective Select",
+    "Diskovery-Objective-Select",
     "PRESET_IRIS",
     true,
     4,
@@ -381,6 +401,24 @@ mod tests {
         let mut d = DiskoverySD::new().with_transport(Box::new(t));
         d.initialize().unwrap();
         assert_eq!(d.get_position().unwrap(), 1);
+        assert_eq!(d.get_number_of_positions(), 5);
+        assert_eq!(d.get_position_label(0).unwrap(), "Disk Out");
+        assert_eq!(d.get_position_label(1).unwrap(), "Exchange");
+    }
+
+    #[test]
+    fn upstream_state_device_descriptions_match_device_names() {
+        assert_eq!(DiskoverySD::new().description(), "Diskovery-Disk-Position");
+        assert_eq!(
+            DiskoveryWF::new().description(),
+            "Diskovery-Illumination-Size"
+        );
+        assert_eq!(DiskoveryFilterW::new().description(), "Diskovery-Filter-W");
+        assert_eq!(DiskoveryFilterT::new().description(), "Diskovery-Filter-T");
+        assert_eq!(
+            DiskoveryIris::new().description(),
+            "Diskovery-Objective-Select"
+        );
     }
 
     #[test]
@@ -411,7 +449,32 @@ mod tests {
         let t = MockTransport::new().expect("Q:PRESET_SD\r", "A:PRESET_SD,1");
         let mut d = DiskoverySD::new().with_transport(Box::new(t));
         d.initialize().unwrap();
-        assert!(d.set_position(4).is_err()); // only 0..3 valid
+        assert!(d.set_position(5).is_err()); // only 0..4 valid
+    }
+
+    #[test]
+    fn set_position_rejects_wrong_echo_value() {
+        let t = MockTransport::new()
+            .expect("Q:PRESET_SD\r", "A:PRESET_SD,1")
+            .expect("A:PRESET_SD,3\r", "A:PRESET_SD,2");
+        let mut d = DiskoverySD::new().with_transport(Box::new(t));
+        d.initialize().unwrap();
+        assert!(d.set_position(2).is_err());
+        assert_eq!(d.get_position().unwrap(), 0);
+    }
+
+    #[test]
+    fn initialize_rejects_invalid_query_position() {
+        let t = MockTransport::new().expect("Q:PRESET_SD\r", "A:PRESET_SD,0");
+        let mut d = DiskoverySD::new().with_transport(Box::new(t));
+        assert_eq!(d.initialize(), Err(MmError::UnknownPosition));
+    }
+
+    #[test]
+    fn initialize_rejects_wrong_query_echo() {
+        let t = MockTransport::new().expect("Q:PRESET_SD\r", "A:PRESET_WF,1");
+        let mut d = DiskoverySD::new().with_transport(Box::new(t));
+        assert_eq!(d.initialize(), Err(MmError::SerialInvalidResponse));
     }
 
     #[test]

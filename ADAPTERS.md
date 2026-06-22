@@ -49,7 +49,7 @@ Status values: `done` | `todo` (pure serial, portable) | `sdk` (requires vendor 
 | `CoolLEDpE4000` | `mm-adapter-coolled-pe4000` | done | CSS format, 4-channel |
 | `Corvus` | `mm-adapter-corvus` | done | ASCII space-terminated |
 | `DTOpenLayer` | — | sdk | DAQ hardware I/O |
-| `DahengGalaxy` | — | sdk | Daheng SDK |
+| `DahengGalaxy` | `mm-adapter-daheng` | done | Daheng Galaxy SDK; `--features daheng` |
 | `DemoCamera` | `mm-adapter-demo` | done | Simulated |
 | `DirectElectron` | — | sdk | Direct Electron camera SDK |
 | `Diskovery` | `mm-adapter-diskovery` | done | Intelligent Imaging spinning disk, serial |
@@ -142,7 +142,7 @@ Status values: `done` | `todo` (pure serial, portable) | `sdk` (requires vendor 
 | `PI` | — | sdk | PI (Physik Instrumente) SDK |
 | `PI_GCS` | `mm-adapter-pi-gcs` | done | PI GCS serial protocol (`SVO`/`MOV`/`POS?`/`ERR?`) |
 | `PI_GCS_2` | `mm-adapter-pi-gcs` | done | PI GCS serial protocol (`SVO`/`MOV`/`POS?`/`ERR?`) |
-| `PICAM` | `mm-adapter-picam` | done | PVCAM SDK (all platforms); `--features picam` |
+| `PICAM` | `mm-adapter-picam` | done | PVCAM SDK (all platforms); `--features picam`; `PVCAM_STUB=1` is compile-only |
 | `PIEZOCONCEPT` | — | sdk | Check protocol |
 | `PI_GCS` | — | sdk | PI GCS SDK |
 | `PI_GCS_2` | — | sdk | PI GCS SDK |

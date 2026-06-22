@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use crate::error::{MmError, MmResult};
 use crate::traits::{AnyDevice, Device};
 use crate::types::DeviceType;
+use std::collections::HashMap;
 
 /// Wraps an `AnyDevice` along with the module/device names used to load it.
 pub struct DeviceHandle {

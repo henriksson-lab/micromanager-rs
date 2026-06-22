@@ -17,6 +17,11 @@ use crate::property::PropertyMap;
 use crate::traits::{Device, Shutter};
 use crate::transport::Transport;
 use crate::types::{DeviceType, PropertyValue};
+use std::thread;
+use std::time::Duration;
+
+const DEVICE_NAME: &str = "Oxxius LaserBoxx LBX or LMX or LCX";
+const DEVICE_DESCRIPTION: &str = "Oxxius LaserBoxx Controller";
 
 pub struct OxxiusLaser {
     props: PropertyMap,
@@ -114,10 +119,10 @@ impl Default for OxxiusLaser {
 
 impl Device for OxxiusLaser {
     fn name(&self) -> &str {
-        "OxxiusLaser"
+        DEVICE_NAME
     }
     fn description(&self) -> &str {
-        "Oxxius LaserBoxx laser controller"
+        DEVICE_DESCRIPTION
     }
 
     fn initialize(&mut self) -> MmResult<()> {
@@ -167,7 +172,10 @@ impl Device for OxxiusLaser {
             self.is_open = sta.trim() == "3";
         }
         if let Ok(p) = self.cmd("?p") {
-            self.power_setpoint_mw = p.parse().unwrap_or(0.0);
+            let readback = p.parse().unwrap_or(0.0);
+            self.props
+                .entry_mut("PowerReadback_mW")
+                .map(|e| e.value = PropertyValue::Float(readback));
         }
 
         self.initialized = true;
@@ -240,7 +248,11 @@ impl Shutter for OxxiusLaser {
     }
 
     fn fire(&mut self, _delta_t: f64) -> MmResult<()> {
-        self.set_open(true)
+        self.set_open(true)?;
+        if _delta_t > 0.0 {
+            thread::sleep(Duration::from_millis(_delta_t as u64));
+        }
+        self.set_open(false)
     }
 }
 
@@ -266,7 +278,11 @@ mod tests {
         let mut dev = OxxiusLaser::new().with_transport(Box::new(make_transport()));
         dev.initialize().unwrap();
         assert!(!dev.get_open().unwrap());
-        assert_eq!(dev.power_setpoint_mw, 50.0);
+        assert_eq!(dev.power_setpoint_mw, 0.0);
+        assert_eq!(
+            dev.get_property("PowerReadback_mW").unwrap(),
+            PropertyValue::Float(50.0)
+        );
         assert_eq!(dev.max_power_mw, 100.0);
     }
 
@@ -302,7 +318,7 @@ mod tests {
                 .unwrap_err(),
             MmError::InvalidPropertyValue
         );
-        assert_eq!(dev.power_setpoint_mw, 50.0);
+        assert_eq!(dev.power_setpoint_mw, 0.0);
     }
 
     #[test]
@@ -314,5 +330,23 @@ mod tests {
     #[test]
     fn no_transport_error() {
         assert!(OxxiusLaser::new().initialize().is_err());
+    }
+
+    #[test]
+    fn upstream_identity() {
+        let dev = OxxiusLaser::new();
+        assert_eq!(dev.name(), "Oxxius LaserBoxx LBX or LMX or LCX");
+        assert_eq!(dev.description(), "Oxxius LaserBoxx Controller");
+    }
+
+    #[test]
+    fn fire_opens_then_closes() {
+        let t = make_transport()
+            .expect("dl 1\n", "OK")
+            .expect("dl 0\n", "OK");
+        let mut dev = OxxiusLaser::new().with_transport(Box::new(t));
+        dev.initialize().unwrap();
+        dev.fire(0.0).unwrap();
+        assert!(!dev.get_open().unwrap());
     }
 }

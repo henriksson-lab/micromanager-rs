@@ -32,7 +32,7 @@ static DEVICE_LIST: &[DeviceInfo] = &[
     },
     DeviceInfo {
         name: DEVICE_NAME_PRIZMATIX,
-        description: "Prizmatix LED Controller",
+        description: "Prizmatix Control",
         device_type: DeviceType::Generic,
     },
 ];
