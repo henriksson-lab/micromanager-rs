@@ -4,6 +4,7 @@ A pure-Rust translation of [MicroManager](https://micro-manager.org/) (`mmCoreAn
 
 The port is based on https://github.com/micro-manager/mmCoreAndDevices, hash 67fe60267bc8d95554369d7fa42912775588e538
 
+* 2026-06-22: Fair bit of audit; expanded SDK support
 * 2026-06-20: Work on bringing full parity in progress
 
 
