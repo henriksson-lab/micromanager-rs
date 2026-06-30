@@ -7,10 +7,15 @@ use micromanager::{
 };
 use std::time::Duration;
 
+// This example file is a catalog of API sketches rather than a runnable demo.
+// Each function below captures a workflow the future MiniCore should make
+// natural to express.
 fn main() -> MmResult<()> {
     Ok(())
 }
 
+// Hardware-triggered capture: arm a camera so a TTL rising edge causes one
+// image to be captured and queued to a recorder without polling from user code.
 fn hardware_triggered_picture() -> MmResult<()> {
     let mut scope = MiniCore::new();
     scope.add_device("camera", AsyncDemoCamera::new())?;
@@ -30,6 +35,9 @@ fn hardware_triggered_picture() -> MmResult<()> {
     armed.wait(Duration::from_secs(1))
 }
 
+// Closed-loop live-cell workflow: survey at low resolution, analyze frames for
+// a cell about to divide, switch objective, move/focus, record a high-resolution
+// timelapse, then return to the survey setup.
 fn adaptive_cell_division_timelapse() -> MmResult<()> {
     let mut scope = MiniCore::new();
     scope.add_device("camera", AsyncDemoCamera::new())?;
@@ -86,6 +94,9 @@ fn adaptive_cell_division_timelapse() -> MmResult<()> {
     Ok(())
 }
 
+// Laser scanning confocal workflow: coordinate a scan engine, pulsed laser, and
+// TCSPC detector so FLIM collection and a FRAP-style bleach segment can be part
+// of one acquisition plan.
 fn laser_scanning_confocal_flim_frap() -> MmResult<()> {
     let scope = MiniCore::new();
     let scan_engine = scope.control("scan_engine")?;
@@ -106,6 +117,9 @@ fn laser_scanning_confocal_flim_frap() -> MmResult<()> {
     scan_engine.start().submit()?.wait(Duration::from_secs(1))
 }
 
+// Optoacoustic workflow: drive a sparse scan path with a pulsed laser and DAQ,
+// treating ultrasound A-lines as first-class waveform data rather than camera
+// frames.
 fn optoacoustic_sparse_raster() -> MmResult<()> {
     let scope = MiniCore::new();
     let laser = scope.control("nanosecond_pulse_laser")?;
@@ -124,6 +138,8 @@ fn optoacoustic_sparse_raster() -> MmResult<()> {
     scanner.start().submit()?.wait(Duration::from_secs(1))
 }
 
+// Light-sheet workflow: coordinate sCMOS exposure, sheet galvo sweep, laser
+// arming, and sample Z motion as one volume acquisition.
 fn light_sheet_volume() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("sCMOS")?;
@@ -145,6 +161,8 @@ fn light_sheet_volume() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
+// Adaptive optics workflow: capture an image, compute an image-quality metric,
+// update a deformable mirror, and repeat as a low-latency feedback loop.
 fn adaptive_optics_feedback() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("wavefront_or_image_camera")?;
@@ -162,6 +180,9 @@ fn adaptive_optics_feedback() -> MmResult<()> {
     Ok(())
 }
 
+// Super-resolution localization workflow: run long high-rate image sequences
+// while controlling activation/excitation laser powers and streaming frames to
+// storage.
 fn super_resolution_localization() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("emccd_or_scmos")?;
@@ -183,6 +204,8 @@ fn super_resolution_localization() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
+// Electrophysiology-coupled imaging: align fast camera frames with DAQ analog
+// traces and patch-clamp or stimulus waveforms using shared timing markers.
 fn electrophysiology_coupled_imaging() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -203,6 +226,8 @@ fn electrophysiology_coupled_imaging() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
+// Microfluidic perturbation workflow: change valves and pump pressure while
+// recording a long timelapse with metadata for each fluidic state transition.
 fn microfluidic_perturbation_screen() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -223,6 +248,8 @@ fn microfluidic_perturbation_screen() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
+// Patterned stimulation workflow: define an ROI stimulus for a DMD/SLM/galvo
+// path while simultaneously acquiring camera frames.
 fn patterned_opto_stimulation() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -249,6 +276,8 @@ fn patterned_opto_stimulation() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
+// Spatial omics workflow: repeat fluidic reagent cycles while revisiting stage
+// positions and recording images for later decoding or registration.
 fn spatial_omics_round_trip() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -272,6 +301,8 @@ fn spatial_omics_round_trip() -> MmResult<()> {
     Ok(())
 }
 
+// Sparse trajectory shape: represent non-rectangular scan plans such as sparse
+// optoacoustic rasters or adaptive ROI revisits.
 fn sparse_scan_path_shape() {
     let _path = ScanPath::sparse(vec![
         Position {

@@ -2,6 +2,9 @@ use micromanager::adapters::demo_async::{AsyncDemoCamera, AsyncDemoStage};
 use micromanager::{Dependency, MiniCore, MmResult};
 use std::time::Duration;
 
+// Basic async API sketch: register a camera and focus stage, initialize them,
+// move focus while configuring exposure, capture one frame, then run a short
+// sequence while observing events.
 fn main() -> MmResult<()> {
     let mut scope = MiniCore::new();
 
