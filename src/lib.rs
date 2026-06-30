@@ -9,6 +9,7 @@ pub mod circular_buffer;
 pub mod config;
 pub mod core;
 pub mod device_manager;
+pub mod minicore;
 
 pub use error::{MmError, MmResult};
 pub use property::{PropertyEntry, PropertyMap};
@@ -24,5 +25,16 @@ pub use adapter_registry::AdapterRegistry;
 pub use circular_buffer::{CircularBuffer, ImageFrame};
 pub use config::{ConfigFile, ConfigGroup, ConfigRecord};
 pub use core::CMMCore;
+pub use minicore::{
+    AcquisitionPlan, Action, AnalysisCapability, AnalysisClient, AnalysisKind, CameraCapability,
+    CameraClient, Capability, CellFinding, CommandOutcome, DataStreamKind, Dependency,
+    DependencyRole, DetectorCapability, DeviceClient, DeviceCommand, DeviceContext,
+    DeviceDescriptor, DeviceHandle, DeviceLabel, DeviceSnapshot, EventStream, Experiment, Frame,
+    ImageAnalysisService, ImageRecorder, Metadata, MiniCore, MiniCoreEvent, MiniDevice, Operation,
+    OperationId, OperationSnapshot, OperationStatus, PendingOperation, PhotonEvents, Position,
+    PropertyCapability, RecorderClient, RecordingPolicy, Roi, ScanAxis, ScanCapability, ScanPath,
+    StageAxis, StageCapability, StageClient, Stimulus, StorageCapability, TriggerCapability,
+    TriggerClient, TriggerDirection, Waveform, Workflow,
+};
 
 pub mod adapters;

@@ -27,6 +27,7 @@ pub mod corvus;
 pub mod csuw1;
 pub mod daheng;
 pub mod demo;
+pub mod demo_async;
 pub mod diskovery;
 pub mod elliptec;
 pub mod esp32;
