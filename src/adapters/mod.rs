@@ -76,6 +76,7 @@ pub mod prior;
 pub mod prior_legacy;
 pub mod prior_purefocus;
 pub mod prizmatix;
+pub mod pvcam_native;
 pub mod sapphire;
 pub mod scientifica;
 pub mod scientifica_motion8;

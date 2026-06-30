@@ -317,3 +317,218 @@ fn sparse_scan_path_shape() {
         },
     ]);
 }
+
+// Intravital multiphoton workflow: coordinate resonant scanning, tunable
+// femtosecond excitation, physiological logging, and behavior or stimulus
+// markers during live animal imaging.
+fn intravital_multiphoton_behavior() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let scanner = scope.control("resonant_multiphoton_scanner")?;
+    let laser = scope.control("tunable_femtosecond_laser")?;
+    let physiology = scope.control("physiology_logger")?;
+    let behavior = scope.control("behavior_trigger_box")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("intravital_multiphoton"))?;
+    laser
+        .set_property("wavelength_nm", PropertyValue::from(920_i64))
+        .submit()?;
+    physiology
+        .arm_with(AcquisitionPlan::new("heart_respiration_temperature"))
+        .submit()?;
+    behavior
+        .arm_with(AcquisitionPlan::new("behavior_markers"))
+        .submit()?;
+    scanner
+        .arm_with(AcquisitionPlan::new("fast_resonant_z_stack"))
+        .submit()?;
+    scanner.start().submit()?.wait(Duration::from_secs(1))
+}
+
+// MINFLUX-style single-molecule workflow: localize sparse emitters by steering
+// a doughnut minimum around candidate positions and counting photons.
+fn minflux_single_molecule_tracking() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let beam = scope.control("doughnut_beam_steering")?;
+    let detector = scope.control("photon_counter")?;
+    let activation = scope.control("activation_laser")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("minflux_tracking"))?;
+    activation
+        .set_property("density_mode", PropertyValue::from("single_molecule"))
+        .submit()?;
+    detector
+        .arm_with(AcquisitionPlan::new("photon_event_stream"))
+        .submit()?;
+    beam.arm_with(AcquisitionPlan::new("minflux_probe_pattern"))
+        .submit()?;
+    beam.start().submit()?.wait(Duration::from_secs(1))
+}
+
+// Raman hyperspectral workflow: scan points or lines while recording spectra,
+// preserving laser wavelength, exposure, and spatial coordinates per spectrum.
+fn raman_hyperspectral_mapping() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let laser = scope.control("raman_excitation_laser")?;
+    let spectrometer = scope.control("spectrometer")?;
+    let stage = scope.stage("xy_stage")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("raman_hyperspectral_cube"))?;
+    laser
+        .set_property("wavelength_nm", PropertyValue::from(785_i64))
+        .submit()?;
+    spectrometer
+        .arm_with(AcquisitionPlan::new("spectrum_per_point"))
+        .submit()?;
+    for x in [0.0, 10.0, 20.0] {
+        stage.move_to_um(x).submit()?;
+    }
+    spectrometer.start().submit()?.wait(Duration::from_secs(1))
+}
+
+// Cryo-CLEM targeting workflow: image a frozen grid by fluorescence, select
+// targets, and emit coordinates/metadata for downstream cryo-EM or cryo-ET.
+fn cryo_clem_target_picking() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let camera = scope.camera("cryo_fluorescence_camera")?;
+    let cryo_stage = scope.stage("cryo_grid_stage")?;
+    let analysis = scope.analysis("target_picker")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("cryo_clem_targets"))?;
+    for grid_square in [0.0, 1_000.0, 2_000.0] {
+        cryo_stage.move_to_um(grid_square).submit()?;
+        let frame = camera.snap().submit()?.wait(Duration::from_secs(1))?;
+        let _targets = analysis.find_dividing_cells(&frame)?;
+    }
+    Ok(())
+}
+
+// Expansion microscopy workflow: tile a physically expanded specimen with
+// lower-NA optics while preserving expansion factor and registration metadata.
+fn expansion_microscopy_tiled_volume() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let camera = scope.camera("widefield_or_confocal_camera")?;
+    let xy = scope.stage("tile_stage")?;
+    let z = scope.stage("z_drive")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("expanded_sample_tiles"))?;
+    camera.record_to(&recorder)?;
+    for tile_um in [0.0, 500.0, 1_000.0] {
+        xy.move_to_um(tile_um).submit()?;
+        z.move_by_um(100.0).submit()?;
+        camera
+            .start_sequence(50, Duration::from_millis(20))
+            .submit()?;
+    }
+    Ok(())
+}
+
+// OCT angiography workflow: acquire repeated B-scans at each position so flow
+// contrast can be reconstructed from decorrelation across scans.
+fn oct_angiography_repeated_b_scans() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let oct_engine = scope.control("oct_engine")?;
+    let scanner = scope.control("fast_axis_scanner")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("oct_angiography"))?;
+    scanner
+        .arm_with(AcquisitionPlan::new("repeated_b_scan_positions"))
+        .submit()?;
+    oct_engine
+        .arm_with(AcquisitionPlan::new("spectral_interferograms"))
+        .submit()?;
+    oct_engine.start().submit()?.wait(Duration::from_secs(1))
+}
+
+// FRET biosensor workflow: acquire donor, acceptor, and sensitized-emission
+// channels with matched timing so downstream analysis can compute ratio maps.
+fn fret_ratio_biosensor_timelapse() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let camera = scope.camera("camera")?;
+    let filter = scope.control("emission_filter_wheel")?;
+    let excitation = scope.control("excitation_selector")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("fret_ratio_timelapse"))?;
+    camera.record_to(&recorder)?;
+    for channel in ["donor", "acceptor", "fret"] {
+        excitation
+            .set_property("channel", PropertyValue::from(channel))
+            .submit()?;
+        filter
+            .set_property("channel", PropertyValue::from(channel))
+            .submit()?;
+        camera.snap().submit()?;
+    }
+    Ok(())
+}
+
+// MERFISH/seqFISH-style cyclic imaging workflow: run many fluidic barcode
+// rounds, image each round, and preserve cycle/channel metadata for decoding.
+fn cyclic_spatial_transcriptomics() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let camera = scope.camera("camera")?;
+    let fluidics = scope.control("fluidics")?;
+    let autofocus = scope.control("hardware_autofocus")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("cyclic_spatial_transcriptomics"))?;
+    camera.record_to(&recorder)?;
+    for round in 0..16 {
+        fluidics
+            .set_property("hybridization_round", PropertyValue::from(round))
+            .submit()?;
+        autofocus.arm().submit()?;
+        camera
+            .start_sequence(4, Duration::from_millis(100))
+            .submit()?;
+    }
+    Ok(())
+}
+
+// Cleared-tissue mesoscopy workflow: acquire large multi-tile, multi-depth
+// volumes with low magnification and strict storage throughput requirements.
+fn cleared_tissue_mesoscope_volume() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let camera = scope.camera("large_sensor_camera")?;
+    let stage = scope.stage("sample_stage")?;
+    let illumination = scope.control("mesoscope_illumination")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("cleared_tissue_volume"))?;
+    camera.record_to(&recorder)?;
+    illumination.arm().submit()?;
+    for position in [0.0, 2_000.0, 4_000.0] {
+        stage.move_to_um(position).submit()?;
+        camera
+            .start_sequence(300, Duration::from_millis(15))
+            .submit()?;
+    }
+    Ok(())
+}
+
+// AFM-correlative workflow: collect optical images and force maps at matching
+// coordinates so morphology, fluorescence, and mechanical measurements align.
+fn afm_correlative_force_mapping() -> MmResult<()> {
+    let scope = MiniCore::new();
+    let camera = scope.camera("fluorescence_camera")?;
+    let afm = scope.control("atomic_force_microscope")?;
+    let stage = scope.stage("sample_stage")?;
+    let recorder = scope.recorder("recorder")?;
+
+    recorder.policy(RecordingPolicy::new("afm_correlative_force_maps"))?;
+    camera.record_to(&recorder)?;
+    for position in [0.0, 50.0, 100.0] {
+        stage.move_to_um(position).submit()?;
+        camera.snap().submit()?;
+        afm.arm_with(AcquisitionPlan::new("force_volume"))
+            .submit()?;
+        afm.start().submit()?;
+    }
+    Ok(())
+}
