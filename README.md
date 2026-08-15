@@ -4,6 +4,8 @@ A pure-Rust translation of [MicroManager](https://micro-manager.org/) (`mmCoreAn
 
 The port is based on https://github.com/micro-manager/mmCoreAndDevices, hash 67fe60267bc8d95554369d7fa42912775588e538
 
+**This port is so-so tested and maintained. Instead, see [this crate for a possible rewrite and replacement](https://github.com/henriksson-lab/numanager)**
+
 * 2026-06-25: Added plan for migrating to a new core - adding features while keeping old core for backwards compatibility
 * 2026-06-22: Fair bit of audit; expanded SDK support
 * 2026-06-20: Work on bringing full parity in progress
@@ -427,3 +429,20 @@ impl Device for MyDevice {
     fn busy(&self) -> bool { false }
 }
 ```
+
+## Citing
+
+Please cite one of the following papers for the original software:
+
+> Arthur D Edelstein, Mark A Tsuchida, Nenad Amodaj, Henry Pinkard, Ronald D Vale, and Nico Stuurman (2014), Advanced methods of microscope control using μManager software. Journal of Biological Methods 2014 1(2):e11
+
+> Arthur Edelstein, Nenad Amodaj, Karl Hoover, Ron Vale, and Nico Stuurman (2010), Computer Control of Microscopes Using μManager. Current Protocols in Molecular Biology 14.20.1-14.20.17
+
+If you use our translation, we recommend that you also cite the precise version you use. If you link to [crates.io](http://crates.io), you can cite the version number;
+but if you link to our Git repository, for reproducibility, it is better that you provide the URL to the repository and the git hash (Github lists it high up on the page as 7 letters, under the Code button, e.g. '21751cd')
+
+In addition, we appreciate if you cite the paper below describing the translation approach. If for some reason you struggle with journal citation limits, please prioritizing citing the original software over our translation paper.
+
+> Johan Henriksson. Static analysis-guided agentic AI translation enables Rust as a full stack bioinformatics language. arXiv:2608.13029, 2026. https://doi.org/10.48550/arXiv.2608.13029
+
+

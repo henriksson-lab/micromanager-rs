@@ -25,9 +25,13 @@ iidc = []
 basler = ["dep:pylon-cxx"]
 basler-stub = []
 opencv = ["dep:opencv"]
+# Pure-Rust Photometrics carriers (Linux). Default builds don't pull libc directly.
+pvcam-native-pcie = ["dep:libc"]
+pvcam-native-usb = ["dep:libc"]
 
 [dependencies]
 thiserror = "2"
+libc = { version = "0.2", optional = true }
 parking_lot = "0.12"
 serde_json = "1"
 aravis = { version = "0.11", optional = true }

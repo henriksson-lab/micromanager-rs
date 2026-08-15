@@ -8,14 +8,17 @@ use micromanager::{
 use std::time::Duration;
 
 // This example file is a catalog of API sketches rather than a runnable demo.
-// Each function below captures a workflow the future MiniCore should make
-// natural to express.
+// Each function captures an advanced workflow and the API pressure it creates:
+// deterministic timing, feedback loops, non-image streams, metadata, storage,
+// multimodal alignment, or safety-critical device coordination.
 fn main() -> MmResult<()> {
     Ok(())
 }
 
-// Hardware-triggered capture: arm a camera so a TTL rising edge causes one
-// image to be captured and queued to a recorder without polling from user code.
+// Demonstrates hardware-triggered acquisition. The advanced part is that the
+// user does not poll or call snap at the moment of exposure; MiniCore must arm a
+// trigger graph where a TTL edge causes the camera action and routes the frame
+// to storage with deterministic trigger metadata.
 fn hardware_triggered_picture() -> MmResult<()> {
     let mut scope = MiniCore::new();
     scope.add_device("camera", AsyncDemoCamera::new())?;
@@ -35,9 +38,10 @@ fn hardware_triggered_picture() -> MmResult<()> {
     armed.wait(Duration::from_secs(1))
 }
 
-// Closed-loop live-cell workflow: survey at low resolution, analyze frames for
-// a cell about to divide, switch objective, move/focus, record a high-resolution
-// timelapse, then return to the survey setup.
+// Demonstrates closed-loop adaptive microscopy. The advanced part is that image
+// analysis changes the future acquisition: survey at low resolution, detect a
+// biological event, switch objective, move/focus, run a high-resolution
+// timelapse, then return to the survey state.
 fn adaptive_cell_division_timelapse() -> MmResult<()> {
     let mut scope = MiniCore::new();
     scope.add_device("camera", AsyncDemoCamera::new())?;
@@ -94,9 +98,9 @@ fn adaptive_cell_division_timelapse() -> MmResult<()> {
     Ok(())
 }
 
-// Laser scanning confocal workflow: coordinate a scan engine, pulsed laser, and
-// TCSPC detector so FLIM collection and a FRAP-style bleach segment can be part
-// of one acquisition plan.
+// Demonstrates laser-scanning confocal orchestration. The advanced part is that
+// a scan engine, pulsed laser, and TCSPC detector must share timing, and the
+// acquisition plan can mix imaging, FLIM photon timing, and a FRAP bleach phase.
 fn laser_scanning_confocal_flim_frap() -> MmResult<()> {
     let scope = MiniCore::new();
     let scan_engine = scope.control("scan_engine")?;
@@ -117,9 +121,10 @@ fn laser_scanning_confocal_flim_frap() -> MmResult<()> {
     scan_engine.start().submit()?.wait(Duration::from_secs(1))
 }
 
-// Optoacoustic workflow: drive a sparse scan path with a pulsed laser and DAQ,
-// treating ultrasound A-lines as first-class waveform data rather than camera
-// frames.
+// Demonstrates optoacoustic/photoacoustic acquisition. The advanced part is
+// that the primary detector is a DAQ waveform stream, not a camera; each laser
+// pulse produces an A-line that must be tied to scanner position, wavelength,
+// pulse energy, and reconstruction metadata.
 fn optoacoustic_sparse_raster() -> MmResult<()> {
     let scope = MiniCore::new();
     let laser = scope.control("nanosecond_pulse_laser")?;
@@ -138,8 +143,9 @@ fn optoacoustic_sparse_raster() -> MmResult<()> {
     scanner.start().submit()?.wait(Duration::from_secs(1))
 }
 
-// Light-sheet workflow: coordinate sCMOS exposure, sheet galvo sweep, laser
-// arming, and sample Z motion as one volume acquisition.
+// Demonstrates light-sheet volume acquisition. The advanced part is that camera
+// exposure, sheet scan, laser power, and Z motion are one timed graph; a slow
+// sequential API would introduce blur, missed planes, or excessive phototoxicity.
 fn light_sheet_volume() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("sCMOS")?;
@@ -161,8 +167,9 @@ fn light_sheet_volume() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
-// Adaptive optics workflow: capture an image, compute an image-quality metric,
-// update a deformable mirror, and repeat as a low-latency feedback loop.
+// Demonstrates adaptive optics feedback. The advanced part is the tight
+// read-analyze-write loop: image quality metrics update a deformable mirror or
+// SLM while the acquisition remains live and latency-sensitive.
 fn adaptive_optics_feedback() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("wavefront_or_image_camera")?;
@@ -180,9 +187,9 @@ fn adaptive_optics_feedback() -> MmResult<()> {
     Ok(())
 }
 
-// Super-resolution localization workflow: run long high-rate image sequences
-// while controlling activation/excitation laser powers and streaming frames to
-// storage.
+// Demonstrates localization super-resolution. The advanced part is sustained
+// high-rate streaming with synchronized activation/excitation control, sparse
+// emitter density management, precise frame timestamps, and storage throughput.
 fn super_resolution_localization() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("emccd_or_scmos")?;
@@ -204,8 +211,9 @@ fn super_resolution_localization() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
-// Electrophysiology-coupled imaging: align fast camera frames with DAQ analog
-// traces and patch-clamp or stimulus waveforms using shared timing markers.
+// Demonstrates electrophysiology-coupled imaging. The advanced part is
+// cross-modal timing: camera frames, analog DAQ traces, and stimulus or
+// patch-clamp protocols need shared clocks, markers, and recoverable metadata.
 fn electrophysiology_coupled_imaging() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -226,8 +234,9 @@ fn electrophysiology_coupled_imaging() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
-// Microfluidic perturbation workflow: change valves and pump pressure while
-// recording a long timelapse with metadata for each fluidic state transition.
+// Demonstrates perturbation imaging with microfluidics. The advanced part is
+// long-running device-state orchestration: valves, pumps, sensors, safety limits,
+// and image metadata must remain aligned over hours.
 fn microfluidic_perturbation_screen() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -248,8 +257,9 @@ fn microfluidic_perturbation_screen() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
-// Patterned stimulation workflow: define an ROI stimulus for a DMD/SLM/galvo
-// path while simultaneously acquiring camera frames.
+// Demonstrates patterned optogenetic/photoactivation stimulation. The advanced
+// part is independent stimulation and imaging paths: a DMD/SLM/galvo timeline
+// targets ROIs while imaging continues with event annotations and laser safety.
 fn patterned_opto_stimulation() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -276,8 +286,9 @@ fn patterned_opto_stimulation() -> MmResult<()> {
         .wait(Duration::from_secs(1))
 }
 
-// Spatial omics workflow: repeat fluidic reagent cycles while revisiting stage
-// positions and recording images for later decoding or registration.
+// Demonstrates cyclic spatial-omics acquisition. The advanced part is repeated
+// reagent cycles with stage revisits, autofocus, channel metadata, and durable
+// bookkeeping so downstream decoding can align many imaging rounds.
 fn spatial_omics_round_trip() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -301,8 +312,9 @@ fn spatial_omics_round_trip() -> MmResult<()> {
     Ok(())
 }
 
-// Sparse trajectory shape: represent non-rectangular scan plans such as sparse
-// optoacoustic rasters or adaptive ROI revisits.
+// Demonstrates non-rectangular acquisition paths. The advanced part is that not
+// all scans are dense raster images; adaptive microscopy, optoacoustics, and
+// sparse clinical scans need arbitrary trajectories and skipped positions.
 fn sparse_scan_path_shape() {
     let _path = ScanPath::sparse(vec![
         Position {
@@ -318,9 +330,9 @@ fn sparse_scan_path_shape() {
     ]);
 }
 
-// Intravital multiphoton workflow: coordinate resonant scanning, tunable
-// femtosecond excitation, physiological logging, and behavior or stimulus
-// markers during live animal imaging.
+// Demonstrates intravital multiphoton imaging. The advanced part is combining
+// resonant scanning, tunable femtosecond excitation, physiological telemetry,
+// and behavior/stimulus markers while preserving timing for live-animal data.
 fn intravital_multiphoton_behavior() -> MmResult<()> {
     let scope = MiniCore::new();
     let scanner = scope.control("resonant_multiphoton_scanner")?;
@@ -345,8 +357,9 @@ fn intravital_multiphoton_behavior() -> MmResult<()> {
     scanner.start().submit()?.wait(Duration::from_secs(1))
 }
 
-// MINFLUX-style single-molecule workflow: localize sparse emitters by steering
-// a doughnut minimum around candidate positions and counting photons.
+// Demonstrates MINFLUX-style tracking. The advanced part is not frame imaging
+// but active beam placement plus photon-event counting; the control loop must
+// steer a patterned excitation minimum based on sparse localization events.
 fn minflux_single_molecule_tracking() -> MmResult<()> {
     let scope = MiniCore::new();
     let beam = scope.control("doughnut_beam_steering")?;
@@ -366,8 +379,9 @@ fn minflux_single_molecule_tracking() -> MmResult<()> {
     beam.start().submit()?.wait(Duration::from_secs(1))
 }
 
-// Raman hyperspectral workflow: scan points or lines while recording spectra,
-// preserving laser wavelength, exposure, and spatial coordinates per spectrum.
+// Demonstrates Raman hyperspectral mapping. The advanced part is that each
+// spatial point yields a spectrum rather than an image pixel; the API must align
+// stage position, laser settings, exposure, and spectral metadata.
 fn raman_hyperspectral_mapping() -> MmResult<()> {
     let scope = MiniCore::new();
     let laser = scope.control("raman_excitation_laser")?;
@@ -388,8 +402,9 @@ fn raman_hyperspectral_mapping() -> MmResult<()> {
     spectrometer.start().submit()?.wait(Duration::from_secs(1))
 }
 
-// Cryo-CLEM targeting workflow: image a frozen grid by fluorescence, select
-// targets, and emit coordinates/metadata for downstream cryo-EM or cryo-ET.
+// Demonstrates cryo-CLEM targeting. The advanced part is correlative metadata:
+// fluorescence targets on a cryo grid must be exported in coordinate systems
+// suitable for later cryo-EM or cryo-ET acquisition.
 fn cryo_clem_target_picking() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("cryo_fluorescence_camera")?;
@@ -406,8 +421,9 @@ fn cryo_clem_target_picking() -> MmResult<()> {
     Ok(())
 }
 
-// Expansion microscopy workflow: tile a physically expanded specimen with
-// lower-NA optics while preserving expansion factor and registration metadata.
+// Demonstrates expansion microscopy tiling. The advanced part is very large
+// fields of view and registration metadata: expanded samples need stitched
+// tile/volume acquisition with expansion factors preserved in the dataset.
 fn expansion_microscopy_tiled_volume() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("widefield_or_confocal_camera")?;
@@ -427,8 +443,9 @@ fn expansion_microscopy_tiled_volume() -> MmResult<()> {
     Ok(())
 }
 
-// OCT angiography workflow: acquire repeated B-scans at each position so flow
-// contrast can be reconstructed from decorrelation across scans.
+// Demonstrates OCT angiography. The advanced part is repeated B-scan timing:
+// flow contrast comes from decorrelation across repeated scans, so scan order
+// and interferogram streams must be represented explicitly.
 fn oct_angiography_repeated_b_scans() -> MmResult<()> {
     let scope = MiniCore::new();
     let oct_engine = scope.control("oct_engine")?;
@@ -445,8 +462,9 @@ fn oct_angiography_repeated_b_scans() -> MmResult<()> {
     oct_engine.start().submit()?.wait(Duration::from_secs(1))
 }
 
-// FRET biosensor workflow: acquire donor, acceptor, and sensitized-emission
-// channels with matched timing so downstream analysis can compute ratio maps.
+// Demonstrates FRET biosensor imaging. The advanced part is ratio integrity:
+// donor, acceptor, and FRET channels need matched timing, exposure, and metadata
+// so downstream analysis can compute meaningful ratio maps.
 fn fret_ratio_biosensor_timelapse() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -468,8 +486,9 @@ fn fret_ratio_biosensor_timelapse() -> MmResult<()> {
     Ok(())
 }
 
-// MERFISH/seqFISH-style cyclic imaging workflow: run many fluidic barcode
-// rounds, image each round, and preserve cycle/channel metadata for decoding.
+// Demonstrates MERFISH/seqFISH-style cyclic imaging. The advanced part is
+// experiment state management across many chemistry rounds; imaging, autofocus,
+// fluidics, and cycle metadata must survive interruptions and support decoding.
 fn cyclic_spatial_transcriptomics() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("camera")?;
@@ -491,8 +510,9 @@ fn cyclic_spatial_transcriptomics() -> MmResult<()> {
     Ok(())
 }
 
-// Cleared-tissue mesoscopy workflow: acquire large multi-tile, multi-depth
-// volumes with low magnification and strict storage throughput requirements.
+// Demonstrates cleared-tissue mesoscopy. The advanced part is scale: large
+// multi-tile, multi-depth datasets stress stage scheduling, illumination
+// stability, metadata volume, and parallel storage throughput.
 fn cleared_tissue_mesoscope_volume() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("large_sensor_camera")?;
@@ -512,8 +532,9 @@ fn cleared_tissue_mesoscope_volume() -> MmResult<()> {
     Ok(())
 }
 
-// AFM-correlative workflow: collect optical images and force maps at matching
-// coordinates so morphology, fluorescence, and mechanical measurements align.
+// Demonstrates AFM-correlative microscopy. The advanced part is multimodal
+// registration: optical frames and AFM force maps must share coordinates,
+// timing, and metadata even though one stream is image-like and one is not.
 fn afm_correlative_force_mapping() -> MmResult<()> {
     let scope = MiniCore::new();
     let camera = scope.camera("fluorescence_camera")?;
